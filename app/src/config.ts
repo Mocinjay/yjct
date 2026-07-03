@@ -15,11 +15,14 @@ export const SEGMENT_SECONDS = 5;
  */
 export const MAX_CLIP_RECORDING_SECONDS = 180;
 
+/** The product's trigger phrase. Saying it auto-saves the look-back clip. */
+export const WAKE_PHRASE = 'fade away';
+
 export const DEFAULT_SETTINGS: Settings = {
   bufferSeconds: 30,
   deviceKind: 'mock',
   wakeWord: {
     provider: 'mock',
-    keyword: 'jarvis',
+    keyword: WAKE_PHRASE,
   },
 };

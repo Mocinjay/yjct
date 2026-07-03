@@ -1,18 +1,30 @@
 /**
- * PHASE 2 SEAM — interface only. No connector code ships in Phase 1.
+ * PHASE 2 — connector contract. Each platform (YouTube Shorts, Instagram,
+ * Facebook, TikTok) is one isolated module behind this interface,
+ * swappable/mockable so nothing needs live credentials to test.
  *
- * Each platform (YouTube Shorts, Instagram, Facebook, TikTok) becomes one
- * isolated module behind this contract, swappable/mockable so nothing needs
- * live credentials to test. Free-tier sharing does NOT go through this —
- * that's the native OS share sheet.
+ * Free-tier sharing does NOT go through this — that's the native OS share
+ * sheet.
  *
- * TikTok-specific invariants for the eventual implementation:
- *  - never post without a per-clip preview + explicit user consent step;
- *  - until their manual audit clears, every post is forced private — the
- *    returned PublishStatus must surface ACTUAL visibility to the UI, never
- *    the visibility the user requested.
+ * Platform invariants the implementations must respect:
+ *  - Instagram/TikTok require a CDN-hosted HTTPS URL (`requiresHostedUrl`);
+ *    a local file path is never sufficient for them. YouTube accepts a
+ *    direct file upload.
+ *  - TikTok: never post without a per-clip preview + explicit user consent
+ *    step; until their manual audit clears, every post is forced private —
+ *    `PublishStatus.actualPrivacy` must surface ACTUAL visibility to the
+ *    UI, never the visibility the user requested.
  */
-export type PublishPrivacy = 'public' | 'private' | 'followers';
+export type PublishPrivacy = 'public' | 'private' | 'unlisted';
+
+export interface PublishableClip {
+  /** Local MP4 path (used by direct-upload targets like YouTube). */
+  localFilePath: string;
+  /** CDN-fronted HTTPS URL (required by Instagram/TikTok-style targets). */
+  hostedUrl?: string;
+  title: string;
+  durationSec: number;
+}
 
 export interface PublishStatus {
   state: 'pending' | 'processing' | 'published' | 'failed';
@@ -23,17 +35,18 @@ export interface PublishStatus {
 }
 
 export interface PublishTarget {
-  readonly platform: 'youtube' | 'instagram' | 'facebook' | 'tiktok';
+  readonly platform: 'youtube' | 'instagram' | 'facebook' | 'tiktok' | 'mock';
+  readonly displayName: string;
+  /** True → clip must be uploaded to cloud hosting before publishing. */
+  readonly requiresHostedUrl: boolean;
+
+  /** True when this target has credentials and is ready to publish. */
+  isConfigured(): Promise<boolean>;
 
   authenticate(): Promise<void>;
 
-  /**
-   * Uploads and publishes a clip. `clipUrl` is a CDN-fronted HTTPS URL —
-   * Instagram and TikTok require hosted media; a local file path is never
-   * sufficient here.
-   */
   uploadAndPublish(
-    clipUrl: string,
+    clip: PublishableClip,
     caption: string,
     privacy: PublishPrivacy,
   ): Promise<{ publishId: string }>;

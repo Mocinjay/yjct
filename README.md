@@ -8,11 +8,11 @@ Mobile companion app (iOS + Android) for Meta smart glasses (Ray-Ban Meta, Oakle
 
 | Phase | Status | Contents |
 |-------|--------|----------|
-| **1** | 🚧 in progress | MWDAT camera+mic session, rolling buffer (30–90s), on-device wake word (Porcupine), local clip library, native share sheet, Mock Device support |
-| **2** | ⛔ not started | `CaptioningProvider` interface, cloud clip hosting, `PublishTarget` connectors (YouTube → IG/FB → TikTok) |
+| **1** | ✅ working on-device (mock glasses) | Rolling buffer (30s free / 60–90s Pro), "fade away" wake phrase auto-saves the look-back clip, extended record-until-stop mode, local clip library, native share sheet, Mock Device support. MWDAT bridge still stubbed pending Meta toolkit access. |
+| **2** | 🚧 in progress | Pipeline built against mocks: `CaptioningProvider` (mock impl), `ClipHosting` seam (mock impl), `PublishTarget` connectors — **YouTube Shorts connector implemented** (awaiting Google OAuth client + API verification), Mock platform for end-to-end testing. IG/FB (one bundled Meta App Review) and TikTok (sandbox + audit) not started. |
 | **3** | ⛔ gated on Meta | Public store listing — blocked until MWDAT distribution status is confirmed in writing |
 
-Phase 1 has **zero** external review dependencies and is the entire free tier. No connector code, no captioning API calls, no Graph API exists in this repo yet — by design.
+The publish flow enforces a per-clip preview + explicit consent step before anything leaves the device, and always surfaces the platform's **actual** post visibility (TikTok forces private during audit — the UI never lies about it).
 
 ## Repo layout
 

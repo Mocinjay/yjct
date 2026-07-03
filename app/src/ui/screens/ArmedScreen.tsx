@@ -69,7 +69,8 @@ export function ArmedScreen({ navigation }: Props) {
     }
   }, [session, arm]);
 
-  const trigger = () => session?.mockWakeWord?.fire();
+  const sayWakePhrase = () => session?.mockWakeWord?.fire();
+  const startExtended = () => session?.controller.startClip();
   const stop = () => {
     session?.controller.stopClip().catch(() => {});
   };
@@ -113,16 +114,27 @@ export function ArmedScreen({ navigation }: Props) {
             <Pressable style={styles.stopButton} onPress={stop}>
               <Text style={styles.triggerText}>■ Stop & save clip</Text>
             </Pressable>
-          ) : session?.mockWakeWord ? (
-            <Pressable style={styles.triggerButton} onPress={trigger}>
-              <Text style={styles.triggerText}>Trigger (mock wake word)</Text>
-            </Pressable>
           ) : (
-            <Text style={styles.listening}>Listening for wake word…</Text>
+            <>
+              {session?.mockWakeWord ? (
+                <Pressable style={styles.triggerButton} onPress={sayWakePhrase}>
+                  <Text style={styles.triggerText}>
+                    “Fade away” (mock) — save last 30s
+                  </Text>
+                </Pressable>
+              ) : (
+                <Text style={styles.listening}>
+                  Say “fade away” to save the last moments…
+                </Text>
+              )}
+              <Pressable style={styles.extendedButton} onPress={startExtended}>
+                <Text style={styles.triggerText}>⦿ Extended clip (record on)</Text>
+              </Pressable>
+            </>
           )}
           {recording && session?.mockWakeWord ? (
             <Text style={styles.listening}>
-              (or say the wake word again to stop)
+              (or say “fade away” again to stop)
             </Text>
           ) : null}
           <Pressable
@@ -203,6 +215,12 @@ const styles = StyleSheet.create({
   },
   stopButton: {
     backgroundColor: '#B3132F',
+    borderRadius: radius.l,
+    paddingVertical: spacing.m,
+    alignItems: 'center',
+  },
+  extendedButton: {
+    backgroundColor: colors.surfaceHigh,
     borderRadius: radius.l,
     paddingVertical: spacing.m,
     alignItems: 'center',

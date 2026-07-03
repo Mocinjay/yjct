@@ -10,6 +10,7 @@ import { LibraryScreen } from './src/ui/screens/LibraryScreen';
 import { ONBOARDED_KEY, OnboardingScreen } from './src/ui/screens/OnboardingScreen';
 import { PaywallScreen } from './src/ui/screens/PaywallScreen';
 import { PlayerScreen } from './src/ui/screens/PlayerScreen';
+import { PublishScreen } from './src/ui/screens/PublishScreen';
 import { SettingsScreen } from './src/ui/screens/SettingsScreen';
 import { colors } from './src/ui/theme';
 
@@ -74,6 +75,11 @@ export default function App() {
             name="Paywall"
             component={PaywallScreen}
             options={{ presentation: 'modal', title: '' }}
+          />
+          <Stack.Screen
+            name="Publish"
+            component={PublishScreen}
+            options={{ title: 'Publish' }}
           />
         </Stack.Navigator>
       </NavigationContainer>

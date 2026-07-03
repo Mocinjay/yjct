@@ -7,4 +7,5 @@ export type RootStackParamList = {
   Player: { clip: Clip };
   Settings: undefined;
   Paywall: undefined;
+  Publish: { clip: Clip };
 };

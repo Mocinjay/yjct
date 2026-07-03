@@ -1,5 +1,5 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import Video from 'react-native-video';
 import { clipStore } from '../../core/ClipStore';
+import { entitlementStore } from '../../core/EntitlementStore';
 import type { RootStackParamList } from '../navigation';
 import { colors, radius, spacing } from '../theme';
 import { shareClip } from './LibraryScreen';
@@ -22,6 +23,20 @@ export function PlayerScreen({ route, navigation }: Props) {
   const [name, setName] = useState(clip.name);
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(clip.name);
+  const [isPro, setIsPro] = useState(false);
+
+  useEffect(() => {
+    entitlementStore.isPro().then(setIsPro);
+    return entitlementStore.subscribe(setIsPro);
+  }, []);
+
+  const publish = () => {
+    if (isPro) {
+      navigation.navigate('Publish', { clip });
+    } else {
+      navigation.navigate('Paywall');
+    }
+  };
 
   const saveRename = async () => {
     const trimmed = draft.trim();
@@ -65,6 +80,10 @@ export function PlayerScreen({ route, navigation }: Props) {
 
       <View style={styles.actions}>
         <ActionButton label="Share" onPress={() => shareClip(clip)} primary />
+        <ActionButton
+          label={isPro ? 'Publish' : '🔒 Publish'}
+          onPress={publish}
+        />
         <ActionButton label="Rename" onPress={() => setRenaming(true)} />
         <ActionButton label="Delete" onPress={confirmDelete} destructive />
       </View>

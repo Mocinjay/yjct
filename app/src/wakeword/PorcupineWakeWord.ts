@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import {
   BuiltInKeywords,
   PorcupineManager,
@@ -6,8 +7,18 @@ import type { WakeWordProvider } from './WakeWordProvider';
 
 /**
  * Picovoice Porcupine keyword spotting — fully on-device, no audio leaves
- * the phone. Uses built-in keywords for now; a custom "clip that" model
- * (.ppn) can be dropped in later via PorcupineManager.fromKeywordPaths.
+ * the phone.
+ *
+ * The product trigger phrase "fade away" is a CUSTOM keyword, which needs a
+ * .ppn model per platform (free to train at console.picovoice.ai →
+ * Porcupine → type the phrase → download for iOS + Android):
+ *
+ *   Android: app/android/app/src/main/assets/wakewords/fade-away_android.ppn
+ *   iOS:     add fade-away_ios.ppn to the Xcode project (FadeAway target,
+ *            "Copy items if needed") — it must land in the app bundle.
+ *
+ * Porcupine resolves these as asset/bundle-relative paths. Built-in
+ * keywords (jarvis, computer, …) still work by name for quick testing.
  */
 export class PorcupineWakeWord implements WakeWordProvider {
   readonly name = 'porcupine';
@@ -19,20 +30,41 @@ export class PorcupineWakeWord implements WakeWordProvider {
     private keyword: string,
   ) {}
 
-  static supportedKeywords(): string[] {
+  static supportedBuiltIns(): string[] {
     return Object.values(BuiltInKeywords);
   }
 
   async start(onDetected: () => void): Promise<void> {
     const builtIn = toBuiltInKeyword(this.keyword);
-    this.manager = await PorcupineManager.fromBuiltInKeywords(
-      this.accessKey,
-      [builtIn],
-      () => onDetected(),
-      error => {
-        console.warn(`[PorcupineWakeWord] processing error: ${error.message}`);
-      },
-    );
+    if (builtIn) {
+      this.manager = await PorcupineManager.fromBuiltInKeywords(
+        this.accessKey,
+        [builtIn],
+        () => onDetected(),
+        error => {
+          console.warn(`[PorcupineWakeWord] processing error: ${error.message}`);
+        },
+      );
+    } else {
+      try {
+        this.manager = await PorcupineManager.fromKeywordPaths(
+          this.accessKey,
+          [customKeywordPath(this.keyword)],
+          () => onDetected(),
+          error => {
+            console.warn(`[PorcupineWakeWord] processing error: ${error.message}`);
+          },
+        );
+      } catch (err) {
+        throw new Error(
+          `Custom wake word "${this.keyword}" needs a Porcupine model file ` +
+            `(${customKeywordPath(this.keyword)}). Train it free at ` +
+            'console.picovoice.ai and bundle it, or use a built-in keyword ' +
+            `for testing (${Object.values(BuiltInKeywords).join(', ')}). ` +
+            `Original error: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     await this.manager.start();
   }
 
@@ -45,14 +77,17 @@ export class PorcupineWakeWord implements WakeWordProvider {
   }
 }
 
-function toBuiltInKeyword(keyword: string): BuiltInKeywords {
+function toBuiltInKeyword(keyword: string): BuiltInKeywords | null {
   const match = Object.values(BuiltInKeywords).find(
     k => k.toLowerCase() === keyword.toLowerCase(),
   );
-  if (!match) {
-    throw new Error(
-      `Unknown wake word "${keyword}". Supported: ${Object.values(BuiltInKeywords).join(', ')}`,
-    );
-  }
-  return match as BuiltInKeywords;
+  return (match as BuiltInKeywords) ?? null;
+}
+
+/** Platform-conventional bundle path for a custom keyword model. */
+function customKeywordPath(keyword: string): string {
+  const slug = keyword.toLowerCase().replace(/\s+/g, '-');
+  return Platform.OS === 'android'
+    ? `wakewords/${slug}_android.ppn`
+    : `${slug}_ios.ppn`;
 }

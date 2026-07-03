@@ -25,15 +25,13 @@ export interface CaptureStatus {
 }
 
 /**
- * The core loop, Meta-glasses style:
+ * The core loop:
  *
  *   armed      — rolling buffer keeps the last N seconds, evicting old files
- *   trigger    — the buffered window is pinned and recording CONTINUES
- *   recording  — everything keeps landing in the clip until stop
- *   stop       — (wake word again / stop button / safety cap) segments are
- *                stitched into one clip: [trigger − N seconds … stop]
- *
- * The wake word toggles: first detection starts a clip, next one stops it.
+ *   "fade away" — the wake phrase AUTO-SAVES the look-back window as a clip
+ *   extended   — the manual REC button instead pins the window and keeps
+ *                recording until stopped (stop button / wake phrase /
+ *                safety cap): [start − N seconds … stop]
  */
 export class CaptureController {
   private buffer: SegmentRingBuffer;
@@ -67,7 +65,7 @@ export class CaptureController {
         err => this.setStatus({ ...this.status, state: 'error', lastError: err.message }),
       );
       await this.wakeWord.start(() => {
-        this.toggleClip().catch(err =>
+        this.onWakePhrase().catch(err =>
           this.setStatus({ ...this.status, state: 'error', lastError: String(err) }),
         );
       });
@@ -91,18 +89,51 @@ export class CaptureController {
     this.setStatus({ state: 'idle', bufferedSeconds: 0 });
   }
 
-  /** Wake word semantics: say it once to start a clip, again to stop it. */
-  async toggleClip(): Promise<void> {
+  /**
+   * "fade away" heard: if an extended recording is running, stop & save it;
+   * otherwise auto-save the look-back window as a clip right now.
+   */
+  async onWakePhrase(): Promise<void> {
     if (this.status.state === 'recording') {
       await this.stopClip();
     } else if (this.status.state === 'armed') {
-      this.startClip();
+      await this.captureNow();
+    }
+  }
+
+  /** Auto-save the buffered look-back window as a clip. Capture keeps running. */
+  async captureNow(): Promise<Clip | null> {
+    if (this.status.state !== 'armed' || this.saving) {
+      return null;
+    }
+    this.saving = true;
+    this.setStatus({ ...this.status, state: 'saving' });
+    try {
+      await this.source.cut();
+      const segments = this.buffer.flush();
+      if (segments.length === 0) {
+        throw new Error('Buffer is empty — nothing to clip yet.');
+      }
+      const clip = await this.stitch(segments);
+      await clipStore.add(clip);
+      await Promise.all(segments.map(s => RNFS.unlink(s.path).catch(() => {})));
+      this.setStatus({ state: 'armed', bufferedSeconds: 0, lastClip: clip });
+      return clip;
+    } catch (err) {
+      this.setStatus({
+        ...this.status,
+        state: 'armed',
+        lastError: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    } finally {
+      this.saving = false;
     }
   }
 
   /**
-   * Trigger: pin the buffered look-back window and keep recording into the
-   * clip until `stopClip()`.
+   * Manual extended clip: pin the buffered look-back window and keep
+   * recording into the clip until `stopClip()`.
    */
   startClip(): void {
     if (this.status.state !== 'armed') {
