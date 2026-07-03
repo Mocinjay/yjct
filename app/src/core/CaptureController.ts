@@ -1,4 +1,5 @@
 import RNFS from 'react-native-fs';
+import { MAX_CLIP_RECORDING_SECONDS } from '../config';
 import type { DeviceVideoSource } from '../device/DeviceVideoSource';
 import { stitchSegments } from '../native/ClipStitcher';
 import type { Clip, Segment } from '../types';
@@ -6,27 +7,40 @@ import type { WakeWordProvider } from '../wakeword/WakeWordProvider';
 import { clipStore } from './ClipStore';
 import { SegmentRingBuffer } from './SegmentRingBuffer';
 
-export type CaptureState = 'idle' | 'arming' | 'armed' | 'capturing' | 'error';
+export type CaptureState =
+  | 'idle'
+  | 'arming'
+  | 'armed'
+  | 'recording'
+  | 'saving'
+  | 'error';
 
 export interface CaptureStatus {
   state: CaptureState;
   bufferedSeconds: number;
+  /** Epoch ms of the trigger, set while state === 'recording'. */
+  recordingSince?: number;
   lastError?: string;
   lastClip?: Clip;
 }
 
 /**
- * The core loop: while armed, the device source streams segments into the
- * ring buffer; when the wake word fires, the in-flight segment is cut, the
- * covering segments are stitched into a clip, and the clip lands in the
- * library. Capture keeps running afterwards — back-to-back triggers are the
- * whole point.
+ * The core loop, Meta-glasses style:
+ *
+ *   armed      — rolling buffer keeps the last N seconds, evicting old files
+ *   trigger    — the buffered window is pinned and recording CONTINUES
+ *   recording  — everything keeps landing in the clip until stop
+ *   stop       — (wake word again / stop button / safety cap) segments are
+ *                stitched into one clip: [trigger − N seconds … stop]
+ *
+ * The wake word toggles: first detection starts a clip, next one stops it.
  */
 export class CaptureController {
   private buffer: SegmentRingBuffer;
   private status: CaptureStatus = { state: 'idle', bufferedSeconds: 0 };
   private listeners = new Set<(s: CaptureStatus) => void>();
-  private capturing = false;
+  private saving = false;
+  private maxRecordingTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private source: DeviceVideoSource,
@@ -53,7 +67,7 @@ export class CaptureController {
         err => this.setStatus({ ...this.status, state: 'error', lastError: err.message }),
       );
       await this.wakeWord.start(() => {
-        this.captureClip().catch(err =>
+        this.toggleClip().catch(err =>
           this.setStatus({ ...this.status, state: 'error', lastError: String(err) }),
         );
       });
@@ -70,36 +84,76 @@ export class CaptureController {
   }
 
   async disarm(): Promise<void> {
+    this.clearMaxRecordingTimer();
     await this.wakeWord.stop().catch(() => {});
     await this.source.stop().catch(() => {});
     this.buffer.clear();
     this.setStatus({ state: 'idle', bufferedSeconds: 0 });
   }
 
-  /** Trigger a capture manually (mock wake word / debug button). */
-  async captureClip(): Promise<Clip | null> {
-    if (this.capturing) {
-      return null; // trigger fired while a flush is in progress; ignore
+  /** Wake word semantics: say it once to start a clip, again to stop it. */
+  async toggleClip(): Promise<void> {
+    if (this.status.state === 'recording') {
+      await this.stopClip();
+    } else if (this.status.state === 'armed') {
+      this.startClip();
     }
-    this.capturing = true;
-    this.setStatus({ ...this.status, state: 'capturing' });
+  }
+
+  /**
+   * Trigger: pin the buffered look-back window and keep recording into the
+   * clip until `stopClip()`.
+   */
+  startClip(): void {
+    if (this.status.state !== 'armed') {
+      return;
+    }
+    this.buffer.pin();
+    this.setStatus({
+      ...this.status,
+      state: 'recording',
+      recordingSince: Date.now(),
+    });
+    this.maxRecordingTimer = setTimeout(() => {
+      this.stopClip().catch(err =>
+        this.setStatus({ ...this.status, state: 'error', lastError: String(err) }),
+      );
+    }, MAX_CLIP_RECORDING_SECONDS * 1000);
+  }
+
+  /** Stop recording and save [trigger − window … now] as one clip. */
+  async stopClip(): Promise<Clip | null> {
+    if (this.status.state !== 'recording' || this.saving) {
+      return null;
+    }
+    this.saving = true;
+    this.clearMaxRecordingTimer();
+    this.setStatus({ ...this.status, state: 'saving' });
     try {
       await this.source.cut();
-      const segments = this.buffer.flush();
+      const segments = this.buffer.flushFromPin();
       if (segments.length === 0) {
-        throw new Error('Buffer is empty — nothing to clip yet.');
+        throw new Error('Nothing recorded — buffer was empty.');
       }
       const clip = await this.stitch(segments);
       await clipStore.add(clip);
-      // segment files are consumed by the stitch; clean them up
       await Promise.all(segments.map(s => RNFS.unlink(s.path).catch(() => {})));
-      this.setStatus({ ...this.status, state: 'armed', lastClip: clip });
+      this.setStatus({
+        state: 'armed',
+        bufferedSeconds: 0,
+        lastClip: clip,
+      });
       return clip;
+    } catch (err) {
+      this.setStatus({
+        ...this.status,
+        state: 'armed',
+        recordingSince: undefined,
+        lastError: err instanceof Error ? err.message : String(err),
+      });
+      return null;
     } finally {
-      this.capturing = false;
-      if (this.status.state === 'capturing') {
-        this.setStatus({ ...this.status, state: 'armed' });
-      }
+      this.saving = false;
     }
   }
 
@@ -127,6 +181,13 @@ export class CaptureController {
     this.buffer.push(segment);
     if (this.status.state === 'armed') {
       this.setStatus({ ...this.status, bufferedSeconds: this.buffer.totalBufferedSeconds });
+    }
+  }
+
+  private clearMaxRecordingTimer(): void {
+    if (this.maxRecordingTimer) {
+      clearTimeout(this.maxRecordingTimer);
+      this.maxRecordingTimer = null;
     }
   }
 

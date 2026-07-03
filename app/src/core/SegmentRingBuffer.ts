@@ -7,6 +7,8 @@ import type { Segment } from '../types';
  */
 export class SegmentRingBuffer {
   private segments: Segment[] = [];
+  /** Index of the first segment that belongs to an in-progress clip. */
+  private pinnedFrom: number | null = null;
 
   constructor(
     private windowSeconds: number,
@@ -24,6 +26,41 @@ export class SegmentRingBuffer {
   }
 
   /**
+   * Trigger fired: freeze the segments covering the last `windowSeconds` and
+   * stop evicting, so everything recorded from here on is part of the clip
+   * until `flushFromPin()` is called.
+   */
+  pin(): void {
+    if (this.pinnedFrom !== null) {
+      return;
+    }
+    const covering = this.covering();
+    this.pinnedFrom =
+      covering.length > 0 ? this.segments.indexOf(covering[0]) : this.segments.length;
+  }
+
+  get isPinned(): boolean {
+    return this.pinnedFrom !== null;
+  }
+
+  /**
+   * Recording stopped: returns the pinned window plus everything recorded
+   * since the pin, oldest first, and empties the buffer (ownership of the
+   * files passes to the caller). Segments older than the pinned window are
+   * evicted.
+   */
+  flushFromPin(): Segment[] {
+    const start = this.pinnedFrom ?? 0;
+    const out = this.segments.slice(start);
+    for (const seg of this.segments.slice(0, start)) {
+      this.onEvict(seg);
+    }
+    this.segments = [];
+    this.pinnedFrom = null;
+    return out;
+  }
+
+  /**
    * Returns the segments covering the last `windowSeconds`, oldest first,
    * and empties the buffer (ownership of the files passes to the caller).
    */
@@ -35,6 +72,7 @@ export class SegmentRingBuffer {
       }
     }
     this.segments = [];
+    this.pinnedFrom = null;
     return covering;
   }
 
@@ -44,6 +82,7 @@ export class SegmentRingBuffer {
       this.onEvict(seg);
     }
     this.segments = [];
+    this.pinnedFrom = null;
   }
 
   get totalBufferedSeconds(): number {
@@ -69,9 +108,13 @@ export class SegmentRingBuffer {
 
   /**
    * Keep one segment beyond the window so a trigger right after a segment
-   * boundary still covers the full window.
+   * boundary still covers the full window. Eviction is suspended while a
+   * clip recording is pinned.
    */
   private evict(): void {
+    if (this.pinnedFrom !== null) {
+      return;
+    }
     while (this.segments.length > 1) {
       const tail = this.segments.slice(1);
       const tailSeconds = tail.reduce((sum, s) => sum + s.durationSec, 0);

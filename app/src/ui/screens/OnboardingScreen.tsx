@@ -19,9 +19,21 @@ export function OnboardingScreen({ navigation }: Props) {
     <View style={styles.root}>
       <Text style={styles.title}>Never miss a fire moment.</Text>
       <Text style={styles.body}>
-        Say your trigger phrase and the last minute of what your glasses saw
-        becomes a clip — hands free, saved locally, yours to share.
+        Say your trigger phrase and the last 30 seconds are already in the
+        clip — then it keeps recording until you say stop. Hands free, saved
+        locally, yours to share.
       </Text>
+
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>🎥 What Fade Away needs access to</Text>
+        <Text style={styles.cardBody}>
+          • Camera — fills the rolling look-back buffer while armed{'\n'}
+          • Microphone — records clip audio and hears your trigger phrase
+          {'\n'}
+          You'll be asked the first time you arm capture. Nothing is recorded
+          or kept unless you trigger a clip.
+        </Text>
+      </View>
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>⚡ Real talk about battery</Text>

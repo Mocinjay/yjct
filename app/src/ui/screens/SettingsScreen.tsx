@@ -8,10 +8,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import {
-  BUFFER_SECONDS_MAX,
-  BUFFER_SECONDS_MIN,
-} from '../../config';
+import { FREE_BUFFER_SECONDS_MAX } from '../../config';
+import { entitlementStore } from '../../core/EntitlementStore';
 import { settingsStore } from '../../core/SettingsStore';
 import type { Settings } from '../../types';
 import type { RootStackParamList } from '../navigation';
@@ -19,34 +17,53 @@ import { colors, radius, spacing } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Settings'>;
 
-const BUFFER_CHOICES = [30, 45, 60, 90];
+const BUFFER_CHOICES = [30, 60, 90];
 
-export function SettingsScreen(_props: Props) {
+export function SettingsScreen({ navigation }: Props) {
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [isPro, setIsPro] = useState(false);
 
   useEffect(() => {
     settingsStore.get().then(setSettings);
-    return settingsStore.subscribe(setSettings);
+    entitlementStore.isPro().then(setIsPro);
+    const unsubSettings = settingsStore.subscribe(setSettings);
+    const unsubPro = entitlementStore.subscribe(setIsPro);
+    return () => {
+      unsubSettings();
+      unsubPro();
+    };
   }, []);
 
   if (!settings) {
     return <View style={styles.root} />;
   }
 
+  const pickBuffer = (secs: number) => {
+    if (secs > FREE_BUFFER_SECONDS_MAX && !isPro) {
+      navigation.navigate('Paywall');
+      return;
+    }
+    settingsStore.update({ bufferSeconds: secs });
+  };
+
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-      <Section title="Clip length">
+      <Section title="Look-back length">
         <Text style={styles.hint}>
-          How much of the past gets captured when you trigger
-          ({BUFFER_SECONDS_MIN}–{BUFFER_SECONDS_MAX}s).
+          How far back the clip reaches when you trigger. Recording continues
+          until you stop it. 60s and 90s are part of Pro.
         </Text>
         <View style={styles.row}>
           {BUFFER_CHOICES.map(secs => (
             <Choice
               key={secs}
-              label={`${secs}s`}
+              label={
+                secs > FREE_BUFFER_SECONDS_MAX && !isPro
+                  ? `🔒 ${secs}s`
+                  : `${secs}s`
+              }
               selected={settings.bufferSeconds === secs}
-              onPress={() => settingsStore.update({ bufferSeconds: secs })}
+              onPress={() => pickBuffer(secs)}
             />
           ))}
         </View>

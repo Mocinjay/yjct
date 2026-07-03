@@ -6,4 +6,5 @@ export type RootStackParamList = {
   Armed: undefined;
   Player: { clip: Clip };
   Settings: undefined;
+  Paywall: undefined;
 };

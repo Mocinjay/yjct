@@ -16,6 +16,7 @@ export function ArmedScreen({ navigation }: Props) {
     state: 'idle',
     bufferedSeconds: 0,
   });
+  const [now, setNow] = useState(Date.now());
   const armedRef = useRef(false);
   const device = useCameraDevice('back');
 
@@ -42,6 +43,15 @@ export function ArmedScreen({ navigation }: Props) {
     };
   }, [session]);
 
+  // Tick the elapsed-recording clock.
+  useEffect(() => {
+    if (status.state !== 'recording') {
+      return;
+    }
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [status.state]);
+
   const arm = useCallback(() => {
     if (!session || armedRef.current) {
       return;
@@ -60,6 +70,14 @@ export function ArmedScreen({ navigation }: Props) {
   }, [session, arm]);
 
   const trigger = () => session?.mockWakeWord?.fire();
+  const stop = () => {
+    session?.controller.stopClip().catch(() => {});
+  };
+
+  const recording = status.state === 'recording';
+  const recordingSecs = status.recordingSince
+    ? Math.max(0, Math.round((now - status.recordingSince) / 1000))
+    : 0;
 
   return (
     <View style={styles.root}>
@@ -76,26 +94,37 @@ export function ArmedScreen({ navigation }: Props) {
       ) : null}
 
       <View style={styles.overlay}>
-        <View style={styles.statusPill}>
-          <Text style={styles.statusText}>{statusLabel(status)}</Text>
+        <View style={[styles.statusPill, recording && styles.statusPillRec]}>
+          <Text style={styles.statusText}>
+            {statusLabel(status, recordingSecs)}
+          </Text>
         </View>
 
         {status.lastError ? (
           <Text style={styles.error}>{status.lastError}</Text>
         ) : null}
 
-        {status.lastClip ? (
+        {status.lastClip && !recording ? (
           <Text style={styles.saved}>Saved “{status.lastClip.name}”</Text>
         ) : null}
 
         <View style={styles.controls}>
-          {session?.mockWakeWord ? (
+          {recording ? (
+            <Pressable style={styles.stopButton} onPress={stop}>
+              <Text style={styles.triggerText}>■ Stop & save clip</Text>
+            </Pressable>
+          ) : session?.mockWakeWord ? (
             <Pressable style={styles.triggerButton} onPress={trigger}>
               <Text style={styles.triggerText}>Trigger (mock wake word)</Text>
             </Pressable>
           ) : (
             <Text style={styles.listening}>Listening for wake word…</Text>
           )}
+          {recording && session?.mockWakeWord ? (
+            <Text style={styles.listening}>
+              (or say the wake word again to stop)
+            </Text>
+          ) : null}
           <Pressable
             style={styles.disarmButton}
             onPress={() => navigation.goBack()}>
@@ -107,7 +136,7 @@ export function ArmedScreen({ navigation }: Props) {
   );
 }
 
-function statusLabel(status: CaptureStatus): string {
+function statusLabel(status: CaptureStatus, recordingSecs: number): string {
   switch (status.state) {
     case 'idle':
       return 'Starting…';
@@ -115,11 +144,19 @@ function statusLabel(status: CaptureStatus): string {
       return 'Arming…';
     case 'armed':
       return `● Armed — ${Math.round(status.bufferedSeconds)}s buffered`;
-    case 'capturing':
+    case 'recording':
+      return `⦿ REC ${formatElapsed(recordingSecs)} (+ look-back)`;
+    case 'saving':
       return 'Saving clip…';
     case 'error':
       return 'Error';
   }
+}
+
+function formatElapsed(secs: number): string {
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
 }
 
 const styles = StyleSheet.create({
@@ -141,6 +178,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.m,
     paddingVertical: spacing.s,
   },
+  statusPillRec: {
+    backgroundColor: colors.accent,
+  },
   statusText: { color: colors.text, fontSize: 15, fontWeight: '700' },
   error: {
     color: colors.warning,
@@ -157,6 +197,12 @@ const styles = StyleSheet.create({
   controls: { gap: spacing.m },
   triggerButton: {
     backgroundColor: colors.accent,
+    borderRadius: radius.l,
+    paddingVertical: spacing.m,
+    alignItems: 'center',
+  },
+  stopButton: {
+    backgroundColor: '#B3132F',
     borderRadius: radius.l,
     paddingVertical: spacing.m,
     alignItems: 'center',

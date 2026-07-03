@@ -8,6 +8,7 @@ import type { RootStackParamList } from './src/ui/navigation';
 import { ArmedScreen } from './src/ui/screens/ArmedScreen';
 import { LibraryScreen } from './src/ui/screens/LibraryScreen';
 import { ONBOARDED_KEY, OnboardingScreen } from './src/ui/screens/OnboardingScreen';
+import { PaywallScreen } from './src/ui/screens/PaywallScreen';
 import { PlayerScreen } from './src/ui/screens/PlayerScreen';
 import { SettingsScreen } from './src/ui/screens/SettingsScreen';
 import { colors } from './src/ui/theme';
@@ -68,6 +69,11 @@ export default function App() {
             name="Settings"
             component={SettingsScreen}
             options={{ title: 'Settings' }}
+          />
+          <Stack.Screen
+            name="Paywall"
+            component={PaywallScreen}
+            options={{ presentation: 'modal', title: '' }}
           />
         </Stack.Navigator>
       </NavigationContainer>

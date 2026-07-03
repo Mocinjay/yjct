@@ -69,6 +69,57 @@ describe('SegmentRingBuffer', () => {
     expect(evicted).toHaveLength(2);
   });
 
+  it('pin freezes the look-back window and keeps everything after it', () => {
+    const evicted: Segment[] = [];
+    const buf = new SegmentRingBuffer(10, s => evicted.push(s));
+    // 25s buffered before the trigger; window is 10s
+    for (let i = 0; i < 5; i++) {
+      buf.push(seg(i));
+    }
+    buf.pin();
+    // recording continues after the trigger
+    buf.push(seg(5));
+    buf.push(seg(6));
+    // pinned: nothing evicted while recording
+    const evictedDuringRecording = evicted.length;
+
+    const flushed = buf.flushFromPin();
+    // look-back (segs 3,4 cover 10s) + everything after the pin (5,6)
+    expect(flushed.map(s => s.path)).toEqual([
+      '/tmp/seg_3.mp4',
+      '/tmp/seg_4.mp4',
+      '/tmp/seg_5.mp4',
+      '/tmp/seg_6.mp4',
+    ]);
+    expect(buf.size).toBe(0);
+    expect(buf.isPinned).toBe(false);
+    expect(evicted.length).toBeGreaterThanOrEqual(evictedDuringRecording);
+  });
+
+  it('pin on an empty buffer still collects everything recorded afterwards', () => {
+    const buf = new SegmentRingBuffer(30, () => {});
+    buf.pin();
+    buf.push(seg(0));
+    buf.push(seg(1));
+    expect(buf.flushFromPin().map(s => s.path)).toEqual([
+      '/tmp/seg_0.mp4',
+      '/tmp/seg_1.mp4',
+    ]);
+  });
+
+  it('long recordings are never evicted while pinned', () => {
+    const evicted: Segment[] = [];
+    const buf = new SegmentRingBuffer(10, s => evicted.push(s));
+    buf.push(seg(0));
+    buf.pin();
+    // 60s of recording after the trigger — far beyond the 10s window
+    for (let i = 1; i <= 12; i++) {
+      buf.push(seg(i));
+    }
+    expect(evicted).toHaveLength(0);
+    expect(buf.flushFromPin()).toHaveLength(13);
+  });
+
   it('shrinking the window evicts immediately', () => {
     const evicted: Segment[] = [];
     const buf = new SegmentRingBuffer(90, s => evicted.push(s));
