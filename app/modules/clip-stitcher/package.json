@@ -1,0 +1,9 @@
+{
+  "name": "react-native-clip-stitcher",
+  "version": "1.0.0",
+  "description": "Local native module: losslessly concatenates MP4 segments and emits a poster-frame thumbnail.",
+  "private": true,
+  "peerDependencies": {
+    "react-native": "*"
+  }
+}

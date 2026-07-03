@@ -1,0 +1,26 @@
+diff --git a/node_modules/@picovoice/react-native-voice-processor/react-native-voice-processor.podspec b/node_modules/@picovoice/react-native-voice-processor/react-native-voice-processor.podspec
+index 9529917..d8745ed 100644
+--- a/node_modules/@picovoice/react-native-voice-processor/react-native-voice-processor.podspec
++++ b/node_modules/@picovoice/react-native-voice-processor/react-native-voice-processor.podspec
+@@ -19,18 +19,7 @@ Pod::Spec.new do |s|
+   s.dependency "React-Core"
+   s.dependency 'ios-voice-processor', '~> 1.2.0'
+ 
+-  # Don't install the dependencies when we run `pod install` in the old architecture.
+-  if ENV['RCT_NEW_ARCH_ENABLED'] == '1' then
+-    s.compiler_flags = folly_compiler_flags + " -DRCT_NEW_ARCH_ENABLED=1"
+-    s.pod_target_xcconfig    = {
+-        "HEADER_SEARCH_PATHS" => "\"$(PODS_ROOT)/boost\"",
+-        "OTHER_CPLUSPLUSFLAGS" => "-DFOLLY_NO_CONFIG -DFOLLY_MOBILE=1 -DFOLLY_USE_LIBCPP=1",
+-        "CLANG_CXX_LANGUAGE_STANDARD" => "c++17"
+-    }
+-    s.dependency "React-Codegen"
+-    s.dependency "RCT-Folly"
+-    s.dependency "RCTRequired"
+-    s.dependency "RCTTypeSafety"
+-    s.dependency "ReactCommon/turbomodule/core"
+-  end
++  # Legacy module: runs via the new-architecture interop layer. The upstream
++  # podspec's RCT_NEW_ARCH_ENABLED block pulled in RCT-Folly and codegen pods
++  # that no longer exist in RN 0.84+, so it is removed here (see patches/).
+ end

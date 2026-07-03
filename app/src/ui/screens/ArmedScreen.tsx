@@ -1,0 +1,173 @@
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Camera, useCameraDevice } from 'react-native-vision-camera';
+import type { CaptureStatus } from '../../core/CaptureController';
+import type { CaptureSession } from '../../services/capture';
+import { buildCaptureSession } from '../../services/capture';
+import type { RootStackParamList } from '../navigation';
+import { colors, radius, spacing } from '../theme';
+
+type Props = NativeStackScreenProps<RootStackParamList, 'Armed'>;
+
+export function ArmedScreen({ navigation }: Props) {
+  const [session, setSession] = useState<CaptureSession | null>(null);
+  const [status, setStatus] = useState<CaptureStatus>({
+    state: 'idle',
+    bufferedSeconds: 0,
+  });
+  const armedRef = useRef(false);
+  const device = useCameraDevice('back');
+
+  useEffect(() => {
+    let cancelled = false;
+    buildCaptureSession().then(s => {
+      if (!cancelled) {
+        setSession(s);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+    const unsubscribe = session.controller.subscribe(setStatus);
+    return () => {
+      unsubscribe();
+      session.controller.disarm().catch(() => {});
+    };
+  }, [session]);
+
+  const arm = useCallback(() => {
+    if (!session || armedRef.current) {
+      return;
+    }
+    armedRef.current = true;
+    session.controller.arm().catch(() => {
+      // status listener already reflects the error
+    });
+  }, [session]);
+
+  // MWDAT (no viewfinder to wait for): arm as soon as the session exists.
+  useEffect(() => {
+    if (session && !session.mockSource) {
+      arm();
+    }
+  }, [session, arm]);
+
+  const trigger = () => session?.mockWakeWord?.fire();
+
+  return (
+    <View style={styles.root}>
+      {session?.mockSource && device ? (
+        <Camera
+          ref={ref => session.mockSource?.attachCamera(ref)}
+          style={StyleSheet.absoluteFill}
+          device={device}
+          isActive
+          video
+          audio
+          onInitialized={arm}
+        />
+      ) : null}
+
+      <View style={styles.overlay}>
+        <View style={styles.statusPill}>
+          <Text style={styles.statusText}>{statusLabel(status)}</Text>
+        </View>
+
+        {status.lastError ? (
+          <Text style={styles.error}>{status.lastError}</Text>
+        ) : null}
+
+        {status.lastClip ? (
+          <Text style={styles.saved}>Saved “{status.lastClip.name}”</Text>
+        ) : null}
+
+        <View style={styles.controls}>
+          {session?.mockWakeWord ? (
+            <Pressable style={styles.triggerButton} onPress={trigger}>
+              <Text style={styles.triggerText}>Trigger (mock wake word)</Text>
+            </Pressable>
+          ) : (
+            <Text style={styles.listening}>Listening for wake word…</Text>
+          )}
+          <Pressable
+            style={styles.disarmButton}
+            onPress={() => navigation.goBack()}>
+            <Text style={styles.disarmText}>Disarm</Text>
+          </Pressable>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function statusLabel(status: CaptureStatus): string {
+  switch (status.state) {
+    case 'idle':
+      return 'Starting…';
+    case 'arming':
+      return 'Arming…';
+    case 'armed':
+      return `● Armed — ${Math.round(status.bufferedSeconds)}s buffered`;
+    case 'capturing':
+      return 'Saving clip…';
+    case 'error':
+      return 'Error';
+  }
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: colors.bg },
+  overlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'space-between',
+    padding: spacing.l,
+    paddingTop: spacing.xl * 2,
+  },
+  statusPill: {
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    borderRadius: radius.l,
+    paddingHorizontal: spacing.m,
+    paddingVertical: spacing.s,
+  },
+  statusText: { color: colors.text, fontSize: 15, fontWeight: '700' },
+  error: {
+    color: colors.warning,
+    textAlign: 'center',
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    borderRadius: radius.s,
+    padding: spacing.s,
+  },
+  saved: {
+    color: colors.success,
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+  controls: { gap: spacing.m },
+  triggerButton: {
+    backgroundColor: colors.accent,
+    borderRadius: radius.l,
+    paddingVertical: spacing.m,
+    alignItems: 'center',
+  },
+  triggerText: { color: colors.text, fontSize: 16, fontWeight: '800' },
+  listening: { color: colors.textDim, textAlign: 'center', fontSize: 14 },
+  disarmButton: {
+    backgroundColor: colors.surfaceHigh,
+    borderRadius: radius.l,
+    paddingVertical: spacing.m,
+    alignItems: 'center',
+  },
+  disarmText: { color: colors.text, fontSize: 16, fontWeight: '700' },
+});
