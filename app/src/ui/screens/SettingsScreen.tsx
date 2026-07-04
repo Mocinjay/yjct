@@ -11,6 +11,8 @@ import {
 import { FREE_BUFFER_SECONDS_MAX } from '../../config';
 import { entitlementStore } from '../../core/EntitlementStore';
 import { settingsStore } from '../../core/SettingsStore';
+import type { ConnectorConfig } from '../../phase2/ConnectorConfig';
+import { connectorConfigStore } from '../../phase2/ConnectorConfig';
 import type { Settings } from '../../types';
 import type { RootStackParamList } from '../navigation';
 import { colors, radius, spacing } from '../theme';
@@ -22,15 +24,19 @@ const BUFFER_CHOICES = [30, 60, 90];
 export function SettingsScreen({ navigation }: Props) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [isPro, setIsPro] = useState(false);
+  const [connectors, setConnectors] = useState<ConnectorConfig>({});
 
   useEffect(() => {
     settingsStore.get().then(setSettings);
     entitlementStore.isPro().then(setIsPro);
+    connectorConfigStore.get().then(setConnectors);
     const unsubSettings = settingsStore.subscribe(setSettings);
     const unsubPro = entitlementStore.subscribe(setIsPro);
+    const unsubConnectors = connectorConfigStore.subscribe(setConnectors);
     return () => {
       unsubSettings();
       unsubPro();
+      unsubConnectors();
     };
   }, []);
 
@@ -144,6 +150,104 @@ export function SettingsScreen({ navigation }: Props) {
           </>
         ) : null}
       </Section>
+
+      <Section title="Connections (Phase 2 · developer)">
+        <Text style={styles.hint}>
+          Paste sandbox/dev credentials to light up a connector. Production
+          user-facing OAuth replaces this before any store release.
+        </Text>
+
+        <Text style={styles.fieldLabel}>Clip hosting — presign endpoint URL</Text>
+        <TextInput
+          style={styles.input}
+          value={connectors.hostingPresignUrl ?? ''}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="https://…/presign (blank = mock hosting)"
+          placeholderTextColor={colors.textDim}
+          onChangeText={hostingPresignUrl =>
+            connectorConfigStore.update({ hostingPresignUrl })
+          }
+        />
+
+        <Text style={styles.fieldLabel}>Instagram — Graph access token</Text>
+        <TextInput
+          style={styles.input}
+          value={connectors.meta?.accessToken ?? ''}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="needs instagram_content_publish"
+          placeholderTextColor={colors.textDim}
+          onChangeText={accessToken =>
+            connectorConfigStore.update({ meta: { accessToken } })
+          }
+        />
+        <Text style={styles.fieldLabel}>Instagram — IG user id</Text>
+        <TextInput
+          style={styles.input}
+          value={connectors.meta?.igUserId ?? ''}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="Business/Creator account id"
+          placeholderTextColor={colors.textDim}
+          onChangeText={igUserId =>
+            connectorConfigStore.update({ meta: { igUserId } })
+          }
+        />
+
+        <Text style={styles.fieldLabel}>Facebook — Page id</Text>
+        <TextInput
+          style={styles.input}
+          value={connectors.meta?.pageId ?? ''}
+          autoCapitalize="none"
+          autoCorrect={false}
+          onChangeText={pageId => connectorConfigStore.update({ meta: { pageId } })}
+        />
+        <Text style={styles.fieldLabel}>Facebook — Page access token</Text>
+        <TextInput
+          style={styles.input}
+          value={connectors.meta?.pageAccessToken ?? ''}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="needs pages_manage_posts"
+          placeholderTextColor={colors.textDim}
+          onChangeText={pageAccessToken =>
+            connectorConfigStore.update({ meta: { pageAccessToken } })
+          }
+        />
+
+        <Text style={styles.fieldLabel}>TikTok — Content Posting access token</Text>
+        <TextInput
+          style={styles.input}
+          value={connectors.tiktok?.accessToken ?? ''}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="sandbox token until audit clears"
+          placeholderTextColor={colors.textDim}
+          onChangeText={accessToken =>
+            connectorConfigStore.update({ tiktok: { accessToken } })
+          }
+        />
+        <View style={styles.row}>
+          <Choice
+            label={
+              connectors.tiktok?.auditCleared
+                ? '✓ TikTok audit cleared'
+                : 'TikTok audit NOT cleared'
+            }
+            selected={Boolean(connectors.tiktok?.auditCleared)}
+            onPress={() =>
+              connectorConfigStore.update({
+                tiktok: { auditCleared: !connectors.tiktok?.auditCleared },
+              })
+            }
+          />
+        </View>
+        <Text style={styles.warning}>
+          Only flip the audit flag on written confirmation from TikTok. While
+          off, every TikTok post is reported as private — because it is.
+        </Text>
+      </Section>
     </ScrollView>
   );
 }
@@ -188,6 +292,12 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { color: colors.text, fontSize: 17, fontWeight: '700' },
   hint: { color: colors.textDim, fontSize: 13, lineHeight: 18 },
+  fieldLabel: {
+    color: colors.textDim,
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: spacing.s,
+  },
   warning: { color: colors.warning, fontSize: 13, lineHeight: 18 },
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.s },
   choice: {

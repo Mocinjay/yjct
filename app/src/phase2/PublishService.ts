@@ -2,13 +2,18 @@ import type { Clip } from '../types';
 import type { CaptioningProvider } from './CaptioningProvider';
 import type { ClipHosting } from './ClipHosting';
 import { MockClipHosting } from './ClipHosting';
+import { connectorConfigStore } from './ConnectorConfig';
 import { MockCaptioningProvider } from './MockCaptioningProvider';
+import { PresignedUrlClipHosting } from './PresignedUrlClipHosting';
 import type {
   PublishPrivacy,
   PublishStatus,
   PublishTarget,
 } from './PublishTarget';
+import { FacebookPublishTarget } from './targets/FacebookPublishTarget';
+import { InstagramPublishTarget } from './targets/InstagramPublishTarget';
 import { MockPublishTarget } from './targets/MockPublishTarget';
+import { TikTokPublishTarget } from './targets/TikTokPublishTarget';
 import { YouTubePublishTarget } from './targets/YouTubePublishTarget';
 
 export interface PublishOptions {
@@ -19,29 +24,43 @@ export interface PublishOptions {
 }
 
 /**
- * Phase 2 composition root: owns the configured hosting, captioning, and
- * connector instances and runs the pipeline
+ * Phase 2 composition root. Targets and hosting are rebuilt from the stored
+ * connector config on every listTargets() call, so pasting sandbox
+ * credentials in Settings → Connections lights a connector up immediately.
  *
- *   clip → [caption] → [host if target requires it] → uploadAndPublish
- *
- * Swap the mocks for real infra here and nowhere else.
+ * Swap the mock captioner for the real external infra here and nowhere else.
  */
 export class PublishService {
   private captioner: CaptioningProvider = new MockCaptioningProvider();
-  private hosting: ClipHosting = new MockClipHosting();
-  private targets: PublishTarget[] = [
-    // Google OAuth client not created yet → token provider is null and the
-    // target reports unconfigured. First connector to wire per build order.
-    new YouTubePublishTarget(null),
-    new MockPublishTarget(),
-  ];
+  // The mock target keeps state (fake job ids), so it persists across builds.
+  private mockTarget = new MockPublishTarget();
 
-  listTargets(): PublishTarget[] {
-    return this.targets;
+  async listTargets(): Promise<PublishTarget[]> {
+    const cfg = await connectorConfigStore.get();
+    return [
+      // Google OAuth client not created yet → token provider stays null.
+      new YouTubePublishTarget(null),
+      new InstagramPublishTarget({
+        accessToken: cfg.meta?.accessToken,
+        igUserId: cfg.meta?.igUserId,
+      }),
+      new FacebookPublishTarget({
+        pageId: cfg.meta?.pageId,
+        pageAccessToken: cfg.meta?.pageAccessToken,
+      }),
+      new TikTokPublishTarget({
+        accessToken: cfg.tiktok?.accessToken,
+        auditCleared: cfg.tiktok?.auditCleared,
+      }),
+      this.mockTarget,
+    ];
   }
 
-  getTarget(platform: string): PublishTarget | undefined {
-    return this.targets.find(t => t.platform === platform);
+  async getHosting(): Promise<ClipHosting> {
+    const cfg = await connectorConfigStore.get();
+    return cfg.hostingPresignUrl
+      ? new PresignedUrlClipHosting(cfg.hostingPresignUrl)
+      : new MockClipHosting();
   }
 
   async publish(
@@ -59,7 +78,8 @@ export class PublishService {
 
     let hostedUrl: string | undefined;
     if (target.requiresHostedUrl) {
-      hostedUrl = (await this.hosting.upload(filePath)).hostedUrl;
+      const hosting = await this.getHosting();
+      hostedUrl = (await hosting.upload(filePath)).hostedUrl;
     }
 
     return target.uploadAndPublish(

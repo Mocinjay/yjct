@@ -32,10 +32,17 @@
 
 **Battery honesty.** Armed mode holds an open camera+mic session continuously. Onboarding states this before the user ever arms it.
 
-## Phase 2 seams (interfaces only — no implementations in Phase 1)
+## Phase 2 (implemented mock-first; credentials pending)
 
-- `CaptioningProvider`: `(clipFile) → captionedClipFile`. Pluggable; the interface is the deliverable, never a hardcoded vendor.
-- `PublishTarget`: `authenticate()`, `uploadAndPublish(clip, caption, privacy)`, `checkStatus()`. One isolated module per platform. TikTok additionally requires a per-clip preview + explicit consent step before anything leaves the device, and must surface *actual* post visibility (private during audit) back to the UI.
+- `CaptioningProvider`: `(clipFile) → captionedClipFile`. Pluggable; the interface is the deliverable — real captioning is external infra. `MockCaptioningProvider` exercises the pipeline.
+- `ClipHosting`: presign-endpoint implementation (`PresignedUrlClipHosting`, vendor-neutral) + mock. IG/TikTok require a public HTTPS URL; a local path is never sufficient.
+- `PublishTarget` connectors, one isolated module each (`src/phase2/targets/`):
+  - **YouTube Shorts** — direct resumable upload, OAuth injected via `GoogleTokenProvider` (null until a Google OAuth client exists; needs Google API verification before release).
+  - **Instagram Reels** — Graph API container flow (`media_type=REELS` → poll `status_code` → `media_publish`). Needs Business/Creator account + Meta App Review.
+  - **Facebook** — `/{page-id}/videos` with `file_url`. Same Meta app, SAME App Review submission as Instagram (bundled, never filed separately).
+  - **TikTok** — Content Posting API Direct Post (PULL_FROM_URL). Consent dialog gates every publish; until the manual audit is confirmed in writing (`auditCleared` flag), status reports posts as private — because the platform forces them private.
+- `PublishService` pipeline: caption (Pro) → host (if the target requires it) → `uploadAndPublish` → status polling with requested-vs-actual visibility surfaced honestly.
+- Sandbox/dev credentials live in `ConnectorConfigStore` (Settings → Connections); each connector reports `isConfigured()=false` until its fields exist, so the UI never pretends a platform works.
 
 ## Native modules
 

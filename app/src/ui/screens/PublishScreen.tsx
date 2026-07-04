@@ -39,12 +39,17 @@ export function PublishScreen({ route }: Props) {
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    Promise.all(
-      publishService.listTargets().map(async target => ({
-        target,
-        ready: await target.isConfigured(),
-      })),
-    ).then(setTargets);
+    publishService
+      .listTargets()
+      .then(list =>
+        Promise.all(
+          list.map(async target => ({
+            target,
+            ready: await target.isConfigured(),
+          })),
+        ),
+      )
+      .then(setTargets);
     return () => {
       if (pollTimer.current) {
         clearInterval(pollTimer.current);
