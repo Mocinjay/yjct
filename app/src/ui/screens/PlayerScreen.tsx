@@ -9,9 +9,11 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import RNFS from 'react-native-fs';
 import Video from 'react-native-video';
 import { clipStore } from '../../core/ClipStore';
 import { entitlementStore } from '../../core/EntitlementStore';
+import { publishService } from '../../phase2/PublishService';
 import type { RootStackParamList } from '../navigation';
 import { colors, radius, spacing } from '../theme';
 import { shareClip } from './LibraryScreen';
@@ -35,6 +37,37 @@ export function PlayerScreen({ route, navigation }: Props) {
       navigation.navigate('Publish', { clip });
     } else {
       navigation.navigate('Paywall');
+    }
+  };
+
+  const [captioning, setCaptioning] = useState(false);
+  const captionClip = async () => {
+    if (!isPro) {
+      navigation.navigate('Paywall');
+      return;
+    }
+    setCaptioning(true);
+    try {
+      const captioner = await publishService.getCaptioner();
+      const { captionedFilePath } = await captioner.caption(clip.filePath);
+      // The captioned version becomes its own library entry.
+      const id = `clip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const thumbnailPath = captionedFilePath.replace(/\.mp4$/, '.jpg');
+      await RNFS.copyFile(clip.thumbnailPath, thumbnailPath);
+      await clipStore.add({
+        ...clip,
+        id,
+        name: `${name} · captioned`,
+        filePath: captionedFilePath,
+        thumbnailPath,
+        capturedAt: Date.now(),
+      });
+      Alert.alert('Captioned', 'The captioned clip was added to your library.');
+      navigation.goBack();
+    } catch (e) {
+      Alert.alert('Captioning failed', e instanceof Error ? e.message : String(e));
+    } finally {
+      setCaptioning(false);
     }
   };
 
@@ -83,6 +116,10 @@ export function PlayerScreen({ route, navigation }: Props) {
         <ActionButton
           label={isPro ? 'Publish' : '🔒 Publish'}
           onPress={publish}
+        />
+        <ActionButton
+          label={captioning ? 'Captioning…' : isPro ? 'Caption' : '🔒 Caption'}
+          onPress={captioning ? () => {} : captionClip}
         />
         <ActionButton label="Rename" onPress={() => setRenaming(true)} />
         <ActionButton label="Delete" onPress={confirmDelete} destructive />

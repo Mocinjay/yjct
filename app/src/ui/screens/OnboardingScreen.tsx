@@ -17,7 +17,7 @@ export function OnboardingScreen({ navigation }: Props) {
 
   return (
     <View style={styles.root}>
-      <Text style={styles.title}>Never miss a fire moment.</Text>
+      <Text style={styles.title}>Yo Jarvis, clip that.</Text>
       <Text style={styles.body}>
         Say your trigger phrase and the last 30 seconds are already in the
         clip — then it keeps recording until you say stop. Hands free, saved

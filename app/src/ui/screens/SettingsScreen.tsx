@@ -170,6 +170,19 @@ export function SettingsScreen({ navigation }: Props) {
           }
         />
 
+        <Text style={styles.fieldLabel}>Captioning service URL (Pro)</Text>
+        <TextInput
+          style={styles.input}
+          value={connectors.captioningUrl ?? ''}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="http://<mac-ip>:8787 (blank = mock captioner)"
+          placeholderTextColor={colors.textDim}
+          onChangeText={captioningUrl =>
+            connectorConfigStore.update({ captioningUrl })
+          }
+        />
+
         <Text style={styles.fieldLabel}>Instagram — Graph access token</Text>
         <TextInput
           style={styles.input}

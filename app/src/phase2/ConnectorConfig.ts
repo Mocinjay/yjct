@@ -34,6 +34,11 @@ export interface ConnectorConfig {
    * {uploadUrl, publicUrl}. When unset, the mock hosting is used.
    */
   hostingPresignUrl?: string;
+  /**
+   * Base URL of the captioning service (see server/captioning). When unset,
+   * the mock captioner is used.
+   */
+  captioningUrl?: string;
 }
 
 const KEY = 'connectorConfig.v1';

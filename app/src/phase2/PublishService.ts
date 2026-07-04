@@ -3,6 +3,7 @@ import type { CaptioningProvider } from './CaptioningProvider';
 import type { ClipHosting } from './ClipHosting';
 import { MockClipHosting } from './ClipHosting';
 import { connectorConfigStore } from './ConnectorConfig';
+import { HttpCaptioningProvider } from './HttpCaptioningProvider';
 import { MockCaptioningProvider } from './MockCaptioningProvider';
 import { PresignedUrlClipHosting } from './PresignedUrlClipHosting';
 import type {
@@ -31,9 +32,15 @@ export interface PublishOptions {
  * Swap the mock captioner for the real external infra here and nowhere else.
  */
 export class PublishService {
-  private captioner: CaptioningProvider = new MockCaptioningProvider();
   // The mock target keeps state (fake job ids), so it persists across builds.
   private mockTarget = new MockPublishTarget();
+
+  async getCaptioner(): Promise<CaptioningProvider> {
+    const cfg = await connectorConfigStore.get();
+    return cfg.captioningUrl
+      ? new HttpCaptioningProvider(cfg.captioningUrl)
+      : new MockCaptioningProvider();
+  }
 
   async listTargets(): Promise<PublishTarget[]> {
     const cfg = await connectorConfigStore.get();
@@ -72,7 +79,8 @@ export class PublishService {
 
     let filePath = clip.filePath;
     if (options.withCaptions) {
-      const captioned = await this.captioner.caption(filePath);
+      const captioner = await this.getCaptioner();
+      const captioned = await captioner.caption(filePath);
       filePath = captioned.captionedFilePath;
     }
 

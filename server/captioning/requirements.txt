@@ -1,0 +1,6 @@
+# Pinned deliberately — the repo we studied shipped unpinned deps with known
+# CVEs (flagged by SkillSpector); we don't repeat that.
+fastapi==0.115.12
+uvicorn==0.34.2
+python-multipart==0.0.20
+faster-whisper==1.1.1
