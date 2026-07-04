@@ -15,8 +15,11 @@ export const SEGMENT_SECONDS = 5;
  */
 export const MAX_CLIP_RECORDING_SECONDS = 180;
 
-/** The product's trigger phrase. Saying it auto-saves the look-back clip. */
-export const WAKE_PHRASE = 'fade away';
+/**
+ * The product's trigger phrase ("Yo Jarvis, clip that"). "jarvis" is a
+ * Porcupine BUILT-IN keyword — no custom model training required.
+ */
+export const WAKE_PHRASE = 'jarvis';
 
 export const DEFAULT_SETTINGS: Settings = {
   bufferSeconds: 30,

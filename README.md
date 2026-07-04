@@ -1,4 +1,4 @@
-# Fade Away — *"Yo Jarvis, clip that."*
+# Jarvis — *"Yo Jarvis, clip that."*
 
 Mobile companion app (iOS + Android) for Meta smart glasses (Ray-Ban Meta, Oakley Meta HSTN, Ray-Ban Display), built for clippers/streamers.
 

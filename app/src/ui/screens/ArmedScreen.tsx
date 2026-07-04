@@ -119,12 +119,12 @@ export function ArmedScreen({ navigation }: Props) {
               {session?.mockWakeWord ? (
                 <Pressable style={styles.triggerButton} onPress={sayWakePhrase}>
                   <Text style={styles.triggerText}>
-                    “Fade away” (mock) — save last 30s
+                    “Yo Jarvis, clip that” (mock) — save last 30s
                   </Text>
                 </Pressable>
               ) : (
                 <Text style={styles.listening}>
-                  Say “fade away” to save the last moments…
+                  Say “Jarvis” to clip the last moments…
                 </Text>
               )}
               <Pressable style={styles.extendedButton} onPress={startExtended}>
@@ -134,7 +134,7 @@ export function ArmedScreen({ navigation }: Props) {
           )}
           {recording && session?.mockWakeWord ? (
             <Text style={styles.listening}>
-              (or say “fade away” again to stop)
+              (or say “Jarvis” again to stop)
             </Text>
           ) : null}
           <Pressable

@@ -21,6 +21,14 @@ export class SettingsStore {
       this.cached = raw
         ? { ...DEFAULT_SETTINGS, ...(JSON.parse(raw) as Partial<Settings>) }
         : DEFAULT_SETTINGS;
+      // Brand migration: the old "fade away" default needed a custom-trained
+      // model; "jarvis" is a Porcupine built-in. Migrate the old default only.
+      if (this.cached.wakeWord.keyword === 'fade away') {
+        this.cached = {
+          ...this.cached,
+          wakeWord: { ...this.cached.wakeWord, keyword: 'jarvis' },
+        };
+      }
     } catch {
       this.cached = DEFAULT_SETTINGS;
     }

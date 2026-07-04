@@ -19,13 +19,13 @@ export function OnboardingScreen({ navigation }: Props) {
     <View style={styles.root}>
       <Text style={styles.title}>Yo Jarvis, clip that.</Text>
       <Text style={styles.body}>
-        Say your trigger phrase and the last 30 seconds are already in the
-        clip — then it keeps recording until you say stop. Hands free, saved
-        locally, yours to share.
+        Say “Jarvis” and the last 30 seconds are already saved — no buttons,
+        no fumbling for your phone. Hands free, stored locally, yours to
+        share.
       </Text>
 
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>🎥 What Fade Away needs access to</Text>
+        <Text style={styles.cardTitle}>🎥 What Jarvis needs access to</Text>
         <Text style={styles.cardBody}>
           • Camera — fills the rolling look-back buffer while armed{'\n'}
           • Microphone — records clip audio and hears your trigger phrase

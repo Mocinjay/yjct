@@ -28,7 +28,7 @@ export interface CaptureStatus {
  * The core loop:
  *
  *   armed      — rolling buffer keeps the last N seconds, evicting old files
- *   "fade away" — the wake phrase AUTO-SAVES the look-back window as a clip
+ *   "jarvis"   — the wake word AUTO-SAVES the look-back window as a clip
  *   extended   — the manual REC button instead pins the window and keeps
  *                recording until stopped (stop button / wake phrase /
  *                safety cap): [start − N seconds … stop]
@@ -90,7 +90,7 @@ export class CaptureController {
   }
 
   /**
-   * "fade away" heard: if an extended recording is running, stop & save it;
+   * Wake word heard: if an extended recording is running, stop & save it;
    * otherwise auto-save the look-back window as a clip right now.
    */
   async onWakePhrase(): Promise<void> {

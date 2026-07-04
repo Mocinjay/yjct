@@ -9,16 +9,15 @@ import type { WakeWordProvider } from './WakeWordProvider';
  * Picovoice Porcupine keyword spotting — fully on-device, no audio leaves
  * the phone.
  *
- * The product trigger phrase "fade away" is a CUSTOM keyword, which needs a
- * .ppn model per platform (free to train at console.picovoice.ai →
- * Porcupine → type the phrase → download for iOS + Android):
+ * The product trigger word "jarvis" is a Porcupine BUILT-IN keyword — it
+ * works out of the box with just a (free) Picovoice AccessKey, no model
+ * training needed.
  *
- *   Android: app/android/app/src/main/assets/wakewords/fade-away_android.ppn
- *   iOS:     add fade-away_ios.ppn to the Xcode project (FadeAway target,
- *            "Copy items if needed") — it must land in the app bundle.
- *
- * Porcupine resolves these as asset/bundle-relative paths. Built-in
- * keywords (jarvis, computer, …) still work by name for quick testing.
+ * Custom phrases are still supported: train a .ppn per platform at
+ * console.picovoice.ai and bundle it —
+ *   Android: app/android/app/src/main/assets/wakewords/<slug>_android.ppn
+ *   iOS:     add <slug>_ios.ppn to the Xcode project ("Copy items if
+ *            needed") so it lands in the app bundle.
  */
 export class PorcupineWakeWord implements WakeWordProvider {
   readonly name = 'porcupine';

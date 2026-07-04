@@ -31,7 +31,7 @@ export function PaywallScreen({ navigation }: Props) {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-      <Text style={styles.kicker}>FADE AWAY PRO</Text>
+      <Text style={styles.kicker}>JARVIS PRO</Text>
       <Text style={styles.title}>Longer look-back.{'\n'}Bigger moments.</Text>
       <Text style={styles.price}>$15/month</Text>
 
