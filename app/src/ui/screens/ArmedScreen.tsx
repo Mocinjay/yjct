@@ -70,6 +70,9 @@ export function ArmedScreen({ navigation }: Props) {
   }, [session, arm]);
 
   const sayWakePhrase = () => session?.mockWakeWord?.fire();
+  const clipNow = () => {
+    session?.controller.captureNow().catch(() => {});
+  };
   const startExtended = () => session?.controller.startClip();
   const stop = () => {
     session?.controller.stopClip().catch(() => {});
@@ -119,14 +122,17 @@ export function ArmedScreen({ navigation }: Props) {
               {session?.mockWakeWord ? (
                 <Pressable style={styles.triggerButton} onPress={sayWakePhrase}>
                   <Text style={styles.triggerText}>
-                    “Yo Jarvis, clip that” (mock) — save last 30s
+                    “Yo Jarvis, clip that” (mock trigger)
                   </Text>
                 </Pressable>
               ) : (
                 <Text style={styles.listening}>
-                  Say “Jarvis” to clip the last moments…
+                  🎙 Listening — say “yo Jarvis, clip that”
                 </Text>
               )}
+              <Pressable style={styles.clipNowButton} onPress={clipNow}>
+                <Text style={styles.triggerText}>✂️ Clip now</Text>
+              </Pressable>
               <Pressable style={styles.extendedButton} onPress={startExtended}>
                 <Text style={styles.triggerText}>⦿ Extended clip (record on)</Text>
               </Pressable>
@@ -155,7 +161,7 @@ function statusLabel(status: CaptureStatus, recordingSecs: number): string {
     case 'arming':
       return 'Arming…';
     case 'armed':
-      return `● Armed — ${Math.round(status.bufferedSeconds)}s buffered`;
+      return `● Recording — last ${Math.round(status.bufferedSeconds)}s ready to clip`;
     case 'recording':
       return `⦿ REC ${formatElapsed(recordingSecs)} (+ look-back)`;
     case 'saving':
@@ -209,6 +215,12 @@ const styles = StyleSheet.create({
   controls: { gap: spacing.m },
   triggerButton: {
     backgroundColor: colors.accent,
+    borderRadius: radius.l,
+    paddingVertical: spacing.m,
+    alignItems: 'center',
+  },
+  clipNowButton: {
+    backgroundColor: '#1E6FEB',
     borderRadius: radius.l,
     paddingVertical: spacing.m,
     alignItems: 'center',

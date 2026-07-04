@@ -8,6 +8,7 @@ import { MWDATSource } from '../device/MWDATSource';
 import type { Settings } from '../types';
 import { MockWakeWord } from '../wakeword/MockWakeWord';
 import { PorcupineWakeWord } from '../wakeword/PorcupineWakeWord';
+import { SpeechWakeWord } from '../wakeword/SpeechWakeWord';
 import type { WakeWordProvider } from '../wakeword/WakeWordProvider';
 
 /**
@@ -58,6 +59,9 @@ function buildWakeWord(settings: Settings): {
   const { provider, picovoiceAccessKey, keyword } = settings.wakeWord;
   if (provider === 'porcupine' && picovoiceAccessKey) {
     return { wakeWord: new PorcupineWakeWord(picovoiceAccessKey, keyword) };
+  }
+  if (provider === 'speech') {
+    return { wakeWord: new SpeechWakeWord() };
   }
   const mockWakeWord = new MockWakeWord();
   return { wakeWord: mockWakeWord, mockWakeWord };

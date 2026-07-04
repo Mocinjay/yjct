@@ -6,7 +6,8 @@ import {
 } from '../config';
 import type { Settings } from '../types';
 
-const KEY = 'settings.v1';
+const KEY = 'settings.v2';
+const LEGACY_KEY = 'settings.v1';
 
 export class SettingsStore {
   private cached: Settings | null = null;
@@ -18,16 +19,27 @@ export class SettingsStore {
     }
     try {
       const raw = await AsyncStorage.getItem(KEY);
-      this.cached = raw
-        ? { ...DEFAULT_SETTINGS, ...(JSON.parse(raw) as Partial<Settings>) }
-        : DEFAULT_SETTINGS;
-      // Brand migration: the old "fade away" default needed a custom-trained
-      // model; "jarvis" is a Porcupine built-in. Migrate the old default only.
-      if (this.cached.wakeWord.keyword === 'fade away') {
+      if (raw) {
         this.cached = {
-          ...this.cached,
-          wakeWord: { ...this.cached.wakeWord, keyword: 'jarvis' },
+          ...DEFAULT_SETTINGS,
+          ...(JSON.parse(raw) as Partial<Settings>),
         };
+      } else {
+        // One-time v1 → v2 migration: old defaults were the mock trigger
+        // and the "fade away" phrase; the product default is now keyless
+        // speech recognition for "jarvis". Explicit v2 choices stick.
+        const legacy = await AsyncStorage.getItem(LEGACY_KEY);
+        const migrated: Settings = legacy
+          ? { ...DEFAULT_SETTINGS, ...(JSON.parse(legacy) as Partial<Settings>) }
+          : DEFAULT_SETTINGS;
+        if (migrated.wakeWord.provider === 'mock') {
+          migrated.wakeWord = { ...migrated.wakeWord, provider: 'speech' };
+        }
+        if (migrated.wakeWord.keyword === 'fade away') {
+          migrated.wakeWord = { ...migrated.wakeWord, keyword: 'jarvis' };
+        }
+        this.cached = migrated;
+        await AsyncStorage.setItem(KEY, JSON.stringify(migrated));
       }
     } catch {
       this.cached = DEFAULT_SETTINGS;

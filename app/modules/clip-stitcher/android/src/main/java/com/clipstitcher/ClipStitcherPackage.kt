@@ -7,7 +7,7 @@ import com.facebook.react.uimanager.ViewManager
 
 class ClipStitcherPackage : ReactPackage {
   override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> =
-    listOf(ClipStitcherModule(reactContext))
+    listOf(ClipStitcherModule(reactContext), SpeechWakeWordModule(reactContext))
 
   override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> =
     emptyList()

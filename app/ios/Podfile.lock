@@ -2340,7 +2340,7 @@ EXTERNAL SOURCES:
 
 SPEC CHECKSUMS:
   AsyncStorage: 163ab23f6aa37a58b7f2379d0b4ee7ac84d6655c
-  ClipStitcher: f1fdbff35011118a0a3fdbe9fe8aa901ddeb5131
+  ClipStitcher: 97dbcd0905a6220d32a1f034d96ef98be5693d0b
   FBLazyVector: b3e7ad108f0d882e30445c5527d774e3fd432f3d
   hermes-engine: 2d5f60a5101e2f3b384977a2f645cd6f061d2a12
   ios-voice-processor: 6b5ca08962f39e434fe39dca0f483d923a3b1b97

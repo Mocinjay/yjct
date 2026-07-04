@@ -29,7 +29,12 @@ export interface Settings {
 }
 
 export interface WakeWordConfig {
-  provider: 'mock' | 'porcupine';
+  /**
+   * speech    — OS built-in speech recognition, keyless (default)
+   * porcupine — Picovoice keyword spotting (needs a free access key)
+   * mock      — manual on-screen trigger button (dev/simulator)
+   */
+  provider: 'speech' | 'mock' | 'porcupine';
   /** Picovoice access key; required for the porcupine provider. */
   picovoiceAccessKey?: string;
   /** Built-in Porcupine keyword to listen for. */

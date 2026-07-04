@@ -210,6 +210,9 @@ export class CaptureController {
 
   private onSegment(segment: Segment): void {
     this.buffer.push(segment);
+    // Segment-based wake detection (built-in speech recognition) listens to
+    // the audio we already recorded — fire-and-forget, never blocks.
+    this.wakeWord.feedSegment?.(segment.path);
     if (this.status.state === 'armed') {
       this.setStatus({ ...this.status, bufferedSeconds: this.buffer.totalBufferedSeconds });
     }

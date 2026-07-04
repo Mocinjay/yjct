@@ -12,4 +12,10 @@ export interface WakeWordProvider {
   start(onDetected: () => void): Promise<void>;
 
   stop(): Promise<void>;
+
+  /**
+   * Optional: providers that detect from recorded audio (rather than a live
+   * mic stream) receive each rolling segment file as it lands.
+   */
+  feedSegment?(path: string): void;
 }

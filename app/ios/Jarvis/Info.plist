@@ -34,9 +34,11 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Fade Away buffers video from your camera while armed so your trigger phrase can save the last moments as a clip.</string>
+	<string>Jarvis buffers video from your camera while recording so “yo Jarvis, clip that” can save the last moments as a clip.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Fade Away records audio with your clips and listens on-device for your trigger phrase. No audio leaves your phone.</string>
+	<string>Jarvis records audio with your clips and listens on-device for your trigger phrase. No audio leaves your phone.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Jarvis transcribes your recording on-device to hear “yo Jarvis, clip that”. Nothing is sent anywhere.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

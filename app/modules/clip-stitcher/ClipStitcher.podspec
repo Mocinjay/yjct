@@ -8,7 +8,7 @@ Pod::Spec.new do |s|
   s.platforms    = { :ios => "16.0" }
   s.source       = { :path => "." }
   s.source_files = "ios/**/*.{h,m}"
-  s.frameworks   = "AVFoundation", "CoreMedia", "UIKit"
+  s.frameworks   = "AVFoundation", "CoreMedia", "UIKit", "Speech"
 
   s.dependency "React-Core"
 end

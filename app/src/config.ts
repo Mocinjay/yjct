@@ -25,7 +25,9 @@ export const DEFAULT_SETTINGS: Settings = {
   bufferSeconds: 30,
   deviceKind: 'mock',
   wakeWord: {
-    provider: 'mock',
+    // Keyless OS speech recognition out of the box — say "yo Jarvis, clip
+    // that" with zero setup. Porcupine remains an opt-in for lower latency.
+    provider: 'speech',
     keyword: WAKE_PHRASE,
   },
 };

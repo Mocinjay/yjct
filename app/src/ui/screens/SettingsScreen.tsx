@@ -96,19 +96,19 @@ export function SettingsScreen({ navigation }: Props) {
         ) : null}
       </Section>
 
-      <Section title="Wake word">
+      <Section title="Voice trigger — “yo Jarvis, clip that”">
         <View style={styles.row}>
           <Choice
-            label="Mock (button)"
-            selected={settings.wakeWord.provider === 'mock'}
+            label="Built-in (no key)"
+            selected={settings.wakeWord.provider === 'speech'}
             onPress={() =>
               settingsStore.update({
-                wakeWord: { ...settings.wakeWord, provider: 'mock' },
+                wakeWord: { ...settings.wakeWord, provider: 'speech' },
               })
             }
           />
           <Choice
-            label="Porcupine (on-device)"
+            label="Porcupine (needs key)"
             selected={settings.wakeWord.provider === 'porcupine'}
             onPress={() =>
               settingsStore.update({
@@ -116,7 +116,24 @@ export function SettingsScreen({ navigation }: Props) {
               })
             }
           />
+          <Choice
+            label="Manual button"
+            selected={settings.wakeWord.provider === 'mock'}
+            onPress={() =>
+              settingsStore.update({
+                wakeWord: { ...settings.wakeWord, provider: 'mock' },
+              })
+            }
+          />
         </View>
+        {settings.wakeWord.provider === 'speech' ? (
+          <Text style={styles.hint}>
+            Uses your phone's own speech recognition — free, on-device, no
+            account. Detection lands a few seconds after you say it; the clip
+            still contains the moment. Porcupine reacts faster if you ever
+            want to upgrade.
+          </Text>
+        ) : null}
         {settings.wakeWord.provider === 'porcupine' ? (
           <>
             <Text style={styles.hint}>
