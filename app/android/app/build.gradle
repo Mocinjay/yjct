@@ -79,7 +79,7 @@ android {
 
     namespace "com.fadeaway"
     defaultConfig {
-        applicationId "com.fadeaway"
+        applicationId "com.mocinjay.jarvis"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
