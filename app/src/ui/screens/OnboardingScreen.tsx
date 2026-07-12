@@ -1,113 +1,115 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Button, Card, RecDot } from '../components';
 import type { RootStackParamList } from '../navigation';
-import { colors, radius, spacing } from '../theme';
+import { colors, radius, spacing, type } from '../theme';
 
 export const ONBOARDED_KEY = 'onboarded.v1';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Onboarding'>;
 
 export function OnboardingScreen({ navigation }: Props) {
+  const insets = useSafeAreaInsets();
   const done = async () => {
     await AsyncStorage.setItem(ONBOARDED_KEY, 'true');
     navigation.replace('Library');
   };
 
   return (
-    <View style={styles.root}>
-      <Text style={styles.title}>Yo Jarvis, clip that.</Text>
-      <Text style={styles.body}>
-        Say “Jarvis” and the last 30 seconds are already saved — no buttons,
-        no fumbling for your phone. Hands free, stored locally, yours to
-        share.
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={[
+        styles.content,
+        { paddingTop: insets.top + spacing.xxl, paddingBottom: insets.bottom + spacing.l },
+      ]}>
+      <View style={styles.kickerRow}>
+        <RecDot size={9} live={false} />
+        <Text style={styles.kicker}>JARVIS</Text>
+      </View>
+      <Text style={styles.hero}>Yo Jarvis,{'\n'}clip that.</Text>
+      <Text style={styles.lede}>
+        The moment already happened — Jarvis already has it. Say the words and
+        the last 30 seconds are saved. No buttons, no fumbling.
       </Text>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>🎥 What Jarvis needs access to</Text>
-        <Text style={styles.cardBody}>
-          • Camera — fills the rolling look-back buffer while armed{'\n'}
-          • Microphone — records clip audio and hears your trigger phrase
-          {'\n'}
-          You'll be asked the first time you arm capture. Nothing is recorded
-          or kept unless you trigger a clip.
-        </Text>
+      <View style={styles.features}>
+        <Feature
+          title="Voice is the trigger"
+          body="Your phone's own speech recognition listens for the phrase. No accounts, nothing set up."
+        />
+        <Feature
+          title="Always looking back"
+          body="While recording, a rolling buffer keeps the recent past ready. Clip it as many times as you want."
+        />
+        <Feature
+          title="Yours, locally"
+          body="Clips land in your library on this phone. Share them anywhere with the normal share sheet."
+        />
       </View>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>⚡ Real talk about battery</Text>
+      <Card>
+        <Text style={styles.cardTitle}>What Jarvis will ask for</Text>
         <Text style={styles.cardBody}>
-          While armed, this app keeps the camera and microphone session open
-          continuously and listens for your trigger phrase on-device. That
-          costs meaningful battery on both your glasses and your phone —
-          expect noticeably faster drain during long armed sessions. Disarm
+          Camera and microphone — to fill the look-back buffer — and speech
+          recognition, to hear the trigger phrase. You'll see the prompts the
+          first time you record. Nothing is kept unless you clip it, and no
+          audio leaves the device.
+        </Text>
+      </Card>
+
+      <Card style={styles.batteryCard}>
+        <Text style={styles.cardTitle}>Real talk about battery</Text>
+        <Text style={styles.cardBody}>
+          Recording keeps the camera and mic open continuously and transcribes
+          on-device. Long sessions drain noticeably faster — stop recording
           when you're not capturing.
         </Text>
-      </View>
+      </Card>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>🔒 Private by default</Text>
-        <Text style={styles.cardBody}>
-          Wake-word detection runs entirely on this phone — no audio leaves
-          the device. Clips stay in your local library until you choose to
-          share them.
-        </Text>
-      </View>
+      <Button label="Let's clip" tone="accent" onPress={done} style={styles.cta} />
+    </ScrollView>
+  );
+}
 
-      <Pressable style={styles.cta} onPress={done}>
-        <Text style={styles.ctaText}>Got it — let's clip</Text>
-      </Pressable>
+function Feature({ title, body }: { title: string; body: string }) {
+  return (
+    <View style={styles.feature}>
+      <View style={styles.featureBullet} />
+      <View style={styles.featureText}>
+        <Text style={styles.featureTitle}>{title}</Text>
+        <Text style={styles.featureBody}>{body}</Text>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: colors.bg,
-    padding: spacing.l,
-    justifyContent: 'center',
-  },
-  title: {
-    color: colors.text,
-    fontSize: 32,
-    fontWeight: '800',
-    marginBottom: spacing.m,
-  },
-  body: {
-    color: colors.textDim,
-    fontSize: 16,
-    lineHeight: 22,
-    marginBottom: spacing.l,
-  },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.m,
-    padding: spacing.m,
-    marginBottom: spacing.m,
-  },
-  cardTitle: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '700',
-    marginBottom: spacing.s,
-  },
-  cardBody: {
-    color: colors.textDim,
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  cta: {
+  root: { flex: 1, backgroundColor: colors.bg },
+  content: { paddingHorizontal: spacing.l, gap: spacing.m },
+  kickerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.s },
+  kicker: { ...type.label, color: colors.textDim },
+  hero: { ...type.hero, color: colors.text },
+  lede: { ...type.body, fontSize: 16, lineHeight: 24, color: colors.textDim },
+  features: { gap: spacing.m, marginVertical: spacing.m },
+  feature: { flexDirection: 'row', gap: spacing.m, alignItems: 'flex-start' },
+  featureBullet: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
     backgroundColor: colors.accent,
-    borderRadius: radius.l,
-    paddingVertical: spacing.m,
-    alignItems: 'center',
-    marginTop: spacing.l,
+    marginTop: 5,
   },
-  ctaText: {
-    color: colors.text,
-    fontSize: 17,
-    fontWeight: '700',
+  featureText: { flex: 1, gap: 2 },
+  featureTitle: { color: colors.text, fontSize: 16, fontWeight: '700' },
+  featureBody: { ...type.caption, color: colors.textDim },
+  cardTitle: { color: colors.text, fontSize: 15, fontWeight: '700' },
+  cardBody: { ...type.caption, color: colors.textDim },
+  batteryCard: {
+    borderColor: 'rgba(255,214,10,0.25)',
+    borderRadius: radius.m,
   },
+  cta: { marginTop: spacing.m },
 });

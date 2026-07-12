@@ -45,7 +45,16 @@ export default function App() {
     <SafeAreaProvider>
       <NavigationContainer theme={theme}>
         <StatusBar barStyle="light-content" />
-        <Stack.Navigator initialRouteName={initialRoute}>
+        <Stack.Navigator
+          initialRouteName={initialRoute}
+          screenOptions={{
+            headerStyle: { backgroundColor: colors.bg },
+            headerTintColor: colors.text,
+            headerTitleStyle: { fontWeight: '700' },
+            headerShadowVisible: false,
+            headerBackButtonDisplayMode: 'minimal',
+            contentStyle: { backgroundColor: colors.bg },
+          }}>
           <Stack.Screen
             name="Onboarding"
             component={OnboardingScreen}
@@ -74,7 +83,7 @@ export default function App() {
           <Stack.Screen
             name="Paywall"
             component={PaywallScreen}
-            options={{ presentation: 'modal', title: '' }}
+            options={{ presentation: 'modal', headerShown: false }}
           />
           <Stack.Screen
             name="Publish"

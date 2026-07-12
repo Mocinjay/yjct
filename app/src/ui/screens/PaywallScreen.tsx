@@ -2,8 +2,9 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { entitlementStore } from '../../core/EntitlementStore';
+import { Button, Card } from '../components';
 import type { RootStackParamList } from '../navigation';
-import { colors, radius, spacing } from '../theme';
+import { colors, radius, spacing, type } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Paywall'>;
 
@@ -32,18 +33,29 @@ export function PaywallScreen({ navigation }: Props) {
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
       <Text style={styles.kicker}>JARVIS PRO</Text>
-      <Text style={styles.title}>Longer look-back.{'\n'}Bigger moments.</Text>
-      <Text style={styles.price}>$15/month</Text>
-
-      <View style={styles.card}>
-        <Feature emoji="⏪" title="60s & 90s look-back" body="Free tier clips the last 30 seconds. Pro reaches further back — the whole play, not just the ending." />
-        <Feature emoji="💬" title="Auto-captions" body="Coming with Pro: clips come back captioned, ready to post." soon />
-        <Feature emoji="🚀" title="One-tap publish" body="Coming with Pro: push straight to YouTube Shorts, Instagram, Facebook, TikTok." soon />
+      <Text style={styles.title}>Bigger moments.{'\n'}Zero busywork.</Text>
+      <View style={styles.priceRow}>
+        <Text style={styles.price}>$15</Text>
+        <Text style={styles.priceUnit}>/ month</Text>
       </View>
 
-      <Pressable style={styles.cta} onPress={subscribe}>
-        <Text style={styles.ctaText}>Continue — $15/mo</Text>
-      </Pressable>
+      <Card style={styles.card}>
+        <Feature
+          title="60s & 90s look-back"
+          body="Free reaches 30 seconds into the past. Pro gets the whole play — not just the ending."
+        />
+        <Feature
+          title="Auto-captions"
+          body="Clips come back with burned-in captions, ready to post."
+        />
+        <Feature
+          title="One-tap publish"
+          body="Straight to YouTube Shorts, Instagram, Facebook, TikTok — with honest visibility status."
+          soon
+        />
+      </Card>
+
+      <Button label="Continue — $15/mo" tone="accent" onPress={subscribe} style={styles.cta} />
       <Pressable onPress={() => navigation.goBack()} hitSlop={8}>
         <Text style={styles.dismiss}>Not now</Text>
       </Pressable>
@@ -51,25 +63,21 @@ export function PaywallScreen({ navigation }: Props) {
   );
 }
 
-function Feature({
-  emoji,
-  title,
-  body,
-  soon,
-}: {
-  emoji: string;
-  title: string;
-  body: string;
-  soon?: boolean;
-}) {
+function Feature({ title, body, soon }: { title: string; body: string; soon?: boolean }) {
   return (
     <View style={styles.feature}>
-      <Text style={styles.featureEmoji}>{emoji}</Text>
+      <View style={styles.featureBullet}>
+        <Text style={styles.featureCheck}>✓</Text>
+      </View>
       <View style={styles.featureText}>
-        <Text style={styles.featureTitle}>
-          {title}
-          {soon ? <Text style={styles.soon}>  COMING SOON</Text> : null}
-        </Text>
+        <View style={styles.featureTitleRow}>
+          <Text style={styles.featureTitle}>{title}</Text>
+          {soon ? (
+            <View style={styles.soonChip}>
+              <Text style={styles.soonText}>SOON</Text>
+            </View>
+          ) : null}
+        </View>
         <Text style={styles.featureBody}>{body}</Text>
       </View>
     </View>
@@ -78,36 +86,39 @@ function Feature({
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: spacing.l, gap: spacing.m },
-  kicker: {
-    color: colors.accent,
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 2,
-  },
-  title: { color: colors.text, fontSize: 30, fontWeight: '800', lineHeight: 36 },
-  price: { color: colors.textDim, fontSize: 17, fontWeight: '600' },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.m,
-    padding: spacing.m,
-    gap: spacing.m,
-    marginTop: spacing.s,
-  },
+  content: { padding: spacing.l, gap: spacing.m, paddingBottom: spacing.xxl },
+  kicker: { ...type.label, color: colors.gold },
+  title: { ...type.hero, fontSize: 34, lineHeight: 38, color: colors.text },
+  priceRow: { flexDirection: 'row', alignItems: 'baseline', gap: 4 },
+  price: { color: colors.text, fontSize: 28, fontWeight: '800' },
+  priceUnit: { color: colors.textDim, fontSize: 15 },
+  card: { gap: spacing.m, marginTop: spacing.s },
   feature: { flexDirection: 'row', gap: spacing.m },
-  featureEmoji: { fontSize: 24 },
-  featureText: { flex: 1, gap: 2 },
-  featureTitle: { color: colors.text, fontSize: 15, fontWeight: '700' },
-  soon: { color: colors.warning, fontSize: 10, fontWeight: '800' },
-  featureBody: { color: colors.textDim, fontSize: 13, lineHeight: 18 },
-  cta: {
-    backgroundColor: colors.accent,
-    borderRadius: radius.l,
-    paddingVertical: spacing.m,
+  featureBullet: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: colors.goldSoft,
+    borderWidth: 1,
+    borderColor: colors.gold,
     alignItems: 'center',
-    marginTop: spacing.m,
+    justifyContent: 'center',
+    marginTop: 1,
   },
-  ctaText: { color: colors.text, fontSize: 17, fontWeight: '800' },
+  featureCheck: { color: colors.gold, fontSize: 12, fontWeight: '800' },
+  featureText: { flex: 1, gap: 2 },
+  featureTitleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.s },
+  featureTitle: { color: colors.text, fontSize: 15, fontWeight: '700' },
+  soonChip: {
+    borderWidth: 1,
+    borderColor: colors.textFaint,
+    borderRadius: radius.s,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  soonText: { color: colors.textFaint, fontSize: 9, fontWeight: '800', letterSpacing: 1 },
+  featureBody: { ...type.caption, color: colors.textDim },
+  cta: { marginTop: spacing.m },
   dismiss: {
     color: colors.textDim,
     textAlign: 'center',

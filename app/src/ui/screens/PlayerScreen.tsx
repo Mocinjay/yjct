@@ -14,9 +14,10 @@ import Video from 'react-native-video';
 import { clipStore } from '../../core/ClipStore';
 import { entitlementStore } from '../../core/EntitlementStore';
 import { publishService } from '../../phase2/PublishService';
+import { Button, ProBadge } from '../components';
 import type { RootStackParamList } from '../navigation';
-import { colors, radius, spacing } from '../theme';
-import { shareClip } from './LibraryScreen';
+import { formatDuration, relativeDate, shareClip } from './LibraryScreen';
+import { colors, radius, spacing, type } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Player'>;
 
@@ -26,6 +27,7 @@ export function PlayerScreen({ route, navigation }: Props) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(clip.name);
   const [isPro, setIsPro] = useState(false);
+  const [captioning, setCaptioning] = useState(false);
 
   useEffect(() => {
     entitlementStore.isPro().then(setIsPro);
@@ -40,7 +42,6 @@ export function PlayerScreen({ route, navigation }: Props) {
     }
   };
 
-  const [captioning, setCaptioning] = useState(false);
   const captionClip = async () => {
     if (!isPro) {
       navigation.navigate('Paywall');
@@ -96,33 +97,40 @@ export function PlayerScreen({ route, navigation }: Props) {
 
   return (
     <View style={styles.root}>
-      <Video
-        source={{ uri: `file://${clip.filePath}` }}
-        style={styles.video}
-        controls
-        resizeMode="contain"
-      />
+      <View style={styles.videoFrame}>
+        <Video
+          source={{ uri: `file://${clip.filePath}` }}
+          style={styles.video}
+          controls
+          resizeMode="contain"
+        />
+      </View>
 
       <View style={styles.meta}>
-        <Text style={styles.name}>{name}</Text>
+        <Text style={styles.name} numberOfLines={1}>
+          {name}
+        </Text>
         <Text style={styles.sub}>
-          {Math.round(clip.durationSec)}s ·{' '}
-          {new Date(clip.capturedAt).toLocaleString()} · {clip.sourceKind}
+          {formatDuration(clip.durationSec)} · {relativeDate(clip.capturedAt)} ·{' '}
+          {clip.sourceKind === 'mock' ? 'phone camera' : 'glasses'}
         </Text>
       </View>
 
       <View style={styles.actions}>
-        <ActionButton label="Share" onPress={() => shareClip(clip)} primary />
-        <ActionButton
-          label={isPro ? 'Publish' : '🔒 Publish'}
-          onPress={publish}
-        />
-        <ActionButton
-          label={captioning ? 'Captioning…' : isPro ? 'Caption' : '🔒 Caption'}
-          onPress={captioning ? () => {} : captionClip}
-        />
-        <ActionButton label="Rename" onPress={() => setRenaming(true)} />
-        <ActionButton label="Delete" onPress={confirmDelete} destructive />
+        <View style={styles.primaryRow}>
+          <Button label="Share" tone="accent" onPress={() => shareClip(clip)} style={styles.grow} />
+          <ProAction label="Publish" isPro={isPro} onPress={publish} />
+          <ProAction
+            label="Caption"
+            isPro={isPro}
+            busy={captioning}
+            onPress={captionClip}
+          />
+        </View>
+        <View style={styles.primaryRow}>
+          <Button label="Rename" onPress={() => setRenaming(true)} style={styles.grow} />
+          <Button label="Delete" tone="danger" onPress={confirmDelete} style={styles.grow} />
+        </View>
       </View>
 
       <Modal visible={renaming} transparent animationType="fade">
@@ -138,8 +146,8 @@ export function PlayerScreen({ route, navigation }: Props) {
               placeholderTextColor={colors.textDim}
             />
             <View style={styles.modalActions}>
-              <ActionButton label="Cancel" onPress={() => setRenaming(false)} />
-              <ActionButton label="Save" onPress={saveRename} primary />
+              <Button label="Cancel" onPress={() => setRenaming(false)} style={styles.grow} />
+              <Button label="Save" tone="accent" onPress={saveRename} style={styles.grow} />
             </View>
           </View>
         </View>
@@ -148,65 +156,78 @@ export function PlayerScreen({ route, navigation }: Props) {
   );
 }
 
-function ActionButton({
+function ProAction({
   label,
+  isPro,
   onPress,
-  primary,
-  destructive,
+  busy,
 }: {
   label: string;
+  isPro: boolean;
   onPress: () => void;
-  primary?: boolean;
-  destructive?: boolean;
+  busy?: boolean;
 }) {
   return (
     <Pressable
-      style={[
-        styles.action,
-        primary && { backgroundColor: colors.accent },
-        destructive && { backgroundColor: colors.accentSoft },
-      ]}
-      onPress={onPress}>
-      <Text style={styles.actionText}>{label}</Text>
+      onPress={busy ? undefined : onPress}
+      style={({ pressed }) => [styles.proAction, pressed && styles.pressed]}>
+      <Text style={styles.proActionText}>{busy ? '…' : label}</Text>
+      {!isPro ? <ProBadge locked /> : null}
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  video: { flex: 1, backgroundColor: '#000' },
-  meta: { padding: spacing.m },
-  name: { color: colors.text, fontSize: 18, fontWeight: '700' },
-  sub: { color: colors.textDim, fontSize: 13, marginTop: spacing.xs },
-  actions: {
-    flexDirection: 'row',
-    gap: spacing.s,
-    padding: spacing.m,
-    paddingBottom: spacing.xl,
-  },
-  action: {
+  pressed: { transform: [{ scale: 0.97 }], opacity: 0.9 },
+  grow: { flex: 1 },
+  videoFrame: {
     flex: 1,
-    backgroundColor: colors.surfaceHigh,
+    margin: spacing.m,
     borderRadius: radius.m,
-    paddingVertical: spacing.m,
-    alignItems: 'center',
+    overflow: 'hidden',
+    backgroundColor: '#000',
+    borderWidth: 1,
+    borderColor: colors.border,
   },
-  actionText: { color: colors.text, fontSize: 15, fontWeight: '700' },
+  video: { flex: 1 },
+  meta: { paddingHorizontal: spacing.m, gap: 2 },
+  name: { ...type.heading, color: colors.text },
+  sub: { ...type.caption, color: colors.textFaint },
+  actions: { padding: spacing.m, paddingBottom: spacing.xl, gap: spacing.s },
+  primaryRow: { flexDirection: 'row', gap: spacing.s },
+  proAction: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 6,
+    backgroundColor: colors.surfaceHigh,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.l,
+    minHeight: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  proActionText: { color: colors.text, fontSize: 15, fontWeight: '700' },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: colors.scrim,
     justifyContent: 'center',
     padding: spacing.l,
   },
   modalCard: {
     backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.borderBright,
     borderRadius: radius.m,
     padding: spacing.m,
     gap: spacing.m,
   },
-  modalTitle: { color: colors.text, fontSize: 17, fontWeight: '700' },
+  modalTitle: { ...type.heading, color: colors.text },
   input: {
     backgroundColor: colors.surfaceHigh,
+    borderWidth: 1,
+    borderColor: colors.border,
     borderRadius: radius.s,
     color: colors.text,
     padding: spacing.m,

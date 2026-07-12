@@ -278,6 +278,34 @@ export function SettingsScreen({ navigation }: Props) {
           off, every TikTok post is reported as private — because it is.
         </Text>
       </Section>
+
+      <Section title="Jarvis Pro">
+        <View style={styles.rowBetween}>
+          <Text style={styles.hint}>
+            {isPro
+              ? 'Active — longer look-back, captions, publishing.'
+              : 'Not subscribed. 30s look-back, share sheet only.'}
+          </Text>
+          <Choice
+            label={isPro ? 'Manage' : 'Upgrade'}
+            selected={!isPro}
+            onPress={() => navigation.navigate('Paywall')}
+          />
+        </View>
+        {isPro ? (
+          <Pressable
+            onPress={() => entitlementStore.clear()}
+            hitSlop={8}
+            style={styles.devClear}>
+            <Text style={styles.devClearText}>Dev: clear entitlement</Text>
+          </Pressable>
+        ) : null}
+      </Section>
+
+      <Text style={styles.footer}>
+        Jarvis · “yo Jarvis, clip that” · clips stay on this phone until you
+        share them
+      </Text>
     </ScrollView>
   );
 }
@@ -316,9 +344,26 @@ const styles = StyleSheet.create({
   content: { padding: spacing.m, gap: spacing.l },
   section: {
     backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
     borderRadius: radius.m,
     padding: spacing.m,
     gap: spacing.s,
+  },
+  rowBetween: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.m,
+  },
+  devClear: { alignSelf: 'flex-start' },
+  devClearText: { color: colors.textFaint, fontSize: 12, textDecorationLine: 'underline' },
+  footer: {
+    color: colors.textFaint,
+    fontSize: 12,
+    textAlign: 'center',
+    paddingVertical: spacing.l,
+    lineHeight: 18,
   },
   sectionTitle: { color: colors.text, fontSize: 17, fontWeight: '700' },
   hint: { color: colors.textDim, fontSize: 13, lineHeight: 18 },
@@ -332,11 +377,13 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.s },
   choice: {
     backgroundColor: colors.surfaceHigh,
-    borderRadius: radius.l,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.pill,
     paddingHorizontal: spacing.m,
     paddingVertical: spacing.s,
   },
-  choiceSelected: { backgroundColor: colors.accent },
+  choiceSelected: { backgroundColor: colors.accent, borderColor: colors.accent },
   choiceText: { color: colors.textDim, fontSize: 14, fontWeight: '600' },
   choiceTextSelected: { color: colors.text },
   input: {

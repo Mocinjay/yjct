@@ -1,12 +1,22 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  Animated,
+  Easing,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Camera, useCameraDevice } from 'react-native-vision-camera';
 import type { CaptureStatus } from '../../core/CaptureController';
 import type { CaptureSession } from '../../services/capture';
 import { buildCaptureSession } from '../../services/capture';
+import { RecDot } from '../components';
 import type { RootStackParamList } from '../navigation';
-import { colors, radius, spacing } from '../theme';
+import { formatDuration } from './LibraryScreen';
+import { colors, radius, spacing, type } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Armed'>;
 
@@ -18,7 +28,10 @@ export function ArmedScreen({ navigation }: Props) {
   });
   const [now, setNow] = useState(Date.now());
   const armedRef = useRef(false);
+  const insets = useSafeAreaInsets();
   const device = useCameraDevice('back');
+  const toast = useRef(new Animated.Value(0)).current;
+  const lastToastClip = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -42,6 +55,30 @@ export function ArmedScreen({ navigation }: Props) {
       session.controller.disarm().catch(() => {});
     };
   }, [session]);
+
+  // Slide-up "saved" toast whenever a new clip lands.
+  useEffect(() => {
+    if (!status.lastClip || status.lastClip.id === lastToastClip.current) {
+      return;
+    }
+    lastToastClip.current = status.lastClip.id;
+    toast.setValue(0);
+    Animated.sequence([
+      Animated.timing(toast, {
+        toValue: 1,
+        duration: 260,
+        easing: Easing.out(Easing.back(1.4)),
+        useNativeDriver: true,
+      }),
+      Animated.delay(2200),
+      Animated.timing(toast, {
+        toValue: 0,
+        duration: 300,
+        easing: Easing.in(Easing.quad),
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [status.lastClip, toast]);
 
   // Tick the elapsed-recording clock.
   useEffect(() => {
@@ -69,7 +106,6 @@ export function ArmedScreen({ navigation }: Props) {
     }
   }, [session, arm]);
 
-  const sayWakePhrase = () => session?.mockWakeWord?.fire();
   const clipNow = () => {
     session?.controller.captureNow().catch(() => {});
   };
@@ -78,7 +114,9 @@ export function ArmedScreen({ navigation }: Props) {
     session?.controller.stopClip().catch(() => {});
   };
 
+  const live = status.state === 'armed';
   const recording = status.state === 'recording';
+  const saving = status.state === 'saving';
   const recordingSecs = status.recordingSince
     ? Math.max(0, Math.round((now - status.recordingSince) / 1000))
     : 0;
@@ -97,58 +135,124 @@ export function ArmedScreen({ navigation }: Props) {
         />
       ) : null}
 
-      <View style={styles.overlay}>
+      {/* Top chrome */}
+      <View style={[styles.topBar, { paddingTop: insets.top + spacing.s }]}>
+        <Pressable
+          onPress={() => navigation.goBack()}
+          hitSlop={12}
+          style={({ pressed }) => [styles.closeButton, pressed && styles.pressed]}>
+          <Text style={styles.closeGlyph}>✕</Text>
+        </Pressable>
+
         <View style={[styles.statusPill, recording && styles.statusPillRec]}>
-          <Text style={styles.statusText}>
-            {statusLabel(status, recordingSecs)}
-          </Text>
+          <RecDot size={8} live={live || recording} />
+          <Text style={styles.statusText}>{statusLabel(status, recordingSecs)}</Text>
         </View>
 
-        {status.lastError ? (
-          <Text style={styles.error}>{status.lastError}</Text>
+        {/* spacer to balance the close button */}
+        <View style={styles.closeButton} />
+      </View>
+
+      {status.lastError ? (
+        <View style={styles.errorBanner}>
+          <Text style={styles.errorText}>{status.lastError}</Text>
+        </View>
+      ) : null}
+
+      {/* Saved toast */}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.toast,
+          {
+            opacity: toast,
+            transform: [
+              {
+                translateY: toast.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [24, 0],
+                }),
+              },
+            ],
+          },
+        ]}>
+        <Text style={styles.toastCheck}>✓</Text>
+        <Text style={styles.toastText}>Saved to library</Text>
+      </Animated.View>
+
+      {/* Bottom control deck */}
+      <View style={[styles.deck, { paddingBottom: insets.bottom + spacing.l }]}>
+        {live || saving ? (
+          <Text style={styles.hint}>
+            {session?.mockWakeWord
+              ? 'mock mode — tap the ring to clip'
+              : '🎙 say “yo Jarvis, clip that”'}
+          </Text>
+        ) : null}
+        {recording ? (
+          <Text style={styles.hint}>extended clip — tap to stop & save</Text>
         ) : null}
 
-        {status.lastClip && !recording ? (
-          <Text style={styles.saved}>Saved “{status.lastClip.name}”</Text>
-        ) : null}
-
-        <View style={styles.controls}>
-          {recording ? (
-            <Pressable style={styles.stopButton} onPress={stop}>
-              <Text style={styles.triggerText}>■ Stop & save clip</Text>
+        <View style={styles.deckRow}>
+          {/* Extended-clip toggle (left) */}
+          {!recording ? (
+            <Pressable
+              onPress={startExtended}
+              disabled={!live}
+              style={({ pressed }) => [
+                styles.sideButton,
+                pressed && styles.pressed,
+                !live && styles.dimmed,
+              ]}>
+              <View style={styles.extendedGlyph} />
+              <Text style={styles.sideLabel}>Extended</Text>
             </Pressable>
           ) : (
-            <>
-              {session?.mockWakeWord ? (
-                <Pressable style={styles.triggerButton} onPress={sayWakePhrase}>
-                  <Text style={styles.triggerText}>
-                    “Yo Jarvis, clip that” (mock trigger)
-                  </Text>
-                </Pressable>
-              ) : (
-                <Text style={styles.listening}>
-                  🎙 Listening — say “yo Jarvis, clip that”
-                </Text>
-              )}
-              <Pressable style={styles.clipNowButton} onPress={clipNow}>
-                <Text style={styles.triggerText}>✂️ Clip now</Text>
-              </Pressable>
-              <Pressable style={styles.extendedButton} onPress={startExtended}>
-                <Text style={styles.triggerText}>⦿ Extended clip (record on)</Text>
-              </Pressable>
-            </>
+            <View style={styles.sideButton}>
+              <Text style={styles.elapsed}>{formatDuration(recordingSecs)}</Text>
+              <Text style={styles.sideLabel}>+ look-back</Text>
+            </View>
           )}
-          {recording && session?.mockWakeWord ? (
-            <Text style={styles.listening}>
-              (or say “Jarvis” again to stop)
-            </Text>
-          ) : null}
+
+          {/* Main ring button (center) */}
           <Pressable
-            style={styles.disarmButton}
-            onPress={() => navigation.goBack()}>
-            <Text style={styles.disarmText}>Disarm</Text>
+            onPress={recording ? stop : session?.mockWakeWord ? () => session.mockWakeWord?.fire() : clipNow}
+            disabled={saving || (!live && !recording)}
+            style={({ pressed }) => [
+              styles.ring,
+              pressed && styles.ringPressed,
+              saving && styles.dimmed,
+            ]}>
+            {recording ? (
+              <View style={styles.stopSquare} />
+            ) : (
+              <View style={styles.ringInner} />
+            )}
           </Pressable>
+
+          {/* Clip-now (right, redundant with voice) */}
+          {!recording ? (
+            <Pressable
+              onPress={clipNow}
+              disabled={!live}
+              style={({ pressed }) => [
+                styles.sideButton,
+                pressed && styles.pressed,
+                !live && styles.dimmed,
+              ]}>
+              <Text style={styles.scissorGlyph}>✂</Text>
+              <Text style={styles.sideLabel}>Clip now</Text>
+            </Pressable>
+          ) : (
+            <View style={styles.sideButton} />
+          )}
         </View>
+
+        <Text style={styles.deckCaption}>
+          {recording
+            ? 'everything since you started — plus the look-back — becomes one clip'
+            : `clips reach back ${Math.round(status.bufferedSeconds)}s`}
+        </Text>
       </View>
     </View>
   );
@@ -159,91 +263,150 @@ function statusLabel(status: CaptureStatus, recordingSecs: number): string {
     case 'idle':
       return 'Starting…';
     case 'arming':
-      return 'Arming…';
+      return 'Starting…';
     case 'armed':
-      return `● Recording — last ${Math.round(status.bufferedSeconds)}s ready to clip`;
+      return `LIVE · ${Math.round(status.bufferedSeconds)}s buffered`;
     case 'recording':
-      return `⦿ REC ${formatElapsed(recordingSecs)} (+ look-back)`;
+      return `REC ${formatDuration(recordingSecs)}`;
     case 'saving':
       return 'Saving clip…';
     case 'error':
-      return 'Error';
+      return 'Something broke';
   }
 }
 
-function formatElapsed(secs: number): string {
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
+const RING = 84;
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  overlay: {
+  pressed: { transform: [{ scale: 0.94 }], opacity: 0.9 },
+  dimmed: { opacity: 0.35 },
+  topBar: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
-    bottom: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    padding: spacing.l,
-    paddingTop: spacing.xl * 2,
-  },
-  statusPill: {
-    alignSelf: 'center',
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    borderRadius: radius.l,
     paddingHorizontal: spacing.m,
-    paddingVertical: spacing.s,
+    zIndex: 2,
   },
-  statusPillRec: {
-    backgroundColor: colors.accent,
+  closeButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.scrim,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  statusText: { color: colors.text, fontSize: 15, fontWeight: '700' },
-  error: {
-    color: colors.warning,
-    textAlign: 'center',
-    backgroundColor: 'rgba(0,0,0,0.65)',
+  closeGlyph: { color: colors.text, fontSize: 16, fontWeight: '700' },
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.s,
+    backgroundColor: colors.scrim,
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.m,
+    paddingVertical: spacing.s + 2,
+  },
+  statusPillRec: { backgroundColor: colors.accent },
+  statusText: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+    letterSpacing: 0.3,
+  },
+  errorBanner: {
+    position: 'absolute',
+    top: 110,
+    left: spacing.m,
+    right: spacing.m,
+    backgroundColor: colors.scrim,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.warning,
     borderRadius: radius.s,
-    padding: spacing.s,
+    padding: spacing.m,
+    zIndex: 2,
   },
-  saved: {
-    color: colors.success,
-    textAlign: 'center',
-    fontWeight: '600',
+  errorText: { color: colors.warning, ...type.caption },
+  toast: {
+    position: 'absolute',
+    bottom: 250,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.s,
+    backgroundColor: colors.scrim,
+    borderWidth: 1,
+    borderColor: colors.success,
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.m,
+    paddingVertical: spacing.s + 2,
+    zIndex: 3,
   },
-  controls: { gap: spacing.m },
-  triggerButton: {
+  toastCheck: { color: colors.success, fontSize: 15, fontWeight: '800' },
+  toastText: { color: colors.text, fontSize: 14, fontWeight: '700' },
+  deck: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    gap: spacing.m,
+    paddingTop: spacing.l,
+    backgroundColor: colors.scrimLight,
+  },
+  hint: { color: colors.text, fontSize: 14, fontWeight: '600', opacity: 0.9 },
+  deckRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    paddingHorizontal: spacing.xl,
+  },
+  ring: {
+    width: RING,
+    height: RING,
+    borderRadius: RING / 2,
+    borderWidth: 5,
+    borderColor: colors.text,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ringPressed: { transform: [{ scale: 0.93 }] },
+  ringInner: {
+    width: RING - 22,
+    height: RING - 22,
+    borderRadius: (RING - 22) / 2,
     backgroundColor: colors.accent,
-    borderRadius: radius.l,
-    paddingVertical: spacing.m,
-    alignItems: 'center',
   },
-  clipNowButton: {
-    backgroundColor: '#1E6FEB',
-    borderRadius: radius.l,
-    paddingVertical: spacing.m,
-    alignItems: 'center',
+  stopSquare: {
+    width: RING * 0.38,
+    height: RING * 0.38,
+    borderRadius: 6,
+    backgroundColor: colors.accent,
   },
-  stopButton: {
-    backgroundColor: '#B3132F',
-    borderRadius: radius.l,
-    paddingVertical: spacing.m,
+  sideButton: {
+    width: 76,
     alignItems: 'center',
+    gap: 6,
   },
-  extendedButton: {
-    backgroundColor: colors.surfaceHigh,
-    borderRadius: radius.l,
-    paddingVertical: spacing.m,
-    alignItems: 'center',
+  sideLabel: { color: colors.text, fontSize: 12, fontWeight: '600', opacity: 0.85 },
+  extendedGlyph: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2.5,
+    borderColor: colors.text,
   },
-  triggerText: { color: colors.text, fontSize: 16, fontWeight: '800' },
-  listening: { color: colors.textDim, textAlign: 'center', fontSize: 14 },
-  disarmButton: {
-    backgroundColor: colors.surfaceHigh,
-    borderRadius: radius.l,
-    paddingVertical: spacing.m,
-    alignItems: 'center',
+  scissorGlyph: { color: colors.text, fontSize: 20, fontWeight: '700' },
+  elapsed: {
+    color: colors.accent,
+    fontSize: 18,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
   },
-  disarmText: { color: colors.text, fontSize: 16, fontWeight: '700' },
+  deckCaption: { color: colors.textDim, fontSize: 12 },
 });

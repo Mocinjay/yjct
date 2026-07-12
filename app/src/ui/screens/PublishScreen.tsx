@@ -1,6 +1,7 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Pressable,
   ScrollView,
@@ -16,8 +17,9 @@ import type {
   PublishStatus,
   PublishTarget,
 } from '../../phase2/PublishTarget';
+import { Button, SectionLabel } from '../components';
 import type { RootStackParamList } from '../navigation';
-import { colors, radius, spacing } from '../theme';
+import { colors, radius, spacing, type } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Publish'>;
 
@@ -114,32 +116,43 @@ export function PublishScreen({ route }: Props) {
       />
       <Text style={styles.clipName}>{clip.name}</Text>
 
-      <Text style={styles.label}>Platform</Text>
+      <SectionLabel>Platform</SectionLabel>
       <View style={styles.row}>
-        {targets.map(({ target, ready }) => (
-          <Pressable
-            key={target.platform}
-            style={[styles.choice, selected?.platform === target.platform && styles.choiceSelected]}
-            onPress={() =>
-              ready
-                ? setSelected(target)
-                : Alert.alert(
-                    `${target.displayName} needs setup`,
-                    'This connector is built but not configured yet (OAuth client / API review pending). Use the mock platform to test the flow.',
-                  )
-            }>
-            <Text
-              style={[
-                styles.choiceText,
-                selected?.platform === target.platform && styles.choiceTextSelected,
-              ]}>
-              {ready ? target.displayName : `🔧 ${target.displayName}`}
-            </Text>
-          </Pressable>
-        ))}
+        {targets.map(({ target, ready }) => {
+          const isSelected = selected?.platform === target.platform;
+          return (
+            <Pressable
+              key={target.platform}
+              style={({ pressed }) => [
+                styles.choice,
+                isSelected && styles.choiceSelected,
+                pressed && styles.pressedFx,
+              ]}
+              onPress={() =>
+                ready
+                  ? setSelected(target)
+                  : Alert.alert(
+                      `${target.displayName} needs setup`,
+                      'This connector is built but not configured yet (OAuth client / API review pending). Use the mock platform to test the flow.',
+                    )
+              }>
+              <View
+                style={[styles.readyDot, { backgroundColor: ready ? colors.success : colors.textFaint }]}
+              />
+              <Text
+                style={[
+                  styles.choiceText,
+                  isSelected && styles.choiceTextSelected,
+                  !ready && { color: colors.textFaint },
+                ]}>
+                {target.displayName}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
 
-      <Text style={styles.label}>Caption</Text>
+      <SectionLabel>Caption</SectionLabel>
       <TextInput
         style={styles.input}
         value={caption}
@@ -149,12 +162,16 @@ export function PublishScreen({ route }: Props) {
         multiline
       />
 
-      <Text style={styles.label}>Visibility</Text>
+      <SectionLabel>Visibility</SectionLabel>
       <View style={styles.row}>
         {PRIVACY_CHOICES.map(p => (
           <Pressable
             key={p}
-            style={[styles.choice, privacy === p && styles.choiceSelected]}
+            style={({ pressed }) => [
+              styles.choice,
+              privacy === p && styles.choiceSelected,
+              pressed && styles.pressedFx,
+            ]}
             onPress={() => setPrivacy(p)}>
             <Text style={[styles.choiceText, privacy === p && styles.choiceTextSelected]}>
               {p}
@@ -164,21 +181,26 @@ export function PublishScreen({ route }: Props) {
       </View>
 
       <Pressable
-        style={[styles.choice, withCaptions && styles.choiceSelected, styles.captionToggle]}
+        style={({ pressed }) => [
+          styles.choice,
+          withCaptions && styles.choiceSelected,
+          styles.captionToggle,
+          pressed && styles.pressedFx,
+        ]}
         onPress={() => setWithCaptions(v => !v)}>
         <Text style={[styles.choiceText, withCaptions && styles.choiceTextSelected]}>
-          {withCaptions ? '✓ Auto-captions (Pro)' : 'Auto-captions off'}
+          {withCaptions ? '✓ Auto-captions' : 'Auto-captions off'}
         </Text>
       </Pressable>
 
-      <Pressable
-        style={[styles.cta, (!selected || phase.step === 'publishing') && styles.ctaDisabled]}
-        disabled={!selected || phase.step === 'publishing'}
-        onPress={confirmAndPublish}>
-        <Text style={styles.ctaText}>
-          {phase.step === 'publishing' ? 'Publishing…' : 'Publish'}
-        </Text>
-      </Pressable>
+      <Button
+        label={phase.step === 'publishing' ? 'Publishing…' : 'Publish'}
+        tone="accent"
+        busy={phase.step === 'publishing'}
+        disabled={!selected}
+        onPress={confirmAndPublish}
+        style={styles.cta}
+      />
     </ScrollView>
   );
 }
@@ -195,9 +217,23 @@ function StatusView({
     status.actualPrivacy !== undefined && status.actualPrivacy !== requestedPrivacy;
   return (
     <View style={[styles.root, styles.statusRoot]}>
-      <Text style={styles.statusEmoji}>
-        {status.state === 'published' ? '✅' : status.state === 'failed' ? '❌' : '⏳'}
-      </Text>
+      {status.state === 'processing' || status.state === 'pending' ? (
+        <ActivityIndicator size="large" color={colors.accent} />
+      ) : (
+        <View
+          style={[
+            styles.statusRing,
+            { borderColor: status.state === 'published' ? colors.success : colors.accent },
+          ]}>
+          <Text
+            style={[
+              styles.statusGlyph,
+              { color: status.state === 'published' ? colors.success : colors.accent },
+            ]}>
+            {status.state === 'published' ? '✓' : '✕'}
+          </Text>
+        </View>
+      )}
       <Text style={styles.statusTitle}>
         {status.state === 'published'
           ? `Published to ${target.displayName}`
@@ -220,41 +256,44 @@ function StatusView({
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
   content: { padding: spacing.m, gap: spacing.s, paddingBottom: spacing.xl },
+  pressedFx: { transform: [{ scale: 0.97 }], opacity: 0.9 },
   preview: {
     width: '40%',
     aspectRatio: 9 / 16,
     borderRadius: radius.m,
+    borderWidth: 1,
+    borderColor: colors.border,
     backgroundColor: colors.surfaceHigh,
     alignSelf: 'center',
   },
   clipName: {
+    ...type.heading,
     color: colors.text,
     fontSize: 16,
-    fontWeight: '700',
     textAlign: 'center',
     marginBottom: spacing.s,
   },
-  label: {
-    color: colors.textDim,
-    fontSize: 13,
-    fontWeight: '700',
-    marginTop: spacing.s,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.s },
   choice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     backgroundColor: colors.surfaceHigh,
-    borderRadius: radius.l,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.pill,
     paddingHorizontal: spacing.m,
-    paddingVertical: spacing.s,
+    paddingVertical: spacing.s + 2,
   },
-  choiceSelected: { backgroundColor: colors.accent },
+  choiceSelected: { backgroundColor: colors.accent, borderColor: colors.accent },
   choiceText: { color: colors.textDim, fontSize: 14, fontWeight: '600' },
   choiceTextSelected: { color: colors.text },
+  readyDot: { width: 7, height: 7, borderRadius: 3.5 },
   captionToggle: { alignSelf: 'flex-start', marginTop: spacing.s },
   input: {
     backgroundColor: colors.surfaceHigh,
+    borderWidth: 1,
+    borderColor: colors.border,
     borderRadius: radius.s,
     color: colors.text,
     padding: spacing.m,
@@ -262,17 +301,17 @@ const styles = StyleSheet.create({
     minHeight: 72,
     textAlignVertical: 'top',
   },
-  cta: {
-    backgroundColor: colors.accent,
-    borderRadius: radius.l,
-    paddingVertical: spacing.m,
-    alignItems: 'center',
-    marginTop: spacing.l,
-  },
-  ctaDisabled: { opacity: 0.4 },
-  ctaText: { color: colors.text, fontSize: 17, fontWeight: '800' },
+  cta: { marginTop: spacing.l },
   statusRoot: { alignItems: 'center', justifyContent: 'center', padding: spacing.xl, gap: spacing.m },
-  statusEmoji: { fontSize: 48 },
+  statusRing: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    borderWidth: 3,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statusGlyph: { fontSize: 30, fontWeight: '800' },
   statusTitle: { color: colors.text, fontSize: 20, fontWeight: '800', textAlign: 'center' },
   statusDetail: { color: colors.textDim, fontSize: 14, textAlign: 'center' },
   statusWarning: { color: colors.warning, fontSize: 14, textAlign: 'center', fontWeight: '600' },
