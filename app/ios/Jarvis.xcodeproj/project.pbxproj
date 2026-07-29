@@ -9,12 +9,17 @@
 /* Begin PBXBuildFile section */
 		0C80B921A6F3F58F76C31292 /* libPods-Jarvis.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5DCACB8F33CDC322A6C60F78 /* libPods-Jarvis.a */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
+		61662EB452689C12D4864E07 /* MWDATBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = B50CD06736D50709609B0DF7 /* MWDATBridge.m */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
+		773A9AC243E8E70C59CDD860 /* MWDATSegmentWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8439CF4812DD97E1C56847EC /* MWDATSegmentWriter.swift */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
 		B0BE19483E8FF5A24A62AE69 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
+		E5345EA5EACE870665C5A7E8 /* MockFeed.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 0BB5AC80AAC50026E2888293 /* MockFeed.mp4 */; };
+		F1124EF2E68B52680BC22CE3 /* MWDATBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B032E5A05050FA7ACD489623 /* MWDATBridge.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		0BB5AC80AAC50026E2888293 /* MockFeed.mp4 */ = {isa = PBXFileReference; includeInIndex = 1; name = MockFeed.mp4; path = Jarvis/MockFeed.mp4; sourceTree = "<group>"; };
 		13B07F961A680F5B00A75B9A /* Jarvis.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Jarvis.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = Jarvis/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = Jarvis/Info.plist; sourceTree = "<group>"; };
@@ -24,6 +29,9 @@
 		5DCACB8F33CDC322A6C60F78 /* libPods-Jarvis.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-Jarvis.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = Jarvis/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = Jarvis/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		8439CF4812DD97E1C56847EC /* MWDATSegmentWriter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Jarvis/MWDATSegmentWriter.swift; sourceTree = "<group>"; };
+		B032E5A05050FA7ACD489623 /* MWDATBridge.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Jarvis/MWDATBridge.swift; sourceTree = "<group>"; };
+		B50CD06736D50709609B0DF7 /* MWDATBridge.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = Jarvis/MWDATBridge.m; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -47,6 +55,10 @@
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */,
 				13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */,
+				B032E5A05050FA7ACD489623 /* MWDATBridge.swift */,
+				8439CF4812DD97E1C56847EC /* MWDATSegmentWriter.swift */,
+				B50CD06736D50709609B0DF7 /* MWDATBridge.m */,
+				0BB5AC80AAC50026E2888293 /* MockFeed.mp4 */,
 			);
 			name = Jarvis;
 			sourceTree = "<group>";
@@ -118,6 +130,11 @@
 			dependencies = (
 			);
 			name = Jarvis;
+			packageProductDependencies = (
+				3C7E9BE3E2A7146C14CF60C4 /* MWDATCore */,
+				3DA9135D1916C99C81815599 /* MWDATCamera */,
+				8018480ED72052F17324316E /* MWDATMockDevice */,
+			);
 			productName = Jarvis;
 			productReference = 13B07F961A680F5B00A75B9A /* Jarvis.app */;
 			productType = "com.apple.product-type.application";
@@ -144,6 +161,9 @@
 				Base,
 			);
 			mainGroup = 83CBB9F61A601CBA00E9B192;
+			packageReferences = (
+				4D64D81F67465F117281A4F0 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */,
+			);
 			productRefGroup = 83CBBA001A601CBA00E9B192 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -161,6 +181,7 @@
 				81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */,
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				B0BE19483E8FF5A24A62AE69 /* PrivacyInfo.xcprivacy in Resources */,
+				E5345EA5EACE870665C5A7E8 /* MockFeed.mp4 in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -247,6 +268,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
+				F1124EF2E68B52680BC22CE3 /* MWDATBridge.swift in Sources */,
+				773A9AC243E8E70C59CDD860 /* MWDATSegmentWriter.swift in Sources */,
+				61662EB452689C12D4864E07 /* MWDATBridge.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -493,6 +517,35 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		4D64D81F67465F117281A4F0 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/facebook/meta-wearables-dat-ios";
+			requirement = {
+				kind = exactVersion;
+				version = 0.8.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		3C7E9BE3E2A7146C14CF60C4 /* MWDATCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4D64D81F67465F117281A4F0 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
+			productName = MWDATCore;
+		};
+		3DA9135D1916C99C81815599 /* MWDATCamera */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4D64D81F67465F117281A4F0 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
+			productName = MWDATCamera;
+		};
+		8018480ED72052F17324316E /* MWDATMockDevice */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4D64D81F67465F117281A4F0 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
+			productName = MWDATMockDevice;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 83CBB9F71A601CBA00E9B192 /* Project object */;
 }

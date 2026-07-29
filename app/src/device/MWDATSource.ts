@@ -1,39 +1,80 @@
+import type { EmitterSubscription } from 'react-native';
+import { SEGMENT_SECONDS } from '../config';
 import type { Segment } from '../types';
+import {
+  MWDATNative,
+  mwdatAvailable,
+  mwdatEvents,
+  type MWDATErrorEvent,
+  type MWDATSegmentEvent,
+} from '../native/MWDATNative';
 import type { DeviceVideoSource } from './DeviceVideoSource';
 
 /**
- * Meta Wearables Device Access Toolkit source — Ray-Ban Meta / Oakley Meta
- * HSTN / Ray-Ban Display camera+mic session.
+ * Meta Wearables Device Access Toolkit source — Ray-Ban / Oakley Meta glasses
+ * camera session via the native MWDATBridge (ios/Jarvis/MWDATBridge.swift).
  *
- * ⛔ Not implemented yet. This stub exists so the capture pipeline is
- * already coded against the right seam. The real implementation is a thin
- * native bridge (Swift/Kotlin) that opens an MWDAT streaming session and
- * writes fixed-length segments, then reports them here — identical contract
- * to MockDeviceSource.
+ * The native side opens a wearables session, streams glasses video, muxes in
+ * mic audio (glasses Bluetooth mic while connected), and reports fixed-length
+ * segment files — identical contract to MockDeviceSource.
  *
- * Do NOT fake glasses behavior here; use MockDeviceSource for testing.
+ * Requires one-time registration with the Meta AI app (Settings → “Connect
+ * Meta glasses”) and Developer Mode in Meta AI during the developer preview.
  */
 export class MWDATSource implements DeviceVideoSource {
   readonly kind = 'mwdat' as const;
 
+  private subscriptions: EmitterSubscription[] = [];
+
   async prepare(): Promise<void> {
-    throw new Error(
-      'MWDAT bridge not yet integrated. Switch the device to "Mock (phone camera)" in Settings.',
-    );
+    if (!mwdatAvailable()) {
+      throw new Error(
+        'Meta glasses support is iOS-only for now. Switch the device to "Mock (phone camera)" in Settings.',
+      );
+    }
+    await MWDATNative.prepare();
   }
 
   async start(
-    _onSegment: (segment: Segment) => void,
-    _onError: (e: Error) => void,
+    onSegment: (segment: Segment) => void,
+    onError: (e: Error) => void,
   ): Promise<void> {
-    throw new Error('MWDAT bridge not yet integrated.');
+    const emitter = mwdatEvents();
+    this.subscriptions = [
+      emitter.addListener('MWDATSegment', (event: MWDATSegmentEvent) => {
+        onSegment({
+          path: event.path,
+          startedAt: event.startedAt,
+          durationSec: event.durationSec,
+        });
+      }),
+      emitter.addListener('MWDATError', (event: MWDATErrorEvent) => {
+        onError(new Error(event.message));
+      }),
+    ];
+    try {
+      await MWDATNative.start(SEGMENT_SECONDS);
+    } catch (e) {
+      this.clearSubscriptions();
+      throw e;
+    }
   }
 
   async cut(): Promise<void> {
-    throw new Error('MWDAT bridge not yet integrated.');
+    await MWDATNative.cut();
   }
 
   async stop(): Promise<void> {
-    // nothing to close
+    this.clearSubscriptions();
+    try {
+      await MWDATNative.stop();
+    } catch {
+      // native side already torn down
+    }
+  }
+
+  private clearSubscriptions(): void {
+    this.subscriptions.forEach(sub => sub.remove());
+    this.subscriptions = [];
   }
 }

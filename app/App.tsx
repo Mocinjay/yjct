@@ -6,6 +6,7 @@ import { StatusBar } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import type { RootStackParamList } from './src/ui/navigation';
 import { ArmedScreen } from './src/ui/screens/ArmedScreen';
+import { ConnectScreen } from './src/ui/screens/ConnectScreen';
 import { LibraryScreen } from './src/ui/screens/LibraryScreen';
 import { ONBOARDED_KEY, OnboardingScreen } from './src/ui/screens/OnboardingScreen';
 import { PaywallScreen } from './src/ui/screens/PaywallScreen';
@@ -32,8 +33,10 @@ export default function App() {
     useState<keyof RootStackParamList | null>(null);
 
   useEffect(() => {
+    // Glasses-first boot: always land on Connect so the link to Meta AI is
+    // established (or visibly broken) before anything else.
     AsyncStorage.getItem(ONBOARDED_KEY).then(v =>
-      setInitialRoute(v ? 'Library' : 'Onboarding'),
+      setInitialRoute(v ? 'Connect' : 'Onboarding'),
     );
   }, []);
 
@@ -55,6 +58,11 @@ export default function App() {
             headerBackButtonDisplayMode: 'minimal',
             contentStyle: { backgroundColor: colors.bg },
           }}>
+          <Stack.Screen
+            name="Connect"
+            component={ConnectScreen}
+            options={{ headerShown: false }}
+          />
           <Stack.Screen
             name="Onboarding"
             component={OnboardingScreen}

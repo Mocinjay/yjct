@@ -13,6 +13,7 @@ import { Camera, useCameraDevice } from 'react-native-vision-camera';
 import type { CaptureStatus } from '../../core/CaptureController';
 import type { CaptureSession } from '../../services/capture';
 import { buildCaptureSession } from '../../services/capture';
+import { GlassesPreview } from '../GlassesPreview';
 import { RecDot } from '../components';
 import type { RootStackParamList } from '../navigation';
 import { formatDuration } from './LibraryScreen';
@@ -133,6 +134,8 @@ export function ArmedScreen({ navigation }: Props) {
           audio
           onInitialized={arm}
         />
+      ) : session && !session.mockSource ? (
+        <GlassesPreview style={StyleSheet.absoluteFill} />
       ) : null}
 
       {/* Top chrome */}

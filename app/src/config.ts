@@ -23,7 +23,9 @@ export const WAKE_PHRASE = 'jarvis';
 
 export const DEFAULT_SETTINGS: Settings = {
   bufferSeconds: 30,
-  deviceKind: 'mock',
+  // Glasses-only: the phone-camera mock remains in the codebase for tests,
+  // but the product records exclusively from Meta glasses.
+  deviceKind: 'mwdat',
   wakeWord: {
     // Keyless OS speech recognition out of the box — say "yo Jarvis, clip
     // that" with zero setup. Porcupine remains an opt-in for lower latency.

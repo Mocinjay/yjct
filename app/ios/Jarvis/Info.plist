@@ -24,8 +24,60 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>jarvis</string>
+			</array>
+		</dict>
+	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>fb-viewapp</string>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- Begin Meta Wearables Device Access Toolkit -->
+	<key>MWDAT</key>
+	<dict>
+		<key>AppLinkURLScheme</key>
+		<string>jarvis://</string>
+		<!--
+		  MetaAppID 0 = Developer Mode testing (Meta AI > App connections >
+		  Developer mode apps). For release-channel distribution switch to the
+		  registered app credentials from the Wearables Developer Center:
+		    MetaAppID   1544226310555572
+		    ClientToken AR|1544226310555572|6bdc1714a15ffaaa8ae4a83b5d0c9027
+		    TeamID      NWX6ZCX32V
+		-->
+		<key>MetaAppID</key>
+		<string>0</string>
+	</dict>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Jarvis connects to your Meta glasses over Bluetooth to buffer their camera feed.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Jarvis finds and streams from your Meta glasses over local Wi-Fi.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_bonjour._tcp</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+		<string>bluetooth-peripheral</string>
+		<string>external-accessory</string>
+	</array>
+	<key>UISupportedExternalAccessoryProtocols</key>
+	<array>
+		<string>com.meta.ar.wearable</string>
+	</array>
+	<!-- End Meta Wearables Device Access Toolkit -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

@@ -1,6 +1,7 @@
 import type { Clip } from '../types';
 
 export type RootStackParamList = {
+  Connect: undefined;
   Onboarding: undefined;
   Library: undefined;
   Armed: undefined;

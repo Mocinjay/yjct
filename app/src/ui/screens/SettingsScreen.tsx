@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 import { FREE_BUFFER_SECONDS_MAX } from '../../config';
+import { MWDATNative, mwdatAvailable, mwdatEvents } from '../../native/MWDATNative';
 import { entitlementStore } from '../../core/EntitlementStore';
 import { settingsStore } from '../../core/SettingsStore';
 import type { ConnectorConfig } from '../../phase2/ConnectorConfig';
@@ -75,25 +76,12 @@ export function SettingsScreen({ navigation }: Props) {
         </View>
       </Section>
 
-      <Section title="Device">
-        <View style={styles.row}>
-          <Choice
-            label="Mock (phone camera)"
-            selected={settings.deviceKind === 'mock'}
-            onPress={() => settingsStore.update({ deviceKind: 'mock' })}
-          />
-          <Choice
-            label="Meta glasses"
-            selected={settings.deviceKind === 'mwdat'}
-            onPress={() => settingsStore.update({ deviceKind: 'mwdat' })}
-          />
-        </View>
-        {settings.deviceKind === 'mwdat' ? (
-          <Text style={styles.warning}>
-            Glasses support ships once the Meta Wearables Device Access
-            Toolkit bridge lands — arming will fail until then.
-          </Text>
-        ) : null}
+      <Section title="Meta glasses">
+        <Text style={styles.hint}>
+          Jarvis records from your glasses' camera and microphone. Keep them
+          paired and connected in the Meta AI app.
+        </Text>
+        <GlassesConnection />
       </Section>
 
       <Section title="Voice trigger — “yo Jarvis, clip that”">
@@ -310,6 +298,63 @@ export function SettingsScreen({ navigation }: Props) {
   );
 }
 
+/**
+ * One-time pairing of the app with Meta AI (Wearables Device Access Toolkit).
+ * Registration bounces through the Meta AI app and returns via jarvis://.
+ */
+function GlassesConnection() {
+  const [regState, setRegState] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!mwdatAvailable()) {
+      setError('Meta glasses support is iOS-only for now.');
+      return;
+    }
+    MWDATNative.getRegistrationState().then(setRegState).catch(e => setError(String(e?.message ?? e)));
+    const sub = mwdatEvents().addListener(
+      'MWDATRegistrationState',
+      (event: { state: string }) => setRegState(event.state),
+    );
+    return () => sub.remove();
+  }, []);
+
+  const connect = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setRegState(await MWDATNative.startRegistration());
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const registered = regState === 'registered';
+  return (
+    <View style={styles.glassesBox}>
+      <Text style={registered ? styles.hint : styles.warning}>
+        {registered
+          ? '✓ Glasses connected through Meta AI.'
+          : `Glasses link: ${regState ?? '…'}. Pair your glasses in the Meta AI app and turn on Developer Mode (Meta AI → Settings → App Info → tap App version 5×), then connect.`}
+      </Text>
+      {error ? <Text style={styles.warning}>{error}</Text> : null}
+      {!registered ? (
+        <Pressable
+          style={[styles.choice, busy && { opacity: 0.5 }]}
+          disabled={busy}
+          onPress={connect}>
+          <Text style={styles.choiceText}>
+            {busy ? 'Connecting…' : 'Connect Meta glasses'}
+          </Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <View style={styles.section}>
@@ -374,6 +419,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.s,
   },
   warning: { color: colors.warning, fontSize: 13, lineHeight: 18 },
+  glassesBox: { gap: spacing.s, marginTop: spacing.s },
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.s },
   choice: {
     backgroundColor: colors.surfaceHigh,

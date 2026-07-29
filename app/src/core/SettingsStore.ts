@@ -44,6 +44,10 @@ export class SettingsStore {
     } catch {
       this.cached = DEFAULT_SETTINGS;
     }
+    // Glasses-only: stored 'mock' choices from earlier builds are retired.
+    if (this.cached.deviceKind !== 'mwdat') {
+      this.cached = { ...this.cached, deviceKind: 'mwdat' };
+    }
     return this.cached;
   }
 
