@@ -21,6 +21,8 @@ DerivedData
 *.ipa
 *.xcuserstate
 **/.xcode.env.local
+# Written by the "Start Packager" build phase to hand RCT_METRO_PORT to Terminal.
+**/ios/scripts/.packager.env
 
 # Android/IntelliJ
 #

@@ -91,9 +91,29 @@ final class MWDATBridge: RCTEventEmitter {
   // MARK: - App-level URL callback (Meta AI hands control back via jarvis://)
 
   @objc static func handleOpenURL(_ url: URL) -> Bool {
-    guard case .success = configureResult else { return false }
+    // Query carries the registration authority key — keep it out of the log.
+    let redacted = "\(url.scheme ?? "?")://\(url.host ?? "")\(url.path)"
+
+    guard case .success = configureResult else {
+      log("handleOpenURL(\(redacted)): MWDAT not configured — callback dropped")
+      return false
+    }
     guard url.scheme?.lowercased() == "jarvis" else { return false }
-    Task { _ = try? await Wearables.shared.handleUrl(url) }
+
+    // Meta AI reports link failures back through this callback. Swallowing the
+    // error leaves "internal error" on the Meta AI side as the only symptom,
+    // with nothing on ours, so surface the typed error and the state it left.
+    Task {
+      do {
+        let handled = try await Wearables.shared.handleUrl(url)
+        log(
+          "handleOpenURL(\(redacted)): handled=\(handled) "
+            + "state=\(Wearables.shared.registrationState.description)"
+        )
+      } catch {
+        log("handleOpenURL(\(redacted)) FAILED: \(error)")
+      }
+    }
     return true
   }
 
