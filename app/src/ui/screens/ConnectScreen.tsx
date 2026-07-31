@@ -144,10 +144,12 @@ export function ConnectScreen({ navigation }: Props) {
       <Text style={styles.title}>Link your{'\n'}Meta glasses.</Text>
 
       <View style={styles.previewBox}>
-        {previewing ? (
-          <GlassesPreview style={styles.preview} />
-        ) : (
-          <View style={styles.previewPlaceholder}>
+        {/* Mounted unconditionally: GlassesPreview attaches the frame listener
+            on mount, so gating it on `previewing` would only subscribe *after*
+            the native stream had already started and dropped its first frames. */}
+        <GlassesPreview style={styles.preview} />
+        {!previewing && (
+          <View style={[styles.previewPlaceholder, StyleSheet.absoluteFill]}>
             <Text style={styles.placeholderText}>
               {busy ?? 'The wearer’s view appears here once linked.'}
             </Text>

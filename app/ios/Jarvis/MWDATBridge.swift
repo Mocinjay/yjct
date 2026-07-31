@@ -1,4 +1,5 @@
 import CoreImage
+import CoreMedia
 import Foundation
 import MWDATCamera
 import MWDATCore
@@ -44,6 +45,11 @@ final class MWDATBridge: RCTEventEmitter {
   /// be told apart from our own.
   private var stopping = false
 
+  /// Last error the stream reported, captured so a start failure can name the
+  /// actual SDK cause (hingesClosed, permissionDenied, videoStreamingError…)
+  /// instead of a generic timeout.
+  private var lastStreamError: MWDATCamera.StreamError?
+
   /// Dev-only MockDeviceKit glasses: exercises the real session/stream code
   /// paths without hardware or the Meta AI app. Skips the registration guard.
   private var mockActive = false
@@ -59,6 +65,27 @@ final class MWDATBridge: RCTEventEmitter {
   /// glasses handshake live during field debugging.
   private static func log(_ message: String) {
     print("[MWDAT] \(message)")
+  }
+
+  // MARK: - App lifecycle
+
+  /// Weak handle to the live bridge instance so the app delegate can release
+  /// the glasses session on background/terminate. Without this the session and
+  /// stream leak when the app is killed, and the glasses keep the capture slot
+  /// held until they are power-cycled — every later start then fails.
+  private static weak var current: MWDATBridge?
+
+  override init() {
+    super.init()
+    MWDATBridge.current = self
+  }
+
+  @objc static func releaseGlassesForAppLifecycle(_ reason: String) {
+    guard let bridge = current, bridge.deviceSession != nil || bridge.stream != nil else { return }
+    log("app lifecycle (\(reason)) — releasing glasses session")
+    bridge.stopping = true
+    bridge.teardown()
+    bridge.stopping = false
   }
 
   // MARK: - App-level URL callback (Meta AI hands control back via jarvis://)
@@ -397,7 +424,10 @@ final class MWDATBridge: RCTEventEmitter {
       Self.log("pipeline already open (session started, stream present)")
       return
     }
+    // Our own teardown, not a device-initiated drop — suppress the error event.
+    stopping = true
     teardown()
+    stopping = false
 
     let wearables = Wearables.shared
     Self.log(
@@ -489,8 +519,13 @@ final class MWDATBridge: RCTEventEmitter {
       }
     }
 
-    let config = StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: 24)
-    Self.log("addStream…")
+    // `.raw` is uncompressed YCbCr. Even `.medium` at 24 fps is ~33 MB/s,
+    // orders of magnitude past the glasses link budget, so the stream
+    // negotiates and dies before it ever reaches `.streaming`. `.hvc1` is the
+    // only compressed codec the SDK exposes — and it is also the one
+    // `VideoFrame.makeUIImage()` can actually decode (raw frames return nil).
+    let config = StreamConfiguration(videoCodec: .hvc1, resolution: .medium, frameRate: 24)
+    Self.log("addStream(codec: hvc1, resolution: medium, fps: 24)…")
     guard let newStream = try session.addStream(config: config) else {
       throw NSError(
         domain: "MWDATBridge", code: 11,
@@ -498,6 +533,7 @@ final class MWDATBridge: RCTEventEmitter {
       )
     }
     stream = newStream
+    lastStreamError = nil
 
     listenerTokens.append(
       newStream.videoFramePublisher.listen { [weak self] frame in
@@ -526,6 +562,7 @@ final class MWDATBridge: RCTEventEmitter {
     listenerTokens.append(
       newStream.errorPublisher.listen { [weak self] error in
         Self.log("stream ERROR: \(error.description)")
+        self?.lastStreamError = error
         self?.sendEvent(withName: Event.error, body: ["message": error.description])
       }
     )
@@ -538,6 +575,31 @@ final class MWDATBridge: RCTEventEmitter {
 
     Self.log("session started (\(String(describing: session.state))); starting stream…")
     newStream.start()
+
+    // `Stream.start()` is fire-and-forget and returns Void. Without this gate
+    // the promise resolves on a stream that may already be dying, the UI mounts
+    // the preview, and it sits on "Waiting for the glasses feed…" forever while
+    // the real failure only ever surfaces as a stray error event. Resolve only
+    // once the stream is genuinely `.streaming`, and name the cause otherwise.
+    if newStream.state != .streaming {
+      Self.log("waiting for stream to reach .streaming (30s max)…")
+      let streaming = await Self.waitForStreaming(newStream, timeoutSeconds: 30)
+      Self.log("waitForStreaming → \(streaming), state=\(String(describing: newStream.state))")
+      guard streaming else {
+        let cause = lastStreamError.map { $0.description } ?? "no error reported by the SDK"
+        throw NSError(
+          domain: "MWDATBridge", code: 14,
+          userInfo: [
+            NSLocalizedDescriptionKey:
+              "Glasses camera stream never started (last state: "
+              + "\(String(describing: newStream.state)); cause: \(cause)). "
+              + "Check the glasses are unfolded and being worn, not overheating, "
+              + "and that camera access is allowed for Jarvis in Meta AI.",
+          ]
+        )
+      }
+    }
+    Self.log("stream is .streaming — frames should follow")
   }
 
   private func attachWriter(segmentSeconds: Double) throws {
@@ -564,13 +626,18 @@ final class MWDATBridge: RCTEventEmitter {
   }
 
   private func teardown() {
-    listenerTokens = []
     writer?.stopAndDiscard()
     writer = nil
     stream?.stop()
     stream = nil
     deviceSession?.stop()
     deviceSession = nil
+    // Released LAST: clearing these first would detach the state/error
+    // listeners before stop(), silently swallowing whatever the SDK reports
+    // on the way down — which is exactly the failure we need to see.
+    listenerTokens = []
+    frameCount = 0
+    previewFailLogged = false
   }
 
   /// ~6 fps JPEG preview of the wearer's view, dropped when the encoder is
@@ -613,6 +680,30 @@ final class MWDATBridge: RCTEventEmitter {
         body: ["base64": jpeg.base64EncodedString()]
       )
     }
+  }
+
+  /// `Stream` exposes only an `Announcer` (no `stateStream()` like
+  /// `DeviceSession`), and `state` is a plain synchronous property — so poll it
+  /// rather than bridging a callback into a continuation. Polling also removes
+  /// any chance of missing a terminal state that landed before we started
+  /// watching. `.stopped` is terminal here, so it is safe to treat as failure.
+  private static func waitForStreaming(
+    _ stream: MWDATCamera.Stream,
+    timeoutSeconds: UInt64
+  ) async -> Bool {
+    let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+    while Date() < deadline {
+      switch stream.state {
+      case .streaming:
+        return true
+      case .stopped:
+        return false
+      default:
+        break
+      }
+      try? await Task.sleep(nanoseconds: 100_000_000)
+    }
+    return stream.state == .streaming
   }
 
   private static func waitForActiveDevice(

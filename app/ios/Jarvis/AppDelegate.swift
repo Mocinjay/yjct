@@ -32,6 +32,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     return true
   }
 
+  /// The glasses hold the capture slot until the session is explicitly stopped.
+  /// If the app is killed or backgrounded without releasing it, every later
+  /// stream start fails until the glasses are power-cycled.
+  func applicationWillTerminate(_ application: UIApplication) {
+    MWDATBridge.releaseGlassesForAppLifecycle("willTerminate")
+  }
+
+  func applicationDidEnterBackground(_ application: UIApplication) {
+    MWDATBridge.releaseGlassesForAppLifecycle("didEnterBackground")
+  }
+
   /// Meta AI returns control here (jarvis:// scheme) after glasses
   /// registration; MWDATBridge forwards it into the Wearables SDK.
   func application(
