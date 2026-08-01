@@ -26,12 +26,16 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
     }
 
     AVMutableComposition *composition = [AVMutableComposition composition];
-    AVMutableCompositionTrack *videoTrack =
-        [composition addMutableTrackWithMediaType:AVMediaTypeVideo
-                                 preferredTrackID:kCMPersistentTrackID_Invalid];
-    AVMutableCompositionTrack *audioTrack =
-        [composition addMutableTrackWithMediaType:AVMediaTypeAudio
-                                 preferredTrackID:kCMPersistentTrackID_Invalid];
+    // Tracks are created lazily, on the first segment that actually carries
+    // one. A composition track that is added but never written leaves an EMPTY
+    // track in the asset, and AVAssetExportSession then builds its reader over
+    // it — constructing an AVAssetReaderAudioMixOutput with zero audio tracks,
+    // which trips the assertion "[audioTracks count] >= 1" and aborts the
+    // process. Glasses clips are routinely video-only (the toolkit exposes no
+    // microphone, so audio depends on the phone-side engine having captured
+    // anything), so this is the normal path, not an edge case.
+    AVMutableCompositionTrack *videoTrack = nil;
+    AVMutableCompositionTrack *audioTrack = nil;
 
     CMTime cursor = kCMTimeZero;
     for (NSString *path in segmentPaths) {
@@ -42,6 +46,10 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
       NSError *error = nil;
       AVAssetTrack *srcVideo = [asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
       if (srcVideo != nil) {
+        if (videoTrack == nil) {
+          videoTrack = [composition addMutableTrackWithMediaType:AVMediaTypeVideo
+                                               preferredTrackID:kCMPersistentTrackID_Invalid];
+        }
         [videoTrack insertTimeRange:range ofTrack:srcVideo atTime:cursor error:&error];
         if (error != nil) {
           reject(@"stitch_video", error.localizedDescription, error);
@@ -51,6 +59,12 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
       }
       AVAssetTrack *srcAudio = [asset tracksWithMediaType:AVMediaTypeAudio].firstObject;
       if (srcAudio != nil) {
+        if (audioTrack == nil) {
+          audioTrack = [composition addMutableTrackWithMediaType:AVMediaTypeAudio
+                                               preferredTrackID:kCMPersistentTrackID_Invalid];
+        }
+        // Inserting at `cursor` keeps audio aligned when only some segments
+        // carry it — the gap before it stays silent rather than shifting.
         [audioTrack insertTimeRange:range ofTrack:srcAudio atTime:cursor error:&error];
         if (error != nil) {
           reject(@"stitch_audio", error.localizedDescription, error);
@@ -59,6 +73,17 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
       }
       cursor = CMTimeAdd(cursor, asset.duration);
     }
+
+    if (videoTrack == nil) {
+      reject(@"stitch_empty",
+             @"None of the recorded segments contained a video track.",
+             nil);
+      return;
+    }
+    NSLog(@"[ClipStitcher] composed %lu segment(s) — video=YES audio=%@ duration=%.2fs",
+          (unsigned long)segmentPaths.count,
+          audioTrack != nil ? @"YES" : @"NO",
+          CMTimeGetSeconds(cursor));
 
     [[NSFileManager defaultManager] removeItemAtPath:outputPath error:nil];
     AVAssetExportSession *export =
@@ -69,9 +94,16 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
 
     [export exportAsynchronouslyWithCompletionHandler:^{
       if (export.status != AVAssetExportSessionStatusCompleted) {
-        reject(@"export",
-               export.error.localizedDescription ?: @"Export failed",
-               export.error);
+        NSError *error = export.error;
+        NSLog(@"[ClipStitcher] export FAILED status=%ld domain=%@ code=%ld desc=%@ underlying=%@",
+              (long)export.status, error.domain, (long)error.code,
+              error.localizedDescription, error.userInfo[NSUnderlyingErrorKey]);
+        NSString *detail =
+            error != nil
+                ? [NSString stringWithFormat:@"%@ [%@ %ld]", error.localizedDescription,
+                                             error.domain, (long)error.code]
+                : @"Export failed";
+        reject(@"export", detail, error);
         return;
       }
 
