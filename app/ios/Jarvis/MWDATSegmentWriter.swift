@@ -245,20 +245,27 @@ final class MWDATSegmentWriter {
 
   func startAudio() throws {
     let session = AVAudioSession.sharedInstance()
+    // The glasses' mic is a Bluetooth HFP device on the SAME link that carries
+    // the camera stream. Selecting it renegotiates that link into narrowband
+    // voice mode, which starves the video: measured on-device, frames stop
+    // within ~5s of the audio engine starting, the segment after that captures
+    // a fraction of a second, and capture dies. The HFP mic also delivered no
+    // samples at all, so the trade was losing video to gain nothing.
+    //
+    // Record on the phone instead and leave the Bluetooth link to the camera.
+    // `.allowBluetooth` is deliberately NOT set: with it, the route can fall
+    // back onto HFP on its own and take the video stream down with it.
     try session.setCategory(
       .playAndRecord,
       mode: .default,
-      options: [.allowBluetooth, .mixWithOthers]
+      options: [.mixWithOthers, .defaultToSpeaker]
     )
     try session.setActive(true)
 
-    // Glasses-first audio: pin the input to the glasses' Bluetooth mic. The
-    // glasses' voice pickup beats the phone lying on a table, and it keeps
-    // audio and video from the same point of view.
-    if let glassesMic = session.availableInputs?.first(where: {
-      $0.portType == .bluetoothHFP
+    if let builtInMic = session.availableInputs?.first(where: {
+      $0.portType == .builtInMic
     }) {
-      try? session.setPreferredInput(glassesMic)
+      try? session.setPreferredInput(builtInMic)
     }
 
     let input = audioEngine.inputNode

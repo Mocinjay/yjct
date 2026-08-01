@@ -141,7 +141,19 @@ export function ArmedScreen({ navigation }: Props) {
       {/* Top chrome */}
       <View style={[styles.topBar, { paddingTop: insets.top + spacing.s }]}>
         <Pressable
-          onPress={() => navigation.goBack()}
+          onPress={() => {
+            // Armed is reached two ways: pushed from Library, or replacing
+            // Connect on boot (ConnectScreen uses `replace`). In the second
+            // case it is the only screen on the stack, so goBack() has no
+            // target and React Navigation logs "The action 'GO_BACK' was not
+            // handled by any navigator". Closing belongs in the Library either
+            // way, so fall through to it.
+            if (navigation.canGoBack()) {
+              navigation.goBack();
+            } else {
+              navigation.navigate('Library');
+            }
+          }}
           hitSlop={12}
           style={({ pressed }) => [styles.closeButton, pressed && styles.pressed]}>
           <Text style={styles.closeGlyph}>✕</Text>
