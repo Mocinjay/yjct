@@ -16,6 +16,7 @@ export interface MWDATErrorEvent {
 
 export interface MWDATStateEvent {
   state: string;
+  reason?: string;
 }
 
 export interface MWDATDeviceInfo {

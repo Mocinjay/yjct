@@ -49,15 +49,26 @@
 		<key>AppLinkURLScheme</key>
 		<string>jarvis://</string>
 		<!--
-		  MetaAppID 0 = Developer Mode testing (Meta AI > App connections >
-		  Developer mode apps). For release-channel distribution switch to the
-		  registered app credentials from the Wearables Developer Center:
-		    MetaAppID   1544226310555572
-		    ClientToken AR|1544226310555572|6bdc1714a15ffaaa8ae4a83b5d0c9027
-		    TeamID      NWX6ZCX32V
+		  MetaAppID 0 = Developer Mode (Meta AI → Settings → App Info → tap
+		  App version 5×, then enable Developer Mode). Official DAT docs: in
+		  Developer Mode attestation is off and MetaAppID may be "0".
+
+		  Do NOT paste another developer's Wearables Center credentials here.
+		  MetaAppID / ClientToken are bound to that project's Apple Team ID
+		  and release channel — using a friend's IDs with a different
+		  DEVELOPMENT_TEAM / bundle ID fails attestation and looks like a
+		  silent registration/stream failure.
+
+		  For release-channel distribution, create your own project in the
+		  Wearables Developer Center and set:
+		    MetaAppID, ClientToken (from the Center)
+		    TeamID = your Apple Developer Team ID (same as DEVELOPMENT_TEAM)
 		-->
 		<key>MetaAppID</key>
 		<string>0</string>
+		<!-- Present for when you leave Developer Mode; harmless at MetaAppID 0. -->
+		<key>TeamID</key>
+		<string>$(DEVELOPMENT_TEAM)</string>
 	</dict>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Jarvis connects to your Meta glasses over Bluetooth to buffer their camera feed.</string>

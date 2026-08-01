@@ -2342,7 +2342,7 @@ SPEC CHECKSUMS:
   AsyncStorage: dba9d05b9aa34413760ea5a74f63a7e7f9fddf73
   ClipStitcher: 9e50c74d0a4238baf82ab6ee77f0917120c3ba58
   FBLazyVector: b3e7ad108f0d882e30445c5527d774e3fd432f3d
-  hermes-engine: c5d7df0106ecd70654e3ffbcfd6217e16c084324
+  hermes-engine: 2d5f60a5101e2f3b384977a2f645cd6f061d2a12
   ios-voice-processor: 6b5ca08962f39e434fe39dca0f483d923a3b1b97
   Porcupine-iOS: 7271749e41b7513a10d207bc45ee4433bf828136
   porcupine-react-native: 76d3535ed1d80788c047f6e9ebdca99fade6b7e7
@@ -2354,7 +2354,7 @@ SPEC CHECKSUMS:
   React: 2574546f2d017abd14d0c9b48cf2b6a0547c2591
   React-callinvoker: 03cd4b931d1d583d87aae99b8f7b6fe26bf571ee
   React-Core: b0a0038e05720fb8148759404e9c354e3e60043c
-  React-Core-prebuilt: 7da85c26e5616d52f119b81ce5e3e6fc5c9bda49
+  React-Core-prebuilt: 13924a267683b3d6fa4bde9c80380becf83a9c5c
   React-CoreModules: a1121b3182200be11e078940159c67ff95ee98b4
   React-cxxreact: 8f74977959064bee99af63bb0ad95b6c3dbec921
   React-debug: 8cc8d99ccc664ef9e873027f7fc3fb0a50496012
@@ -2425,7 +2425,7 @@ SPEC CHECKSUMS:
   RNScreens: 032083414633a4d94cbcf08f8ab5019d72d1ba36
   RNShare: 43cee010ada075019148c7a6bac1ca71b074e1d7
   VisionCamera: 3ea10c46a5c612f5f89fb46a54bef4a0de8b58a7
-  Yoga: 94172d87dd5d83fc929bf1ee53121b5d4490b5f2
+  Yoga: fe50ab299e578f397fef753cf309c6703a4db29b
 
 PODFILE CHECKSUM: 111cc3e5a41c5d6432b7f21f56be3df1d308f1a5
 
