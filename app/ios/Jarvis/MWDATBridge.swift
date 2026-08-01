@@ -50,6 +50,12 @@ final class MWDATBridge: RCTEventEmitter {
   /// instead of a generic timeout.
   private var lastStreamError: MWDATCamera.StreamError?
 
+  /// `.stopped` is the state a freshly created stream sits in *before*
+  /// `start()` has taken effect, and also the terminal state after a real
+  /// stop. The two are indistinguishable from the value alone, so a `.stopped`
+  /// reading only means "failed" once the stream has been seen to leave it.
+  private var streamHasLeftStopped = false
+
   /// Dev-only MockDeviceKit glasses: exercises the real session/stream code
   /// paths without hardware or the Meta AI app. Skips the registration guard.
   private var mockActive = false
@@ -554,6 +560,7 @@ final class MWDATBridge: RCTEventEmitter {
     }
     stream = newStream
     lastStreamError = nil
+    streamHasLeftStopped = false
 
     listenerTokens.append(
       newStream.videoFramePublisher.listen { [weak self] frame in
@@ -569,9 +576,15 @@ final class MWDATBridge: RCTEventEmitter {
     listenerTokens.append(
       newStream.statePublisher.listen { [weak self] state in
         guard let self else { return }
-        Self.log("stream state → \(state)")
+        Self.log("stream state → \(state) (hasLeftStopped=\(self.streamHasLeftStopped), stopping=\(self.stopping))")
         self.sendEvent(withName: Event.streamState, body: ["state": String(describing: state)])
-        if state == .stopped, !self.stopping {
+        if state != .stopped {
+          self.streamHasLeftStopped = true
+          return
+        }
+        // Only a stop that follows real progress is a stop; the `.stopped`
+        // the SDK reports before `start()` lands is just the initial value.
+        if self.streamHasLeftStopped, !self.stopping {
           self.sendEvent(
             withName: Event.error,
             body: ["message": "The glasses stream stopped (folded, out of range, or taken over)."]
@@ -584,6 +597,14 @@ final class MWDATBridge: RCTEventEmitter {
         Self.log("stream ERROR: \(error.description)")
         self?.lastStreamError = error
         self?.sendEvent(withName: Event.error, body: ["message": error.description])
+      }
+    )
+    listenerTokens.append(
+      session.statePublisher.listen { state in
+        // Session state during and after stream negotiation: a session that
+        // drops back to .stopped underneath a starting stream explains an
+        // otherwise silent stream failure.
+        Self.log("session state → \(state.description)")
       }
     )
     listenerTokens.append(
@@ -602,11 +623,14 @@ final class MWDATBridge: RCTEventEmitter {
     // the real failure only ever surfaces as a stray error event. Resolve only
     // once the stream is genuinely `.streaming`, and name the cause otherwise.
     if newStream.state != .streaming {
-      Self.log("waiting for stream to reach .streaming (30s max)…")
-      let streaming = await Self.waitForStreaming(newStream, timeoutSeconds: 30)
+      Self.log("waiting for stream to reach .streaming (45s max)…")
+      let streaming = await waitForStreaming(newStream, timeoutSeconds: 45)
       Self.log("waitForStreaming → \(streaming), state=\(String(describing: newStream.state))")
       guard streaming else {
-        let cause = lastStreamError.map { $0.description } ?? "no error reported by the SDK"
+        let cause = lastStreamError.map { $0.description }
+          ?? (streamHasLeftStopped
+            ? "the stream started and then stopped without reporting an error"
+            : "the glasses never acknowledged the start request")
         throw NSError(
           domain: "MWDATBridge", code: 14,
           userInfo: [
@@ -658,6 +682,8 @@ final class MWDATBridge: RCTEventEmitter {
     listenerTokens = []
     frameCount = 0
     previewFailLogged = false
+    streamHasLeftStopped = false
+    lastStreamError = nil
   }
 
   /// ~6 fps JPEG preview of the wearer's view, dropped when the encoder is
@@ -706,23 +732,61 @@ final class MWDATBridge: RCTEventEmitter {
   /// `DeviceSession`), and `state` is a plain synchronous property — so poll it
   /// rather than bridging a callback into a continuation. Polling also removes
   /// any chance of missing a terminal state that landed before we started
-  /// watching. `.stopped` is terminal here, so it is safe to treat as failure.
-  private static func waitForStreaming(
+  /// watching.
+  ///
+  /// `.stopped` must NOT be treated as terminal on its own. As of SDK 0.8.0
+  /// `Stream.start()` is synchronous and fire-and-forget, and a stream created
+  /// by `addStream` sits in `.stopped` until the glasses answer and the SDK
+  /// walks it through `.waitingForDevice` → `.starting` → `.streaming`. So the
+  /// very first reading after `start()` is virtually always `.stopped`, and
+  /// bailing on it aborts every stream ~0 ms after it is asked to start —
+  /// before the SDK has had any chance to report an error, which is why the
+  /// failure surfaced as "last state: stopped; cause: no error reported".
+  /// A stop only means failure once the stream has been seen to leave
+  /// `.stopped`; before that, keep waiting (or until an error, or timeout).
+  private func waitForStreaming(
     _ stream: MWDATCamera.Stream,
     timeoutSeconds: UInt64
   ) async -> Bool {
     let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+    var loggedState: MWDATCamera.StreamState?
+    var everLeftStopped = false
+
     while Date() < deadline {
-      switch stream.state {
+      let state = stream.state
+      if state != loggedState {
+        Self.log("waitForStreaming: \(String(describing: state))")
+        loggedState = state
+      }
+
+      switch state {
       case .streaming:
         return true
+      case .waitingForDevice, .starting, .paused, .stopping:
+        everLeftStopped = true
+        streamHasLeftStopped = true
       case .stopped:
-        return false
-      default:
-        break
+        if everLeftStopped {
+          Self.log("waitForStreaming: returned to .stopped after starting — terminal")
+          return false
+        }
       }
+
+      // An error is terminal no matter what the state property says, and lets
+      // a permissionDenied/hingesClosed fail fast instead of burning the
+      // whole timeout.
+      if let error = lastStreamError {
+        Self.log("waitForStreaming: aborting on SDK error — \(error.description)")
+        return false
+      }
+
       try? await Task.sleep(nanoseconds: 100_000_000)
     }
+
+    Self.log(
+      "waitForStreaming: timed out after \(timeoutSeconds)s in "
+        + "\(String(describing: stream.state)) (everLeftStopped=\(everLeftStopped))"
+    )
     return stream.state == .streaming
   }
 
