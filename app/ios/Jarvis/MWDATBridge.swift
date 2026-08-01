@@ -38,6 +38,21 @@ final class MWDATBridge: RCTEventEmitter {
 
   private var deviceSession: DeviceSession?
   private var stream: MWDATCamera.Stream?
+
+  /// In-flight pipeline open, so concurrent callers coalesce onto one attempt.
+  /// `openPipelineIfNeeded()` is reachable from `startPreview()`, `start()`, the
+  /// retry button and any React effect that re-fires, and it tears the existing
+  /// session down before rebuilding — so a second caller arriving mid-negotiation
+  /// used to stop the first caller's session (stop chime) and create a new one
+  /// (start chime), while the first caller then failed and tore *that* one down.
+  /// That is a self-sustaining restart loop. Coalesced, not queued: queueing only
+  /// delays the collision.
+  private var openTask: Task<Void, Error>?
+
+  /// Consumes the session state stream for the life of the session. Held so
+  /// teardown can cancel it — an orphaned consumer from a previous attempt is
+  /// one of the ways a dead session keeps driving live logic.
+  private var sessionStateTask: Task<SessionStartOutcome, Never>?
   private var listenerTokens: [any AnyListenerToken] = []
   private var observerTokens: [any AnyListenerToken] = []
   private var writer: MWDATSegmentWriter?
@@ -75,6 +90,19 @@ final class MWDATBridge: RCTEventEmitter {
   private static func log(_ message: String) {
     NSLog("[MWDAT] %@", message)
     DiagnosticLog.write("[MWDAT] \(message)")
+    MWDATTrace.record("log", message)
+  }
+
+  /// Short identity for a session/stream. Two different tags in one trace mean
+  /// the pipeline was re-entered and a second object was built.
+  private static func tagOf(_ object: AnyObject) -> String { MWDATTrace.tag(object) }
+
+  /// Categorised trace entry. Unlike `log()` these are the events the restart
+  /// loop is read from, so they carry the owning object's identity.
+  private static func trace(_ category: String, _ message: String) {
+    NSLog("[MWDAT/%@] %@", category, message)
+    DiagnosticLog.write("[MWDAT/\(category)] \(message)")
+    MWDATTrace.record(category, message)
   }
 
   // MARK: - App lifecycle
@@ -227,6 +255,17 @@ final class MWDATBridge: RCTEventEmitter {
     ]
   }
 
+  /// Dump of the pipeline trace ring buffer. Read on-device from the debug
+  /// screen — the failure reproduces while walking around, where Xcode is not
+  /// attached and `devicectl --console` drops the connection.
+  @objc(getDiagnosticTrace:reject:)
+  func getDiagnosticTrace(
+    _ resolve: @escaping RCTPromiseResolveBlock,
+    reject _: @escaping RCTPromiseRejectBlock
+  ) {
+    resolve(MWDATTrace.dump())
+  }
+
   @objc(getDiagnostics:reject:)
   func getDiagnostics(
     _ resolve: @escaping RCTPromiseResolveBlock,
@@ -373,15 +412,16 @@ final class MWDATBridge: RCTEventEmitter {
     Task { @MainActor in
       do {
         DiagnosticLog.reset()
-        Self.log("startPreview() called")
+        MWDATTrace.reset()
+        Self.trace("pipeline", "startPreview() called")
         try ensureConfigured()
         try await openPipelineIfNeeded()
-        Self.log("startPreview() succeeded")
+        Self.trace("pipeline", "startPreview() succeeded")
         resolve(nil)
       } catch {
-        Self.log("startPreview() FAILED: \(error.localizedDescription)")
+        Self.trace("pipeline", "startPreview() FAILED: \(error.localizedDescription)")
         if self.writer == nil { self.teardown() }
-        reject("mwdat_preview", error.localizedDescription, error)
+        Self.reject(reject, error)
       }
     }
   }
@@ -420,7 +460,7 @@ final class MWDATBridge: RCTEventEmitter {
         resolve(nil)
       } catch {
         if !pipelineAlreadyOpen { teardown() }
-        reject("mwdat_start", error.localizedDescription, error)
+        Self.reject(reject, error)
       }
     }
   }
@@ -450,9 +490,25 @@ final class MWDATBridge: RCTEventEmitter {
 
   // MARK: - Pipeline internals
 
+  /// Single-flight entry point. Concurrent callers await the existing attempt
+  /// instead of starting a competing one.
+  @MainActor
   private func openPipelineIfNeeded() async throws {
+    if let existing = openTask {
+      Self.trace("pipeline", "open already in flight — coalescing onto it")
+      try await existing.value
+      return
+    }
+    let task = Task { @MainActor in try await performOpenPipeline() }
+    openTask = task
+    defer { openTask = nil }
+    try await task.value
+  }
+
+  @MainActor
+  private func performOpenPipeline() async throws {
     if let session = deviceSession, session.state == .started, stream != nil {
-      Self.log("pipeline already open (session started, stream present)")
+      Self.trace("pipeline", "already open (session \(Self.tagOf(session)) started, stream present)")
       return
     }
     // Our own teardown, not a device-initiated drop — suppress the error event.
@@ -473,15 +529,7 @@ final class MWDATBridge: RCTEventEmitter {
       let appeared = await Self.waitForDevice(wearables, timeoutSeconds: 20)
       Self.log("waitForDevice → \(appeared)")
       guard appeared else {
-        throw NSError(
-          domain: "MWDATBridge", code: 12,
-          userInfo: [
-            NSLocalizedDescriptionKey:
-              "No glasses found. Unfold them, put them on, check they show "
-              + "as Connected in Meta AI, and that Jarvis is enabled under "
-              + "Meta AI → Settings → App connections.",
-          ]
-        )
+        throw MWDATFailure(.pipelineNoDevice, detail: "device list empty after 20s")
       }
     }
 
@@ -490,14 +538,9 @@ final class MWDATBridge: RCTEventEmitter {
     if let identifier = wearables.devices.first,
        let device = wearables.deviceForIdentifier(identifier),
        device.compatibility() == .deviceUpdateRequired || device.compatibility() == .sdkUpdateRequired {
-      throw NSError(
-        domain: "MWDATBridge", code: 13,
-        userInfo: [
-          NSLocalizedDescriptionKey:
-            "\(device.nameOrId()): \(device.compatibility().displayString). "
-            + "Update the glasses in Meta AI (Device settings → Software update), "
-            + "then try again.",
-        ]
+      throw MWDATFailure(
+        .pipelineIncompatible,
+        detail: "\(device.nameOrId()): \(device.compatibility().displayString)"
       )
     }
 
@@ -525,28 +568,54 @@ final class MWDATBridge: RCTEventEmitter {
       }
     }
 
-    Self.log("createSession…")
-    let session = try wearables.createSession(deviceSelector: selector)
+    Self.trace("session", "createSession…")
+    let session: DeviceSession
+    do {
+      session = try wearables.createSession(deviceSelector: selector)
+    } catch {
+      // `sessionAlreadyExists` here means a previous session outlived our
+      // teardown — name it rather than reporting a generic start failure.
+      let code = MWDATCode.classify(error) ?? .sessionUnexpected
+      Self.trace("session", "createSession FAILED → \(code.rawValue) \(code.slug): \(error)")
+      throw MWDATFailure(code, detail: "createSession: \(error)")
+    }
     deviceSession = session
-    Self.log("createSession OK — starting session")
+    let sessionTag = Self.tagOf(session)
+    Self.trace("session", "\(sessionTag) created (selector=\(type(of: selector)))")
 
+    // Subscribed BEFORE start() so the `.starting`/`.started` transitions cannot
+    // land before we are listening. The previous code only began consuming
+    // `stateStream()` after start(), so a session that came up promptly emitted
+    // `.started` into the void and then sat out the full 60s timeout.
     let states = session.stateStream()
-    try session.start()
-    Self.log("session.start() returned, state=\(String(describing: session.state))")
+    let startedSignal = Self.watchSessionStates(states, tag: sessionTag)
+    sessionStateTask = startedSignal
+
+    do {
+      try session.start()
+    } catch {
+      let code = MWDATCode.classify(error) ?? .sessionUnexpected
+      Self.trace("session", "\(sessionTag) start() FAILED → \(code.rawValue) \(code.slug): \(error)")
+      throw MWDATFailure(code, detail: "session.start(): \(error)")
+    }
+    Self.trace("session", "\(sessionTag) start() returned, state=\(session.state.description)")
 
     if session.state != .started {
-      Self.log("waiting for session to reach started (60s max)…")
-      let started = await Self.waitForStarted(states, timeoutSeconds: 60)
-      Self.log("waitForStarted → \(started), state=\(String(describing: session.state))")
-      guard started, session.state == .started else {
-        throw NSError(
-          domain: "MWDATBridge", code: 10,
-          userInfo: [
-            NSLocalizedDescriptionKey:
-              "Glasses session did not start. Make sure the glasses are open, "
-              + "connected in Meta AI, and this app is enabled under App connections.",
-          ]
-        )
+      Self.trace("session", "\(sessionTag) waiting to reach .started (60s max)…")
+      let outcome = await Self.waitForStarted(startedSignal, timeoutSeconds: 60)
+      // The live property is authoritative. A missed stream event must not fail
+      // a session that is demonstrably up.
+      let liveState = session.state
+      Self.trace("session", "\(sessionTag) waitForStarted → \(outcome), live state=\(liveState.description)")
+      if liveState != .started {
+        let code: MWDATCode
+        switch outcome {
+        case .started: code = .pipelineSessionStartTimeout
+        case .stopped: code = .pipelineSessionStoppedDuringStart
+        case .timedOut where liveState == .paused: code = .pipelineSessionPausedStall
+        case .timedOut: code = .pipelineSessionStartTimeout
+        }
+        throw MWDATFailure(code, detail: "session \(sessionTag) outcome=\(outcome) live=\(liveState.description)")
       }
     }
 
@@ -561,13 +630,20 @@ final class MWDATBridge: RCTEventEmitter {
     // never below 15 fps) to fit the Bluetooth link, so raw is safe to request.
     let config = StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: 24)
     Self.log("addStream(codec: raw, resolution: medium, fps: 24)…")
-    guard let newStream = try session.addStream(config: config) else {
-      throw NSError(
-        domain: "MWDATBridge", code: 11,
-        userInfo: [NSLocalizedDescriptionKey: "Could not open the glasses camera stream."]
-      )
+    let opened: MWDATCamera.Stream?
+    do {
+      opened = try session.addStream(config: config)
+    } catch {
+      let code = MWDATCode.classify(error) ?? .streamInternal
+      Self.trace("stream", "addStream FAILED → \(code.rawValue) \(code.slug): \(error)")
+      throw MWDATFailure(code, detail: "addStream: \(error)")
+    }
+    guard let newStream = opened else {
+      throw MWDATFailure(.pipelineAddStreamReturnedNil, detail: "session \(sessionTag)")
     }
     stream = newStream
+    let streamTag = Self.tagOf(newStream)
+    Self.trace("stream", "\(streamTag) created on session \(sessionTag)")
     lastStreamError = nil
     streamHasLeftStopped = false
 
@@ -588,7 +664,10 @@ final class MWDATBridge: RCTEventEmitter {
     listenerTokens.append(
       newStream.statePublisher.listen { [weak self] state in
         guard let self else { return }
-        Self.log("stream state → \(state) (hasLeftStopped=\(self.streamHasLeftStopped), stopping=\(self.stopping))")
+        Self.trace(
+          "stream",
+          "\(streamTag) state → \(state) (hasLeftStopped=\(self.streamHasLeftStopped), stopping=\(self.stopping))"
+        )
         self.sendEvent(withName: Event.streamState, body: ["state": String(describing: state)])
         if state != .stopped {
           self.streamHasLeftStopped = true
@@ -606,9 +685,10 @@ final class MWDATBridge: RCTEventEmitter {
     )
     listenerTokens.append(
       newStream.errorPublisher.listen { [weak self] error in
-        Self.log("stream ERROR: \(error.description)")
+        let code = MWDATCode.from(error)
+        Self.trace("stream", "\(streamTag) ERROR → \(code.rawValue) \(code.slug): \(error.description)")
         self?.lastStreamError = error
-        self?.sendEvent(withName: Event.error, body: ["message": error.description])
+        self?.emitFailure(code, detail: error.description)
       }
     )
     listenerTokens.append(
@@ -616,13 +696,14 @@ final class MWDATBridge: RCTEventEmitter {
         // Session state during and after stream negotiation: a session that
         // drops back to .stopped underneath a starting stream explains an
         // otherwise silent stream failure.
-        Self.log("session state → \(state.description)")
+        Self.trace("session", "\(sessionTag) state → \(state.description)")
       }
     )
     listenerTokens.append(
       session.errorPublisher.listen { [weak self] error in
-        Self.log("session ERROR: \(error.description)")
-        self?.sendEvent(withName: Event.error, body: ["message": error.description])
+        let code = MWDATCode.from(error)
+        Self.trace("session", "\(sessionTag) ERROR → \(code.rawValue) \(code.slug): \(error.description)")
+        self?.emitFailure(code, detail: error.description)
       }
     )
 
@@ -635,27 +716,25 @@ final class MWDATBridge: RCTEventEmitter {
     // the real failure only ever surfaces as a stray error event. Resolve only
     // once the stream is genuinely `.streaming`, and name the cause otherwise.
     if newStream.state != .streaming {
-      Self.log("waiting for stream to reach .streaming (45s max)…")
+      Self.trace("stream", "\(streamTag) waiting to reach .streaming (45s max)…")
       let streaming = await waitForStreaming(newStream, timeoutSeconds: 45)
-      Self.log("waitForStreaming → \(streaming), state=\(String(describing: newStream.state))")
+      Self.trace(
+        "stream",
+        "\(streamTag) waitForStreaming → \(streaming), state=\(String(describing: newStream.state))"
+      )
       guard streaming else {
-        let cause = lastStreamError.map { $0.description }
-          ?? (streamHasLeftStopped
-            ? "the stream started and then stopped without reporting an error"
-            : "the glasses never acknowledged the start request")
-        throw NSError(
-          domain: "MWDATBridge", code: 14,
-          userInfo: [
-            NSLocalizedDescriptionKey:
-              "Glasses camera stream never started (last state: "
-              + "\(String(describing: newStream.state)); cause: \(cause)). "
-              + "Check the glasses are unfolded and being worn, not overheating, "
-              + "and that camera access is allowed for Jarvis in Meta AI.",
-          ]
-        )
+        // Prefer the SDK's own reason. Only fall back to the generic
+        // "never started" when the glasses genuinely reported nothing —
+        // that distinction is the whole point of the code taxonomy.
+        let code = lastStreamError.map { MWDATCode.from($0) } ?? .pipelineStreamNeverStarted
+        let detail = "stream \(streamTag) last state=\(String(describing: newStream.state)) "
+          + "hasLeftStopped=\(streamHasLeftStopped) "
+          + "sdkError=\(lastStreamError.map { $0.description } ?? "none")"
+        Self.trace("stream", "\(streamTag) FAILED → \(code.rawValue) \(code.slug): \(detail)")
+        throw MWDATFailure(code, detail: detail)
       }
     }
-    Self.log("stream is .streaming — frames should follow")
+    Self.trace("stream", "\(streamTag) is .streaming — frames should follow")
   }
 
   private func attachWriter(segmentSeconds: Double) throws {
@@ -681,7 +760,42 @@ final class MWDATBridge: RCTEventEmitter {
     try newWriter.startAudio()
   }
 
+  /// Rejects an RN promise using the failure's code as the promise code, so JS
+  /// can branch on the specific cause. Untyped errors keep the generic code
+  /// rather than being silently assigned a misleading one.
+  private static func reject(_ reject: RCTPromiseRejectBlock, _ error: Error) {
+    if let failure = error as? MWDATFailure {
+      reject(String(failure.code.rawValue), failure.errorDescription, error)
+    } else if let code = MWDATCode.classify(error) {
+      reject(String(code.rawValue), "[\(code.rawValue) \(code.slug)] \(code.guidance)", error)
+    } else {
+      reject("mwdat_unknown", error.localizedDescription, error)
+    }
+  }
+
+  /// Emits an error to JS carrying the code, so the UI (and a pasted trace) can
+  /// name one cause instead of showing an undifferentiated message.
+  private func emitFailure(_ code: MWDATCode, detail: String) {
+    sendEvent(
+      withName: Event.error,
+      body: [
+        "code": code.rawValue,
+        "slug": code.slug,
+        "message": code.guidance,
+        "detail": detail,
+      ]
+    )
+  }
+
   private func teardown() {
+    if let session = deviceSession {
+      Self.trace("pipeline", "teardown of session \(Self.tagOf(session)) (stopping=\(stopping))")
+    }
+    // Cancelled before the session is released: an orphaned consumer left
+    // running against a dead session is exactly how a previous attempt keeps
+    // driving live retry logic.
+    sessionStateTask?.cancel()
+    sessionStateTask = nil
     writer?.stopAndDiscard()
     writer = nil
     stream?.stop()
@@ -897,23 +1011,57 @@ final class MWDATBridge: RCTEventEmitter {
     }
   }
 
-  private static func waitForStarted(
-    _ states: AsyncStream<DeviceSessionState>,
-    timeoutSeconds: UInt64
-  ) async -> Bool {
-    await withTaskGroup(of: Bool.self) { group in
-      group.addTask {
-        for await state in states {
-          if state == .started { return true }
-          if state == .stopped { return false }
-        }
-        return false
+  /// Why a session-start wait ended. A bare `Bool` conflated "the glasses said
+  /// no" with "nobody ever answered", which is precisely the ambiguity that made
+  /// every failure look like the same generic 60s timeout.
+  private enum SessionStartOutcome: CustomStringConvertible {
+    case started
+    case stopped
+    case timedOut
+
+    var description: String {
+      switch self {
+      case .started: return "started"
+      case .stopped: return "stopped"
+      case .timedOut: return "timedOut"
       }
+    }
+  }
+
+  /// Begins consuming the session state stream immediately, so transitions that
+  /// land during `start()` are observed rather than missed. Resolves on the
+  /// first terminal-for-startup state.
+  ///
+  /// Unlike the stream state machine, `.stopped` genuinely is terminal for a
+  /// session: a freshly created session is `.idle`, not `.stopped` (SDK 0.8.0
+  /// `DeviceSessionState` = idle/starting/started/paused/stopping/stopped), and
+  /// a stopped session cannot be restarted — it must be replaced.
+  private static func watchSessionStates(
+    _ states: AsyncStream<DeviceSessionState>,
+    tag: String
+  ) -> Task<SessionStartOutcome, Never> {
+    Task {
+      for await state in states {
+        trace("session", "\(tag) state → \(state.description)")
+        if state == .started { return .started }
+        if state == .stopped { return .stopped }
+      }
+      trace("session", "\(tag) state stream ended with no terminal state")
+      return .timedOut
+    }
+  }
+
+  private static func waitForStarted(
+    _ signal: Task<SessionStartOutcome, Never>,
+    timeoutSeconds: UInt64
+  ) async -> SessionStartOutcome {
+    await withTaskGroup(of: SessionStartOutcome.self) { group in
+      group.addTask { await signal.value }
       group.addTask {
         try? await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
-        return false
+        return .timedOut
       }
-      let result = await group.next() ?? false
+      let result = await group.next() ?? .timedOut
       group.cancelAll()
       return result
     }

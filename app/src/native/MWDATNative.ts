@@ -12,6 +12,19 @@ export interface MWDATSegmentEvent {
 
 export interface MWDATErrorEvent {
   message: string;
+  /** `MWDAT_CODES` key naming the one concrete cause. Absent on legacy events. */
+  code?: number;
+  slug?: string;
+  /** Machine context (object identity, last state) for a bug report, not the UI. */
+  detail?: string;
+}
+
+/** One entry of the native pipeline trace ring buffer. */
+export interface MWDATTraceEntry {
+  seq: number;
+  atMs: number;
+  category: string;
+  message: string;
 }
 
 export interface MWDATStateEvent {
@@ -41,6 +54,7 @@ interface MWDATBridgeModule {
   getRegistrationState(): Promise<string>;
   startRegistration(): Promise<string>;
   getDiagnostics(): Promise<MWDATDiagnostics>;
+  getDiagnosticTrace(): Promise<MWDATTraceEntry[]>;
   mockEnable(): Promise<void>;
   prepare(): Promise<void>;
   startPreview(): Promise<void>;
@@ -76,6 +90,7 @@ export const MWDATNative = {
   getRegistrationState: () => requireNative().getRegistrationState(),
   startRegistration: () => requireNative().startRegistration(),
   getDiagnostics: () => requireNative().getDiagnostics(),
+  getDiagnosticTrace: () => requireNative().getDiagnosticTrace(),
   mockEnable: () => requireNative().mockEnable(),
   prepare: () => requireNative().prepare(),
   startPreview: () => requireNative().startPreview(),

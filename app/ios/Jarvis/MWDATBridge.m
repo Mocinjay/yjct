@@ -17,6 +17,8 @@ RCT_EXTERN_METHOD(prepare:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject)
+RCT_EXTERN_METHOD(getDiagnosticTrace:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(mockEnable:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(startPreview:(RCTPromiseResolveBlock)resolve
