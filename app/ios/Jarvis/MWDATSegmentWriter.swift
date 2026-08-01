@@ -63,6 +63,7 @@ final class MWDATSegmentWriter {
 
   private let audioEngine = AVAudioEngine()
   private var audioRunning = false
+  private var hasReceivedAudioSample = false
   /// Set when a segment carrying an audio track fails to finish. Video is the
   /// point of the feature, so subsequent segments drop audio rather than keep
   /// losing whole clips to the encoder.
@@ -293,7 +294,9 @@ final class MWDATSegmentWriter {
       return
     }
     queue.async { [weak self] in
-      guard let self, self.running, let segment = self.current else { return }
+      guard let self, self.running else { return }
+      self.hasReceivedAudioSample = true
+      guard let segment = self.current else { return }
       guard let audioInput = segment.audioInput else { return }
       guard audioInput.isReadyForMoreMediaData else { return }
       let pts = CMSampleBufferGetPresentationTimeStamp(sample)
@@ -460,7 +463,7 @@ final class MWDATSegmentWriter {
     // finishWriting fails the whole segment over it — losing the video too.
     // Inputs cannot be added after startWriting, so decide here.
     var audioInput: AVAssetWriterInput?
-    if audioRunning, !audioEncodingDisabled {
+    if audioRunning, hasReceivedAudioSample, !audioEncodingDisabled {
       let audioFormat = audioEngine.inputNode.outputFormat(forBus: 0)
       let sampleRate = audioFormat.sampleRate > 0 ? audioFormat.sampleRate : 44_100
       let channels = max(1, min(2, Int(audioFormat.channelCount)))
@@ -483,6 +486,8 @@ final class MWDATSegmentWriter {
       )
     } else if audioEncodingDisabled {
       Self.log("audio encoding previously failed — writing a video-only segment")
+    } else if audioRunning {
+      Self.log("audio engine has not produced samples yet — writing a video-only segment")
     } else {
       Self.log("audio not running — writing a video-only segment")
     }

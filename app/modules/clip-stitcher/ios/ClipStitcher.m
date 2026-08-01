@@ -14,8 +14,7 @@
 /// A track that exists is not a track that has content. MWDATSegmentWriter adds
 /// its audio input up front and finishes a segment as long as video arrived, so
 /// a segment can carry an audio track that received zero samples. Reading such a
-/// track contributes nothing, and the resulting empty composition track is what
-/// trips the AVAssetReaderAudioMixOutput assertion.
+/// track contributes nothing, so the stitcher skips those tracks entirely.
 static BOOL JVSTrackHasContent(AVAssetTrack *track)
 {
   if (track == nil) {
@@ -26,6 +25,34 @@ static BOOL JVSTrackHasContent(AVAssetTrack *track)
     return NO;
   }
   return CMTimeCompare(range.duration, kCMTimeZero) > 0;
+}
+
+static BOOL JVSLoadAssetKeys(AVAsset *asset, NSArray<NSString *> *keys, NSError **error)
+{
+  dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+  [asset loadValuesAsynchronouslyForKeys:keys completionHandler:^{
+    dispatch_semaphore_signal(semaphore);
+  }];
+  dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+
+  for (NSString *key in keys) {
+    NSError *keyError = nil;
+    AVKeyValueStatus status = [asset statusOfValueForKey:key error:&keyError];
+    if (status != AVKeyValueStatusLoaded) {
+      if (error != nil) {
+        *error = keyError ?: [NSError errorWithDomain:@"ClipStitcher"
+                                             code:1
+                                         userInfo:@{
+                                           NSLocalizedDescriptionKey :
+                                               [NSString stringWithFormat:
+                                                   @"Failed to load asset key '%@'", key]
+                                         }];
+      }
+      return NO;
+    }
+  }
+
+  return YES;
 }
 
 @interface ClipStitcher : NSObject <RCTBridgeModule>
@@ -53,11 +80,7 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
 
     AVMutableComposition *composition = [AVMutableComposition composition];
     // Tracks are created lazily, on the first segment that actually carries
-    // one. A composition track that is added but never written leaves an EMPTY
-    // track in the asset, and AVAssetExportSession then builds its reader over
-    // it — constructing an AVAssetReaderAudioMixOutput with zero audio tracks,
-    // which trips the assertion "[audioTracks count] >= 1" and aborts the
-    // process. Glasses clips are routinely video-only (the toolkit exposes no
+    // one. Glasses clips are routinely video-only (the toolkit exposes no
     // microphone, so audio depends on the phone-side engine having captured
     // anything), so this is the normal path, not an edge case.
     AVMutableCompositionTrack *videoTrack = nil;
@@ -70,6 +93,13 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
     for (NSString *path in segmentPaths) {
       NSURL *url = [NSURL fileURLWithPath:path];
       AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:nil];
+
+      NSError *loadError = nil;
+      if (!JVSLoadAssetKeys(asset, @[ @"tracks", @"duration" ], &loadError)) {
+        reject(@"stitch_load", loadError.localizedDescription, loadError);
+        return;
+      }
+
       CMTimeRange range = CMTimeRangeMake(kCMTimeZero, asset.duration);
 
       NSError *error = nil;
@@ -101,6 +131,9 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
                  @"no audio output will be created for it",
                  path.lastPathComponent,
                  CMTimeGetSeconds(srcAudio.timeRange.duration));
+        } else {
+          JVSLog(@"No audio track found in %@; continuing without audio.",
+                 path.lastPathComponent);
         }
       } else {
         srcAudioUsableTotal += 1;
@@ -120,10 +153,7 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
     }
 
     // Final safety net. Whatever the reason a track ended up with no segments,
-    // it must not reach AVAssetExportSession: the export builds a reader over
-    // every track in the asset, and an empty audio track means constructing an
-    // AVAssetReaderAudioMixOutput over zero tracks, which is not a catchable
-    // error but an assertion that aborts the process. Removing the track here
+    // it must not reach the reader/writer pipeline. Removing the track here
     // deletes that code path rather than defending against it.
     for (AVMutableCompositionTrack *track in [composition.tracks copy]) {
       if (track.segments.count == 0 ||
@@ -162,53 +192,282 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
     NSAssert(compositionAudioTracks != 1 || audioTrack != nil,
              @"composition audio track present without a usable source");
 
-    [[NSFileManager defaultManager] removeItemAtPath:outputPath error:nil];
-    AVAssetExportSession *export =
-        [[AVAssetExportSession alloc] initWithAsset:composition
-                                         presetName:AVAssetExportPresetPassthrough];
-    export.outputURL = [NSURL fileURLWithPath:outputPath];
-    export.outputFileType = AVFileTypeMPEG4;
+    NSError *readerLoadError = nil;
+    AVAsset *readerAsset = composition;
+    if (!JVSLoadAssetKeys(readerAsset, @[ @"tracks", @"duration" ], &readerLoadError)) {
+      reject(@"reader_load", readerLoadError.localizedDescription, readerLoadError);
+      return;
+    }
 
-    [export exportAsynchronouslyWithCompletionHandler:^{
-      if (export.status != AVAssetExportSessionStatusCompleted) {
-        NSError *error = export.error;
-        NSLog(@"[ClipStitcher] export FAILED status=%ld domain=%@ code=%ld desc=%@ underlying=%@",
-              (long)export.status, error.domain, (long)error.code,
-              error.localizedDescription, error.userInfo[NSUnderlyingErrorKey]);
-        NSString *detail =
-            error != nil
-                ? [NSString stringWithFormat:@"%@ [%@ %ld]", error.localizedDescription,
-                                             error.domain, (long)error.code]
-                : @"Export failed";
-        reject(@"export", detail, error);
+    NSError *readerError = nil;
+    AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:readerAsset error:&readerError];
+    if (reader == nil) {
+      reject(@"reader_failed", readerError.localizedDescription, readerError);
+      return;
+    }
+
+    NSArray<AVAssetTrack *> *videoTracks = [readerAsset tracksWithMediaType:AVMediaTypeVideo];
+    AVAssetTrack *readerVideoTrack = videoTracks.firstObject;
+    if (readerVideoTrack == nil) {
+      reject(@"missing_video_track", @"Missing video track.", nil);
+      return;
+    }
+
+    AVAssetReaderTrackOutput *videoOutput = [[AVAssetReaderTrackOutput alloc]
+        initWithTrack:readerVideoTrack
+       outputSettings:@{
+         (NSString *)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA)
+       }];
+    if (![reader canAddOutput:videoOutput]) {
+      reject(@"cannot_add_video_reader_output", @"Cannot add video reader output.", nil);
+      return;
+    }
+    [reader addOutput:videoOutput];
+
+    NSArray<AVAssetTrack *> *audioTracks = [readerAsset tracksWithMediaType:AVMediaTypeAudio];
+    JVSLog(@"Reader asset audio track count: %lu", (unsigned long)audioTracks.count);
+    JVSLog(@"Audio output type: AVAssetReaderTrackOutput");
+    JVSLog(@"Processing as video-only: %@", audioTracks.count == 0 ? @"YES" : @"NO");
+
+    AVAssetReaderTrackOutput *audioOutput = nil;
+    if (audioTracks.firstObject != nil) {
+      AVAssetTrack *readerAudioTrack = audioTracks.firstObject;
+      AVAssetReaderTrackOutput *output = [[AVAssetReaderTrackOutput alloc]
+          initWithTrack:readerAudioTrack
+         outputSettings:@{
+           AVFormatIDKey : @(kAudioFormatLinearPCM),
+           AVLinearPCMIsFloatKey : @NO,
+           AVLinearPCMBitDepthKey : @16,
+           AVLinearPCMIsBigEndianKey : @NO,
+           AVLinearPCMIsNonInterleaved : @NO,
+         }];
+      if (![reader canAddOutput:output]) {
+        reject(@"cannot_add_audio_reader_output", @"Cannot add audio reader output.", nil);
+        return;
+      }
+      [reader addOutput:output];
+      audioOutput = output;
+    } else {
+      JVSLog(@"No audio track found. Continuing as video-only.");
+    }
+
+    [[NSFileManager defaultManager] removeItemAtPath:outputPath error:nil];
+    NSURL *outputURL = [NSURL fileURLWithPath:outputPath];
+    NSError *writerError = nil;
+    AVAssetWriter *writer = [[AVAssetWriter alloc] initWithURL:outputURL
+                                                      fileType:AVFileTypeMPEG4
+                                                         error:&writerError];
+    if (writer == nil) {
+      reject(@"writer_failed", writerError.localizedDescription, writerError);
+      return;
+    }
+
+    CGSize naturalSize = readerVideoTrack.naturalSize;
+    CGFloat videoWidth = fabs(naturalSize.width);
+    CGFloat videoHeight = fabs(naturalSize.height);
+    if (videoWidth <= 0 || videoHeight <= 0) {
+      videoWidth = 504;
+      videoHeight = 896;
+    }
+    AVAssetWriterInput *videoWriterInput = [[AVAssetWriterInput alloc]
+        initWithMediaType:AVMediaTypeVideo
+           outputSettings:@{
+             AVVideoCodecKey : AVVideoCodecTypeH264,
+             AVVideoWidthKey : @(videoWidth),
+             AVVideoHeightKey : @(videoHeight),
+           }];
+    videoWriterInput.transform = readerVideoTrack.preferredTransform;
+    if (![writer canAddInput:videoWriterInput]) {
+      reject(@"cannot_add_video_writer_input", @"Cannot add video writer input.", nil);
+      return;
+    }
+    [writer addInput:videoWriterInput];
+
+    AVAssetWriterInput *audioWriterInput = nil;
+    if (audioOutput != nil) {
+      AVAssetWriterInput *input = [[AVAssetWriterInput alloc]
+          initWithMediaType:AVMediaTypeAudio
+             outputSettings:@{
+               AVFormatIDKey : @(kAudioFormatMPEG4AAC),
+               AVSampleRateKey : @44100,
+               AVNumberOfChannelsKey : @2,
+               AVEncoderBitRateKey : @128000,
+             }];
+      if (![writer canAddInput:input]) {
+        reject(@"cannot_add_audio_writer_input", @"Cannot add audio writer input.", nil);
+        return;
+      }
+      [writer addInput:input];
+      audioWriterInput = input;
+    }
+
+    if (![writer startWriting]) {
+      NSError *error = writer.error;
+      reject(@"writer_failed", error.localizedDescription, error);
+      return;
+    }
+    if (![reader startReading]) {
+      NSError *error = reader.error;
+      [writer cancelWriting];
+      reject(@"reader_failed", error.localizedDescription, error);
+      return;
+    }
+    [writer startSessionAtSourceTime:kCMTimeZero];
+
+    dispatch_group_t writingGroup = dispatch_group_create();
+    dispatch_queue_t videoQueue = dispatch_queue_create("com.mocinjay.jarvis.clipstitcher.video", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_t audioQueue = dispatch_queue_create("com.mocinjay.jarvis.clipstitcher.audio", DISPATCH_QUEUE_SERIAL);
+    __block BOOL didFail = NO;
+    void (^failOnce)(NSString *, NSString *, NSError *) =
+        ^(NSString *code, NSString *message, NSError *error) {
+          @synchronized(writer) {
+            if (didFail) { return; }
+            didFail = YES;
+            [reader cancelReading];
+            [writer cancelWriting];
+            reject(code, message, error);
+          }
+        };
+
+    // Each input must leave the group exactly once, on every exit path
+    // including cancellation. A missed leave hangs the export forever; a double
+    // leave crashes. `finishOnce` makes both impossible.
+    __block BOOL videoDone = NO;
+    __block BOOL audioDone = NO;
+    __block NSUInteger videoSamplesWritten = 0;
+    __block NSUInteger audioSamplesWritten = 0;
+
+    dispatch_group_enter(writingGroup);
+    [videoWriterInput requestMediaDataWhenReadyOnQueue:videoQueue usingBlock:^{
+      void (^finishOnce)(void) = ^{
+        @synchronized(writer) {
+          if (videoDone) { return; }
+          videoDone = YES;
+        }
+        if (!didFail) { [videoWriterInput markAsFinished]; }
+        dispatch_group_leave(writingGroup);
+      };
+      // Cancelled by the other track's failure: stop pulling and settle.
+      if (didFail) {
+        finishOnce();
+        return;
+      }
+      while (videoWriterInput.isReadyForMoreMediaData) {
+        CMSampleBufferRef buffer = [videoOutput copyNextSampleBuffer];
+        if (buffer == NULL) {
+          finishOnce();
+          return;
+        }
+        if (![videoWriterInput appendSampleBuffer:buffer]) {
+          CFRelease(buffer);
+          NSError *error = writer.error;
+          finishOnce();
+          failOnce(@"video_write", error.localizedDescription, error);
+          return;
+        }
+        videoSamplesWritten += 1;
+        CFRelease(buffer);
+      }
+    }];
+
+    // No audio output means no audio task is ever created, entered, or awaited:
+    // the group holds only the video entry, so a video-only clip completes
+    // rather than blocking on an audio task that does not exist.
+    if (audioOutput != nil && audioWriterInput != nil) {
+      dispatch_group_enter(writingGroup);
+      [audioWriterInput requestMediaDataWhenReadyOnQueue:audioQueue usingBlock:^{
+        void (^finishOnce)(void) = ^{
+          @synchronized(writer) {
+            if (audioDone) { return; }
+            audioDone = YES;
+          }
+          if (!didFail) { [audioWriterInput markAsFinished]; }
+          dispatch_group_leave(writingGroup);
+        };
+        if (didFail) {
+          finishOnce();
+          return;
+        }
+        while (audioWriterInput.isReadyForMoreMediaData) {
+          CMSampleBufferRef buffer = [audioOutput copyNextSampleBuffer];
+          if (buffer == NULL) {
+            finishOnce();
+            return;
+          }
+          if (![audioWriterInput appendSampleBuffer:buffer]) {
+            CFRelease(buffer);
+            NSError *error = writer.error;
+            finishOnce();
+            failOnce(@"audio_write", error.localizedDescription, error);
+            return;
+          }
+          audioSamplesWritten += 1;
+          CFRelease(buffer);
+        }
+      }];
+    } else {
+      JVSLog(@"video-only: no audio reader output and no audio writer input "
+             @"were created; completion will not wait for audio");
+    }
+
+    dispatch_group_notify(writingGroup, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      @synchronized(writer) {
+        if (didFail) { return; }
+        didFail = YES;
+      }
+      if (reader.status == AVAssetReaderStatusFailed) {
+        NSError *error = reader.error;
+        [writer cancelWriting];
+        reject(@"reader_failed", error.localizedDescription, error);
         return;
       }
 
-      NSString *thumbnailPath =
-          [[outputPath stringByDeletingPathExtension] stringByAppendingString:@".jpg"];
-      AVURLAsset *clipAsset =
-          [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:outputPath] options:nil];
-      AVAssetImageGenerator *generator =
-          [[AVAssetImageGenerator alloc] initWithAsset:clipAsset];
-      generator.appliesPreferredTrackTransform = YES;
-      generator.maximumSize = CGSizeMake(640, 640);
-
-      CGImageRef cgImage =
-          [generator copyCGImageAtTime:CMTimeMakeWithSeconds(0.0, 600)
-                            actualTime:NULL
-                                 error:NULL];
-      if (cgImage != NULL) {
-        UIImage *image = [UIImage imageWithCGImage:cgImage];
-        CGImageRelease(cgImage);
-        [UIImageJPEGRepresentation(image, 0.8) writeToFile:thumbnailPath atomically:YES];
+      JVSLog(@"writing finished: videoSamples=%lu audioSamples=%lu",
+             (unsigned long)videoSamplesWritten,
+             (unsigned long)audioSamplesWritten);
+      // An audio input that was added but received no samples writes an EMPTY
+      // audio track into the output file - the exact shape that made the source
+      // segments crash this stitcher in the first place. The composition-level
+      // empty-track removal above should make this unreachable; log loudly if
+      // it ever is not, so the clip is not quietly poisoned for downstream
+      // readers.
+      if (audioWriterInput != nil && audioSamplesWritten == 0) {
+        JVSLog(@"WARNING: audio input received zero samples; output clip may "
+               @"carry an empty audio track");
       }
+      [writer finishWritingWithCompletionHandler:^{
+        if (writer.status != AVAssetWriterStatusCompleted) {
+          NSError *error = writer.error;
+          reject(@"writer_failed", error.localizedDescription, error);
+          return;
+        }
 
-      resolve(@{
-        @"outputPath" : outputPath,
-        @"thumbnailPath" : thumbnailPath,
-        @"durationSec" : @(CMTimeGetSeconds(clipAsset.duration)),
-      });
-    }];
+        NSString *thumbnailPath =
+            [[outputPath stringByDeletingPathExtension] stringByAppendingString:@".jpg"];
+        AVURLAsset *clipAsset =
+            [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:outputPath] options:nil];
+        AVAssetImageGenerator *generator =
+            [[AVAssetImageGenerator alloc] initWithAsset:clipAsset];
+        generator.appliesPreferredTrackTransform = YES;
+        generator.maximumSize = CGSizeMake(640, 640);
+
+        CGImageRef cgImage =
+            [generator copyCGImageAtTime:CMTimeMakeWithSeconds(0.0, 600)
+                              actualTime:NULL
+                                   error:NULL];
+        if (cgImage != NULL) {
+          UIImage *image = [UIImage imageWithCGImage:cgImage];
+          CGImageRelease(cgImage);
+          [UIImageJPEGRepresentation(image, 0.8) writeToFile:thumbnailPath atomically:YES];
+        }
+
+        resolve(@{
+          @"outputPath" : outputPath,
+          @"thumbnailPath" : thumbnailPath,
+          @"durationSec" : @(CMTimeGetSeconds(clipAsset.duration)),
+        });
+      }];
+    });
   });
 }
 
