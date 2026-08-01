@@ -68,10 +68,13 @@ final class MWDATBridge: RCTEventEmitter {
   private var previewEmitCount = 0
   private var previewFailLogged = false
 
-  /// stdout logging so `devicectl device process launch --console` shows the
-  /// glasses handshake live during field debugging.
+  /// NSLog rather than print: it reaches the unified logging system, so
+  /// `log stream --device` shows the glasses handshake live during field
+  /// debugging without needing a console attached (the devicectl console
+  /// drops the connection during long capture runs).
   private static func log(_ message: String) {
-    print("[MWDAT] \(message)")
+    NSLog("[MWDAT] %@", message)
+    DiagnosticLog.write("[MWDAT] \(message)")
   }
 
   // MARK: - App lifecycle
@@ -369,6 +372,7 @@ final class MWDATBridge: RCTEventEmitter {
   ) {
     Task { @MainActor in
       do {
+        DiagnosticLog.reset()
         Self.log("startPreview() called")
         try ensureConfigured()
         try await openPipelineIfNeeded()
