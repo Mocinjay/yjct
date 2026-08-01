@@ -353,20 +353,25 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
         return;
       }
       while (videoWriterInput.isReadyForMoreMediaData) {
-        CMSampleBufferRef buffer = [videoOutput copyNextSampleBuffer];
-        if (buffer == NULL) {
-          finishOnce();
-          return;
-        }
-        if (![videoWriterInput appendSampleBuffer:buffer]) {
+        // Each decoded frame is a full uncompressed BGRA buffer. Without a pool
+        // scoped to one iteration, autoreleased temporaries pile up for the
+        // whole clip and spike memory badly enough to get the app killed.
+        @autoreleasepool {
+          CMSampleBufferRef buffer = [videoOutput copyNextSampleBuffer];
+          if (buffer == NULL) {
+            finishOnce();
+            return;
+          }
+          if (![videoWriterInput appendSampleBuffer:buffer]) {
+            CFRelease(buffer);
+            NSError *error = writer.error;
+            finishOnce();
+            failOnce(@"video_write", error.localizedDescription, error);
+            return;
+          }
+          videoSamplesWritten += 1;
           CFRelease(buffer);
-          NSError *error = writer.error;
-          finishOnce();
-          failOnce(@"video_write", error.localizedDescription, error);
-          return;
         }
-        videoSamplesWritten += 1;
-        CFRelease(buffer);
       }
     }];
 
@@ -389,20 +394,22 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
           return;
         }
         while (audioWriterInput.isReadyForMoreMediaData) {
-          CMSampleBufferRef buffer = [audioOutput copyNextSampleBuffer];
-          if (buffer == NULL) {
-            finishOnce();
-            return;
-          }
-          if (![audioWriterInput appendSampleBuffer:buffer]) {
+          @autoreleasepool {
+            CMSampleBufferRef buffer = [audioOutput copyNextSampleBuffer];
+            if (buffer == NULL) {
+              finishOnce();
+              return;
+            }
+            if (![audioWriterInput appendSampleBuffer:buffer]) {
+              CFRelease(buffer);
+              NSError *error = writer.error;
+              finishOnce();
+              failOnce(@"audio_write", error.localizedDescription, error);
+              return;
+            }
+            audioSamplesWritten += 1;
             CFRelease(buffer);
-            NSError *error = writer.error;
-            finishOnce();
-            failOnce(@"audio_write", error.localizedDescription, error);
-            return;
           }
-          audioSamplesWritten += 1;
-          CFRelease(buffer);
         }
       }];
     } else {

@@ -1,5 +1,6 @@
+import { useIsFocused } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -28,6 +29,22 @@ export function PlayerScreen({ route, navigation }: Props) {
   const [draft, setDraft] = useState(clip.name);
   const [isPro, setIsPro] = useState(false);
   const [captioning, setCaptioning] = useState(false);
+  const [ended, setEnded] = useState(false);
+
+  // A fresh `{ uri }` object on every render makes react-native-video treat the
+  // source as changed and re-initialize the player. This screen re-renders on
+  // rename, the entitlement check and the captioning flag, so the player was
+  // being rebuilt repeatedly and the old AVPlayers were what pushed the app
+  // into "Terminated due to memory issue".
+  const source = useMemo(
+    () => ({ uri: `file://${clip.filePath}` }),
+    [clip.filePath],
+  );
+
+  // Leaving the screen (Publish, Paywall, or back to the Library) leaves this
+  // screen mounted underneath, so without this the video kept decoding in the
+  // background.
+  const isFocused = useIsFocused();
 
   useEffect(() => {
     entitlementStore.isPro().then(setIsPro);
@@ -99,10 +116,17 @@ export function PlayerScreen({ route, navigation }: Props) {
     <View style={styles.root}>
       <View style={styles.videoFrame}>
         <Video
-          source={{ uri: `file://${clip.filePath}` }}
+          source={source}
           style={styles.video}
+          // Native transport controls: play/pause, scrubbing, and skip.
           controls
+          paused={!isFocused || ended}
+          onEnd={() => setEnded(true)}
+          onLoad={() => setEnded(false)}
           resizeMode="contain"
+          ignoreSilentSwitch="ignore"
+          playInBackground={false}
+          playWhenInactive={false}
         />
       </View>
 
