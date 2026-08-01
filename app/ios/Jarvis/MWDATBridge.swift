@@ -65,6 +65,7 @@ final class MWDATBridge: RCTEventEmitter {
   private var previewBusy = false
   private var lastPreviewAt: TimeInterval = 0
   private var frameCount = 0
+  private var previewEmitCount = 0
   private var previewFailLogged = false
 
   /// stdout logging so `devicectl device process launch --console` shows the
@@ -545,13 +546,17 @@ final class MWDATBridge: RCTEventEmitter {
       }
     }
 
-    // `.raw` is uncompressed YCbCr. Even `.medium` at 24 fps is ~33 MB/s,
-    // orders of magnitude past the glasses link budget, so the stream
-    // negotiates and dies before it ever reaches `.streaming`. `.hvc1` is the
-    // only compressed codec the SDK exposes — and it is also the one
-    // `VideoFrame.makeUIImage()` can actually decode (raw frames return nil).
-    let config = StreamConfiguration(videoCodec: .hvc1, resolution: .medium, frameRate: 24)
-    Self.log("addStream(codec: hvc1, resolution: medium, fps: 24)…")
+    // `.raw` delivers decoded CVPixelBuffers; `.hvc1` delivers compressed HEVC
+    // that the SDK does NOT decode for us — a frame then carries a dataBuffer
+    // and no imageBuffer, `makeUIImage()` returns nil, `CMSampleBufferGetImageBuffer`
+    // returns nil, and every frame is dropped by both the preview converter and
+    // the writer's H.264 encoder input (which expects uncompressed samples).
+    // Verified on-device: hvc1 frames log `imageBuffer=false makeUIImage=NIL`.
+    // `.raw` is also what Meta's own sample pairs with `makeUIImage()`; the SDK
+    // applies an automatic quality ladder (resolution first, then frame rate,
+    // never below 15 fps) to fit the Bluetooth link, so raw is safe to request.
+    let config = StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: 24)
+    Self.log("addStream(codec: raw, resolution: medium, fps: 24)…")
     guard let newStream = try session.addStream(config: config) else {
       throw NSError(
         domain: "MWDATBridge", code: 11,
@@ -568,6 +573,9 @@ final class MWDATBridge: RCTEventEmitter {
         self.frameCount += 1
         if self.frameCount == 1 || self.frameCount % 100 == 0 {
           Self.log("video frame #\(self.frameCount)")
+        }
+        if self.frameCount == 1 {
+          Self.logFrameDiagnostics(frame)
         }
         self.writer?.appendVideo(frame.sampleBuffer)
         self.emitPreviewFrame(frame)
@@ -681,9 +689,58 @@ final class MWDATBridge: RCTEventEmitter {
     // on the way down — which is exactly the failure we need to see.
     listenerTokens = []
     frameCount = 0
+    previewEmitCount = 0
     previewFailLogged = false
     streamHasLeftStopped = false
     lastStreamError = nil
+  }
+
+  /// One-shot anatomy dump of the first frame the glasses deliver. Whether the
+  /// SDK hands us decoded pixel buffers or compressed HEVC decides whether the
+  /// preview can render at all, and it is not knowable from the API surface.
+  private static func logFrameDiagnostics(_ frame: VideoFrame) {
+    let sample = frame.sampleBuffer
+    var parts: [String] = []
+
+    if let desc = CMSampleBufferGetFormatDescription(sample) {
+      let subType = CMFormatDescriptionGetMediaSubType(desc)
+      let fourCC = String(
+        bytes: [
+          UInt8((subType >> 24) & 0xFF), UInt8((subType >> 16) & 0xFF),
+          UInt8((subType >> 8) & 0xFF), UInt8(subType & 0xFF),
+        ],
+        encoding: .ascii
+      ) ?? "????"
+      let dims = CMVideoFormatDescriptionGetDimensions(desc)
+      parts.append("subtype='\(fourCC)' \(dims.width)x\(dims.height)")
+    } else {
+      parts.append("NO format description")
+    }
+
+    let imageBuffer = CMSampleBufferGetImageBuffer(sample)
+    parts.append("imageBuffer=\(imageBuffer != nil)")
+    if let imageBuffer {
+      let pixelFormat = CVPixelBufferGetPixelFormatType(imageBuffer)
+      let fourCC = String(
+        bytes: [
+          UInt8((pixelFormat >> 24) & 0xFF), UInt8((pixelFormat >> 16) & 0xFF),
+          UInt8((pixelFormat >> 8) & 0xFF), UInt8(pixelFormat & 0xFF),
+        ],
+        encoding: .ascii
+      ) ?? "????"
+      parts.append("pixelFormat='\(fourCC)'")
+    }
+    parts.append("dataBuffer=\(CMSampleBufferGetDataBuffer(sample) != nil)")
+    parts.append("samples=\(CMSampleBufferGetNumSamples(sample))")
+    parts.append("dataReady=\(CMSampleBufferDataIsReady(sample))")
+
+    if let image = frame.makeUIImage() {
+      parts.append("makeUIImage=\(Int(image.size.width))x\(Int(image.size.height))")
+    } else {
+      parts.append("makeUIImage=NIL")
+    }
+
+    log("FRAME ANATOMY — " + parts.joined(separator: " "))
   }
 
   /// ~6 fps JPEG preview of the wearer's view, dropped when the encoder is
@@ -720,6 +777,10 @@ final class MWDATBridge: RCTEventEmitter {
           Self.log("preview conversion FAILED (makeUIImage and CoreImage both nil) — frames arrive but cannot render")
         }
         return
+      }
+      self.previewEmitCount += 1
+      if self.previewEmitCount == 1 || self.previewEmitCount % 50 == 0 {
+        Self.log("preview emit #\(self.previewEmitCount) — \(jpeg.count) bytes JPEG")
       }
       self.sendEvent(
         withName: Event.previewFrame,
