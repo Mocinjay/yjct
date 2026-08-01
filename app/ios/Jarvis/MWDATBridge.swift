@@ -38,6 +38,20 @@ final class MWDATBridge: RCTEventEmitter {
 
   private var deviceSession: DeviceSession?
   private var stream: MWDATCamera.Stream?
+
+  /// In-flight pipeline open so concurrent callers coalesce onto one attempt.
+  /// `openPipelineIfNeeded()` is reachable from `startPreview()`, `start()`,
+  /// the retry button, and any React effect that re-fires — and it tears the
+  /// existing session down before rebuilding. A second caller mid-negotiation
+  /// used to stop the first (stop chime), create another (start chime), then
+  /// the first failure tore *that* one down: a self-sustaining restart loop.
+  private var openTask: Task<Void, Error>?
+
+  /// Consumes the session state stream for the life of the session. Held so
+  /// teardown can cancel it — an orphaned consumer from a previous attempt is
+  /// one of the ways a dead session keeps driving live logic.
+  private var sessionStateTask: Task<SessionStartOutcome, Never>?
+
   private var listenerTokens: [any AnyListenerToken] = []
   private var observerTokens: [any AnyListenerToken] = []
   private var writer: MWDATSegmentWriter?
@@ -152,6 +166,13 @@ final class MWDATBridge: RCTEventEmitter {
     bridge.stopping = true
     bridge.teardown()
     bridge.stopping = false
+    // Tell JS the feed is gone so ConnectScreen can clear its "previewing"
+    // latch and reopen when we return to the foreground. Without this, the
+    // UI keeps showing a dead preview and never retries.
+    bridge.sendEvent(
+      withName: Event.streamState,
+      body: ["state": "stopped", "reason": reason]
+    )
   }
 
   // MARK: - App-level URL callback (Meta AI hands control back via jarvis://)
@@ -523,7 +544,39 @@ final class MWDATBridge: RCTEventEmitter {
 
   // MARK: - Pipeline internals
 
+  /// Why a session-start wait ended. A bare `Bool` conflated "the glasses said
+  /// no" with "nobody ever answered".
+  private enum SessionStartOutcome: CustomStringConvertible {
+    case started
+    case stopped
+    case timedOut
+
+    var description: String {
+      switch self {
+      case .started: return "started"
+      case .stopped: return "stopped"
+      case .timedOut: return "timedOut"
+      }
+    }
+  }
+
+  /// Single-flight entry point. Concurrent callers await the existing attempt
+  /// instead of starting a competing one.
+  @MainActor
   private func openPipelineIfNeeded() async throws {
+    if let existing = openTask {
+      Self.log("open already in flight — coalescing onto it")
+      try await existing.value
+      return
+    }
+    let task = Task { @MainActor in try await performOpenPipeline() }
+    openTask = task
+    defer { openTask = nil }
+    try await task.value
+  }
+
+  @MainActor
+  private func performOpenPipeline() async throws {
     if let session = deviceSession, session.state == .started, stream != nil {
       Self.log("pipeline already open (session started, stream present)")
       return
@@ -603,22 +656,41 @@ final class MWDATBridge: RCTEventEmitter {
     deviceSession = session
     Self.log("createSession OK — starting session")
 
+    // Subscribed BEFORE start() so `.starting`/`.started` cannot land before
+    // we are listening. Consuming only *after* start() missed a prompt
+    // `.started`, burned the full 60s timeout, then tore down a live session
+    // — which is the restart loop.
     let states = session.stateStream()
+    let startedSignal = Self.watchSessionStates(states)
+    sessionStateTask = startedSignal
+
     try session.start()
     Self.log("session.start() returned, state=\(String(describing: session.state))")
 
     if session.state != .started {
       Self.log("waiting for session to reach started (60s max)…")
-      let started = await Self.waitForStarted(states, timeoutSeconds: 60)
-      Self.log("waitForStarted → \(started), state=\(String(describing: session.state))")
-      guard started, session.state == .started else {
+      let outcome = await Self.waitForStarted(startedSignal, timeoutSeconds: 60)
+      // The live property is authoritative. A missed stream event must not
+      // fail a session that is demonstrably up.
+      let liveState = session.state
+      Self.log("waitForStarted → \(outcome), live state=\(liveState.description)")
+      if liveState != .started {
+        let reason: String
+        switch outcome {
+        case .stopped:
+          reason = "Glasses session stopped during start (folded, out of range, or taken over)."
+        case .timedOut where liveState == .paused:
+          reason =
+            "Glasses session paused and stayed paused. Do not restart while paused — "
+            + "wait for the glasses to resume, or fold/unfold and try again."
+        case .started, .timedOut:
+          reason =
+            "Glasses session did not start. Make sure the glasses are open, "
+            + "connected in Meta AI, and this app is enabled under App connections."
+        }
         throw NSError(
           domain: "MWDATBridge", code: 10,
-          userInfo: [
-            NSLocalizedDescriptionKey:
-              "Glasses session did not start. Make sure the glasses are open, "
-              + "connected in Meta AI, and this app is enabled under App connections.",
-          ]
+          userInfo: [NSLocalizedDescriptionKey: reason]
         )
       }
     }
@@ -755,6 +827,11 @@ final class MWDATBridge: RCTEventEmitter {
   }
 
   private func teardown() {
+    // Cancelled before the session is released: an orphaned consumer left
+    // running against a dead session is exactly how a previous attempt keeps
+    // driving live retry logic.
+    sessionStateTask?.cancel()
+    sessionStateTask = nil
     writer?.stopAndDiscard()
     writer = nil
     stream?.stop()
@@ -972,23 +1049,38 @@ final class MWDATBridge: RCTEventEmitter {
     }
   }
 
-  private static func waitForStarted(
-    _ states: AsyncStream<DeviceSessionState>,
-    timeoutSeconds: UInt64
-  ) async -> Bool {
-    await withTaskGroup(of: Bool.self) { group in
-      group.addTask {
-        for await state in states {
-          if state == .started { return true }
-          if state == .stopped { return false }
-        }
-        return false
+  /// Begins consuming the session state stream immediately, so transitions that
+  /// land during `start()` are observed rather than missed. Resolves on the
+  /// first terminal-for-startup state.
+  ///
+  /// Unlike the camera stream state machine, `.stopped` is genuinely terminal
+  /// for a session: a freshly created session is `.idle`, not `.stopped`
+  /// (SDK 0.8.0), and a stopped session cannot be restarted — it must be replaced.
+  private static func watchSessionStates(
+    _ states: AsyncStream<DeviceSessionState>
+  ) -> Task<SessionStartOutcome, Never> {
+    Task {
+      for await state in states {
+        log("session state (watch) → \(state.description)")
+        if state == .started { return .started }
+        if state == .stopped { return .stopped }
       }
+      log("session state stream ended with no terminal state")
+      return .timedOut
+    }
+  }
+
+  private static func waitForStarted(
+    _ signal: Task<SessionStartOutcome, Never>,
+    timeoutSeconds: UInt64
+  ) async -> SessionStartOutcome {
+    await withTaskGroup(of: SessionStartOutcome.self) { group in
+      group.addTask { await signal.value }
       group.addTask {
         try? await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
-        return false
+        return .timedOut
       }
-      let result = await group.next() ?? false
+      let result = await group.next() ?? .timedOut
       group.cancelAll()
       return result
     }

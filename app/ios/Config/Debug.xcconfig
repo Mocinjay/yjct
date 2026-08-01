@@ -1,0 +1,14 @@
+// Base configuration for the Jarvis target, Debug.
+//
+// CocoaPods normally owns `baseConfigurationReference`. This file takes it
+// over and #includes the generated Pods config instead — an arrangement
+// CocoaPods explicitly supports. It will print a warning on `pod install`
+// saying a custom base configuration is set; that is expected and harmless
+// as long as the #include below is kept.
+
+#include "../Pods/Target Support Files/Pods-Jarvis/Pods-Jarvis.debug.xcconfig"
+
+// Per-developer signing. Untracked — see Signing.xcconfig.example.
+// Optional include, so a missing file degrades to an Xcode signing error
+// rather than a confusing "file not found" build failure.
+#include? "Signing.xcconfig"

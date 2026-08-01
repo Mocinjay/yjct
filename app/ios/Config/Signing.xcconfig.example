@@ -1,0 +1,21 @@
+// Copy this file to Signing.xcconfig and fill in your own values:
+//
+//     cp ios/Config/Signing.xcconfig.example ios/Config/Signing.xcconfig
+//
+// Signing.xcconfig is gitignored on purpose. Signing identity is per-developer:
+// a bundle identifier registered to one Apple Developer team cannot be signed
+// by another. Committing these values breaks every other developer's build with
+// "No profiles for '<bundle id>' were found".
+//
+// DEVELOPMENT_TEAM
+//   Your 10-character Apple Developer Team ID.
+//   Xcode > Settings > Accounts > pick your team; the ID is in parentheses.
+//
+// PRODUCT_BUNDLE_IDENTIFIER
+//   Must be unique to you — reverse-DNS on a domain or name you control.
+//
+// Free "Personal Team" accounts get 7-day provisioning profiles. When the app
+// stops launching after a week, rebuild from Xcode and it reissues.
+
+DEVELOPMENT_TEAM = ABCDE12345
+PRODUCT_BUNDLE_IDENTIFIER = com.yourname.jarvis

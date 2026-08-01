@@ -1,6 +1,7 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AppState,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -35,6 +36,8 @@ export function ConnectScreen({ navigation }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const previewStarted = useRef(false);
+  /** Bumped when native tears the stream down so the auto-open effect re-runs. */
+  const [previewEpoch, setPreviewEpoch] = useState(0);
   const [mockReady, setMockReady] = useState(!AUTO_MOCK);
 
   useEffect(() => {
@@ -70,6 +73,28 @@ export function ConnectScreen({ navigation }: Props) {
       emitter.addListener('MWDATError', (e: { message: string }) =>
         setError(e.message),
       ),
+      emitter.addListener(
+        'MWDATStreamState',
+        (e: { state: string; reason?: string }) => {
+          refresh();
+          // Background/terminate releases the glasses session. Clear the
+          // latch; AppState 'active' below reopens the feed once foregrounded.
+          // Do not bump previewEpoch here — that would reopen while still
+          // backgrounded and recreate the start/stop chime loop.
+          if (
+            previewStarted.current &&
+            (e.state === 'stopped' || e.state === 'none')
+          ) {
+            previewStarted.current = false;
+            setPreviewing(false);
+            if (e.reason) {
+              setError(
+                `Glasses feed released (${e.reason}). Reopening when you return…`,
+              );
+            }
+          }
+        },
+      ),
     ];
     return () => {
       clearInterval(timer);
@@ -80,6 +105,24 @@ export function ConnectScreen({ navigation }: Props) {
   const registered = diag?.registration === 'registered';
   const device = diag?.devices[0] ?? null;
   const streaming = diag?.streamState === 'streaming';
+
+  // Native tears the session down on background. When we come back, reopen.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', state => {
+      if (state !== 'active') {
+        return;
+      }
+      if (previewStarted.current || previewing) {
+        return;
+      }
+      if ((!registered && !AUTO_MOCK) || !device) {
+        return;
+      }
+      setError(null);
+      setPreviewEpoch(n => n + 1);
+    });
+    return () => sub.remove();
+  }, [registered, device, previewing]);
 
   // As soon as we're registered with a device in sight, open the live view.
   useEffect(() => {
@@ -101,7 +144,7 @@ export function ConnectScreen({ navigation }: Props) {
         setBusy(null);
       }
     })();
-  }, [registered, device, mockReady]);
+  }, [registered, device, mockReady, previewEpoch]);
 
   // Dev/simulator: once mock frames flow, walk into the Armed screen so the
   // whole record pipeline can be exercised hands-free.
@@ -130,7 +173,9 @@ export function ConnectScreen({ navigation }: Props) {
 
   const retryPreview = () => {
     previewStarted.current = false;
+    setPreviewing(false);
     setError(null);
+    setPreviewEpoch(n => n + 1);
     refresh();
   };
 

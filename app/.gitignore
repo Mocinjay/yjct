@@ -76,3 +76,7 @@ yarn-error.log
 !.yarn/sdks
 !.yarn/versions
 ios/build-device/
+
+# Per-developer signing (team ID + bundle identifier).
+# Copy ios/Config/Signing.xcconfig.example to create it.
+ios/Config/Signing.xcconfig

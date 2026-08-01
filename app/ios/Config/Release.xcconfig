@@ -1,0 +1,7 @@
+// Base configuration for the Jarvis target, Release.
+// See Debug.xcconfig for why this file exists.
+
+#include "../Pods/Target Support Files/Pods-Jarvis/Pods-Jarvis.release.xcconfig"
+
+// Per-developer signing. Untracked — see Signing.xcconfig.example.
+#include? "Signing.xcconfig"
