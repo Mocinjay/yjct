@@ -1,4 +1,59 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Jarvis
+
+React Native app for capturing clips from Meta glasses via the Meta Wearables
+Device Access Toolkit (MWDAT).
+
+## Setup — run this after every fetch
+
+```bash
+cd app
+./scripts/setup.sh
+```
+
+It is idempotent, and it stops with an explanation instead of guessing whenever
+something needs you. Then open the **workspace**, never the project:
+
+```bash
+open ios/Jarvis.xcworkspace
+```
+
+### Why a fetch can break your build
+
+Three things are deliberately not in git, so a fresh checkout is never complete
+on its own:
+
+| Missing | Symptom | Fix |
+| --- | --- | --- |
+| `ios/Config/Signing.xcconfig` | `Bundle identifier is missing` | `setup.sh` creates it from the example; fill in your own team + bundle ID |
+| `ios/Pods` out of sync | `The sandbox is not in sync with the Podfile.lock` | `setup.sh` runs `pod install` |
+| `ios/.xcode.env.local` | script phase can't find `node` | `setup.sh` writes it |
+
+**Signing is per-developer on purpose.** A bundle identifier registered to one
+Apple Developer team cannot be signed by another, so committing a team ID breaks
+every other developer with `No profiles for '<bundle id>' were found`. Do not
+put your team ID back into `Jarvis.xcodeproj/project.pbxproj` — that is exactly
+what `Signing.xcconfig` exists to prevent.
+
+**`Podfile.lock` churn is expected.** Several React Native pods
+(`hermes-engine`, `React-Core-prebuilt`, `Yoga`) are prebuilt artifacts whose
+checksums differ per machine, so the lockfile changes whenever either of us runs
+`pod install`. That is why the fix is re-running `pod install` after a pull, not
+reverting the lockfile.
+
+### Toolchain
+
+Mismatched versions are the usual cause of "works on mine, not on yours":
+
+| | Version |
+| --- | --- |
+| React Native | 0.86.0 |
+| Node | >= 22.11.0 (`engines` in `package.json`) |
+| Xcode | 26.x |
+| Ruby | system Ruby 2.6 is **too old** for this Gemfile — install a modern Ruby via Homebrew |
+
+---
+
+The rest of this file is the stock React Native template documentation.
 
 # Getting Started
 
