@@ -1,2 +1,6 @@
 .DS_Store
 .claude/scheduled_tasks.lock
+
+# AI tooling config installed from facebook/meta-wearables-dat-ios
+AGENTS.md
+.cursor/
