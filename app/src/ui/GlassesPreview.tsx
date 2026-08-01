@@ -12,6 +12,14 @@ import { colors } from './theme';
  * Live wearer's-eye view: renders the throttled JPEG preview frames the
  * native bridge emits while the glasses stream is open (preview or armed).
  */
+/**
+ * Both ConnectScreen and ArmedScreen mount a preview, and during
+ * `replace('Armed')` both are briefly mounted at once. A plain enable-on-mount /
+ * disable-on-unmount pair would let the outgoing screen's cleanup switch the
+ * feed off underneath the incoming one, so count mounts instead.
+ */
+let previewMounts = 0;
+
 export function GlassesPreview({ style }: { style?: ViewStyle }) {
   const [frameUri, setFrameUri] = useState<string | null>(null);
 
@@ -24,7 +32,10 @@ export function GlassesPreview({ style }: { style?: ViewStyle }) {
     // frames/second on every screen — including while a clip was playing,
     // which flooded the JS thread (the player UI stopped responding to taps)
     // and grew memory until the OS terminated the app.
-    MWDATNative.setPreviewEnabled(true).catch(() => {});
+    previewMounts += 1;
+    if (previewMounts === 1) {
+      MWDATNative.setPreviewEnabled(true).catch(() => {});
+    }
     const sub = mwdatEvents().addListener(
       'MWDATPreviewFrame',
       (event: MWDATPreviewFrameEvent) => {
@@ -33,7 +44,10 @@ export function GlassesPreview({ style }: { style?: ViewStyle }) {
     );
     return () => {
       sub.remove();
-      MWDATNative.setPreviewEnabled(false).catch(() => {});
+      previewMounts -= 1;
+      if (previewMounts === 0) {
+        MWDATNative.setPreviewEnabled(false).catch(() => {});
+      }
     };
   }, []);
 

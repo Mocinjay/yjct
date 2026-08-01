@@ -74,7 +74,13 @@ final class MWDATBridge: RCTEventEmitter {
   /// emitter as a whole, and segment/error listeners are always attached, so
   /// preview kept encoding and crossing the bridge on every screen - including
   /// while a clip was playing, which starved the JS thread and froze the UI.
-  private var previewEnabled = true
+  /// Off until a view asks for frames. Defaulting to on meant every frame was
+  /// converted, encoded and sent from app launch until something mounted,
+  /// which RN reports as "Sending `MWDATPreviewFrame` with no listeners
+  /// registered".
+  private var previewEnabled = false
+  private var memoryWatch: DispatchSourceTimer?
+  private let memoryWatchQueue = DispatchQueue(label: "com.mocinjay.jarvis.mwdat.mem")
   private var frameCount = 0
   private var previewEmitCount = 0
   private var previewFailLogged = false
@@ -86,6 +92,45 @@ final class MWDATBridge: RCTEventEmitter {
   private static func log(_ message: String) {
     NSLog("[MWDAT] %@", message)
     DiagnosticLog.write("[MWDAT] \(message)")
+  }
+
+  /// The app's memory footprint as iOS accounts it when deciding to terminate
+  /// (`phys_footprint`, the same number the memory-limit killer uses).
+  static func memoryFootprintMB() -> Double {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(
+      MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size
+    )
+    let result = withUnsafeMutablePointer(to: &info) {
+      $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+        task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+      }
+    }
+    guard result == KERN_SUCCESS else { return -1 }
+    return Double(info.phys_footprint) / 1024.0 / 1024.0
+  }
+
+  /// Samples memory on a timer so a growth curve is visible in the log without
+  /// attaching Instruments. Every line is tagged MEM so it can be grepped out.
+  private func startMemoryWatch() {
+    guard memoryWatch == nil else { return }
+    let timer = DispatchSource.makeTimerSource(queue: memoryWatchQueue)
+    timer.schedule(deadline: .now() + 2, repeating: 2)
+    timer.setEventHandler { [weak self] in
+      guard let self else { return }
+      let mb = Self.memoryFootprintMB()
+      Self.log(
+        String(
+          format: "MEM footprint=%.1fMB previewEnabled=%@ previewEmits=%d recording=%@",
+          mb,
+          self.previewEnabled ? "YES" : "NO",
+          self.previewEmitCount,
+          self.writer != nil ? "YES" : "NO"
+        )
+      )
+    }
+    timer.resume()
+    memoryWatch = timer
   }
 
   // MARK: - App lifecycle
@@ -150,6 +195,7 @@ final class MWDATBridge: RCTEventEmitter {
   }
 
   override func startObserving() {
+    startMemoryWatch()
     guard case .success = Self.configureResult else { return }
     let wearables = Wearables.shared
     observerTokens.append(
