@@ -64,6 +64,17 @@ final class MWDATBridge: RCTEventEmitter {
   private let previewQueue = DispatchQueue(label: "com.mocinjay.jarvis.mwdat.preview")
   private var previewBusy = false
   private var lastPreviewAt: TimeInterval = 0
+  /// Creating a CIContext allocates a GPU context and is documented as
+  /// expensive; it must be made once and reused. Building one per frame (~7/s)
+  /// churned enough memory for the OS to terminate the app with
+  /// "Terminated due to memory issue".
+  private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+  /// Preview encoding is skipped entirely while nothing is displaying it.
+  /// `startObserving`/`stopObserving` cannot express this: they fire for the
+  /// emitter as a whole, and segment/error listeners are always attached, so
+  /// preview kept encoding and crossing the bridge on every screen - including
+  /// while a clip was playing, which starved the JS thread and froze the UI.
+  private var previewEnabled = true
   private var frameCount = 0
   private var previewEmitCount = 0
   private var previewFailLogged = false
@@ -397,6 +408,22 @@ final class MWDATBridge: RCTEventEmitter {
       teardown()
       stopping = false
     }
+    resolve(nil)
+  }
+
+  /// Gate preview encoding without tearing the glasses pipeline down. The UI
+  /// calls this false when no view is showing the feed, so no frame is
+  /// converted, JPEG-encoded, base64'd, or sent across the bridge while the
+  /// user is somewhere else in the app. Recording is unaffected: segments are
+  /// written from the same frames on a different path.
+  @objc(setPreviewEnabled:resolve:reject:)
+  func setPreviewEnabled(
+    _ enabled: NSNumber,
+    resolve: @escaping RCTPromiseResolveBlock,
+    reject _: @escaping RCTPromiseRejectBlock
+  ) {
+    previewEnabled = enabled.boolValue
+    Self.log("preview emission \(enabled.boolValue ? "enabled" : "disabled")")
     resolve(nil)
   }
 
@@ -750,6 +777,7 @@ final class MWDATBridge: RCTEventEmitter {
   /// ~6 fps JPEG preview of the wearer's view, dropped when the encoder is
   /// behind. Heavy enough to be useful, light enough for the RN bridge.
   private func emitPreviewFrame(_ frame: VideoFrame) {
+    guard previewEnabled else { return }
     let now = Date().timeIntervalSince1970
     guard now - lastPreviewAt > 0.15 else { return }
     lastPreviewAt = now
@@ -767,8 +795,9 @@ final class MWDATBridge: RCTEventEmitter {
         uiImage = img
       } else if let pixelBuffer = CMSampleBufferGetImageBuffer(frame.sampleBuffer) {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let ciCtx = CIContext(options: [.useSoftwareRenderer: false])
-        uiImage = ciCtx.createCGImage(ciImage, from: ciImage.extent).map(UIImage.init)
+        uiImage = Self.ciContext
+          .createCGImage(ciImage, from: ciImage.extent)
+          .map(UIImage.init)
       } else {
         uiImage = nil
       }

@@ -1,6 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { Image, StyleSheet, Text, View, type ViewStyle } from 'react-native';
-import { mwdatAvailable, mwdatEvents, type MWDATPreviewFrameEvent } from '../native/MWDATNative';
+import {
+  MWDATNative,
+  mwdatAvailable,
+  mwdatEvents,
+  type MWDATPreviewFrameEvent,
+} from '../native/MWDATNative';
 import { colors } from './theme';
 
 /**
@@ -14,13 +19,22 @@ export function GlassesPreview({ style }: { style?: ViewStyle }) {
     if (!mwdatAvailable()) {
       return;
     }
+    // Native encodes a preview frame only while this view is mounted. Without
+    // this the pipeline kept converting, JPEG-encoding and base64'ing ~7
+    // frames/second on every screen — including while a clip was playing,
+    // which flooded the JS thread (the player UI stopped responding to taps)
+    // and grew memory until the OS terminated the app.
+    MWDATNative.setPreviewEnabled(true).catch(() => {});
     const sub = mwdatEvents().addListener(
       'MWDATPreviewFrame',
       (event: MWDATPreviewFrameEvent) => {
         setFrameUri(`data:image/jpeg;base64,${event.base64}`);
       },
     );
-    return () => sub.remove();
+    return () => {
+      sub.remove();
+      MWDATNative.setPreviewEnabled(false).catch(() => {});
+    };
   }, []);
 
   return (

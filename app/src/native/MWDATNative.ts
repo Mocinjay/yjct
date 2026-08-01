@@ -45,6 +45,13 @@ interface MWDATBridgeModule {
   prepare(): Promise<void>;
   startPreview(): Promise<void>;
   stopPreview(): Promise<void>;
+  /**
+   * Gate preview-frame encoding without tearing down the glasses pipeline.
+   * Encoding a frame costs a CoreImage render, a JPEG encode, a base64 encode
+   * and a bridge crossing ~7x/second, so it must be off whenever nothing is
+   * displaying the feed.
+   */
+  setPreviewEnabled(enabled: boolean): Promise<void>;
   start(segmentSeconds: number): Promise<void>;
   cut(): Promise<void>;
   stop(): Promise<void>;
@@ -80,6 +87,8 @@ export const MWDATNative = {
   prepare: () => requireNative().prepare(),
   startPreview: () => requireNative().startPreview(),
   stopPreview: () => requireNative().stopPreview(),
+  setPreviewEnabled: (enabled: boolean) =>
+    requireNative().setPreviewEnabled(enabled),
   start: (segmentSeconds: number) => requireNative().start(segmentSeconds),
   cut: () => requireNative().cut(),
   stop: () => requireNative().stop(),
