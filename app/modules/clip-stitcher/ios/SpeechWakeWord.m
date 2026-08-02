@@ -427,16 +427,11 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
   // Bias the recognizer toward our brand / trigger — "Clipso" is not in the
   // default vocabulary, so without hints it becomes "clip so" / "calypso" /
   // garbage. contextualStrings heavily favor these tokens in the lattice.
-  if (@available(iOS 16.0, *)) {
-    request.contextualStrings = @[
-      @"Clipso", @"clipso", @"yo Clipso", @"yo clipso",
-      @"clip that", @"clip it", @"clip this", @"clip now",
-    ];
-  } else {
-    request.contextualStrings = @[
-      @"Clipso", @"clipso", @"clip that", @"clip it",
-    ];
-  }
+  // Brand only — biasing toward "clip that" would just make the recognizer
+  // more likely to hear a phrase the matcher deliberately no longer acts on.
+  request.contextualStrings = @[
+    @"Clipso", @"clipso", @"yo Clipso", @"yo clipso", @"hey Clipso",
+  ];
   request.taskHint = SFSpeechRecognitionTaskHintDictation;
   request.requiresOnDeviceRecognition = onDevice;
 

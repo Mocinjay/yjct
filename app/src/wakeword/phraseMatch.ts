@@ -3,8 +3,12 @@
  *
  * Trigger word: "Clipso" (clip + so). Recognizers rarely know it, so they
  * split, soften, or substitute — "clip so", "clips oh", "clipse o", "calypso".
- * Match it alone or buried in a sentence. Also accept the explicit action
- * phrases "clip that / it / this / now".
+ * Match it alone or buried in a sentence.
+ *
+ * The brand is the ONLY trigger. "clip that / it / this / now" used to fire as
+ * an alternate, which meant the retired "yo Jarvis, clip that" still worked and
+ * — worse — that ordinary shop talk from the exact people this app is for
+ * ("somebody clip that", "I want to clip that moment") silently burned a clip.
  *
  * Deliberately does NOT fire on bare "clip" / "clips" (too common in video
  * talk) or on "eclipse" (contains "clipse" as a substring).
@@ -48,16 +52,8 @@ export function matchesWakePhrase(transcript: string): boolean {
     return true;
   }
 
-  // Explicit clip-action phrase (product alternate trigger).
-  if (/\bclip\s+(?:that|it|this|now)\b/.test(text)) {
-    return true;
-  }
-
   // Slogan openers even when the brand token got mangled nearby.
   if (/\b(?:yo|hey|okay|ok|aye|oi)\s+clips?o+\b/.test(text)) {
-    return true;
-  }
-  if (/\byo\b/.test(text) && /\bclip\s+(?:that|it|this|now)\b/.test(text)) {
     return true;
   }
 

@@ -232,7 +232,7 @@ export function ClipsoSplash({ onFinished }: Props) {
       </View>
 
       <Animated.Text style={[styles.tag, { opacity: tagOpacity }]}>
-        yo clipso, clip that
+        just say clipso
       </Animated.Text>
     </Animated.View>
   );

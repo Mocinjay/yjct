@@ -29,13 +29,6 @@ describe('matchesWakePhrase', () => {
     'clipsaw',
     'clip show',
     'calypso',
-    // action alternate
-    'okay clip that',
-    'clip it',
-    'clip this',
-    'clip now',
-    'somebody clip that real quick',
-    'yo clip that',
   ])('matches %j', transcript => {
     expect(matchesWakePhrase(transcript)).toBe(true);
   });
@@ -52,6 +45,17 @@ describe('matchesWakePhrase', () => {
     'clip art',
     'video clips from yesterday',
     'so what happened',
+    // Retired triggers. The brand is the only wake word now.
+    'yo jarvis clip that',
+    'hey jarvis clip it',
+    'jarvis',
+    'okay clip that',
+    'clip it',
+    'clip this',
+    'clip now',
+    'somebody clip that real quick',
+    'yo clip that',
+    'i want to clip that moment',
   ])('does not match %j', transcript => {
     expect(matchesWakePhrase(transcript)).toBe(false);
   });
