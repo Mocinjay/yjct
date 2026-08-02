@@ -38,6 +38,17 @@ export interface MWDATPreviewFrameEvent {
   base64: string;
 }
 
+/**
+ * Once-a-second report of what the glasses link is actually delivering. The
+ * stream's own state machine can sit in `.streaming` over a dead link, so
+ * frame arrival is the only signal that says whether the feed is alive.
+ */
+export interface MWDATStreamHealthEvent {
+  fps: number;
+  secondsSinceFrame: number;
+  recording: boolean;
+}
+
 interface MWDATBridgeModule {
   getRegistrationState(): Promise<string>;
   startRegistration(): Promise<string>;

@@ -23,7 +23,21 @@ final class MWDATBridge: RCTEventEmitter {
     static let registrationState = "MWDATRegistrationState"
     static let devices = "MWDATDevices"
     static let previewFrame = "MWDATPreviewFrame"
+    static let streamHealth = "MWDATStreamHealth"
   }
+
+  /// The glasses link can stop delivering frames without the stream ever
+  /// leaving `.streaming` and without the SDK reporting an error — the wearer
+  /// walks out of range, the glasses thermally throttle, or the BT link stalls.
+  /// Nothing in the state machine notices, so the preview sits on its last
+  /// frame, the rolling buffer stops filling and the wake word goes deaf, all
+  /// while the UI still says LIVE. Frame arrival is the only honest signal.
+  ///
+  /// Long enough that a hiccup does not raise an error the wearer has to
+  /// dismiss — the preview goes soft after ~2s off the health event's own
+  /// numbers, which covers the honest-but-recoverable case. Reaching this means
+  /// the link is gone and the session needs renegotiating.
+  private static let stallSeconds: TimeInterval = 10
 
   /// Wearables.configure() must run exactly once per process.
   private static let configureResult: Result<Void, Error> = Result {
@@ -76,8 +90,27 @@ final class MWDATBridge: RCTEventEmitter {
   private var mockGlasses: (any MockGlasses)?
 
   private let previewQueue = DispatchQueue(label: "com.mocinjay.clipso.mwdat.preview")
-  private var previewBusy = false
+  /// Backpressure for the preview encoder. `previewQueue` is serial, so an
+  /// encode that runs longer than the emit interval used to build a backlog of
+  /// frames that were already stale by the time they crossed the bridge — the
+  /// preview then ran further and further behind the wearer. Never keep more
+  /// than one frame in flight; drop the rest. Guarded by a lock because the
+  /// flag is set on the SDK's frame thread and cleared on `previewQueue`.
+  private let previewLock = NSLock()
+  private var previewInFlight = false
   private var lastPreviewAt: TimeInterval = 0
+  /// Host time of the last frame the glasses delivered, and the watchdog that
+  /// decides the feed has stalled when that stops moving.
+  private var lastFrameAt: TimeInterval = 0
+  /// `frameCount` as of the previous health tick. Sampling the running total
+  /// rather than resetting a per-tick counter keeps every mutation of the
+  /// watchdog's own state on `healthQueue`; the SDK's frame thread only ever
+  /// increments `frameCount` and stamps `lastFrameAt`.
+  private var frameCountAtLastHealth = 0
+  private var lastHealthAt: TimeInterval = 0
+  private var stallReported = false
+  private var healthTimer: DispatchSourceTimer?
+  private let healthQueue = DispatchQueue(label: "com.mocinjay.clipso.mwdat.health")
   /// Creating a CIContext allocates a GPU context and is documented as
   /// expensive; it must be made once and reused. Building one per frame (~7/s)
   /// churned enough memory for the OS to terminate the app with
@@ -239,12 +272,12 @@ final class MWDATBridge: RCTEventEmitter {
   private func startMemoryWatch() {
     guard memoryWatch == nil else { return }
     let timer = DispatchSource.makeTimerSource(queue: memoryWatchQueue)
-    // 0.5s, not 2s. At 2s the last run jumped 175MB -> 488MB in a single
-    // sample, which is too coarse to tell what the growth tracks: 24fps
-    // glasses frames and a 120Hz display refresh are indistinguishable when
-    // the window is that wide. `frames` is logged alongside so the curve can
-    // be divided by whichever clock actually explains it.
-    timer.schedule(deadline: .now() + 0.5, repeating: 0.5)
+    // 2s. The 0.5s cadence existed to resolve a 175MB -> 488MB jump while the
+    // leak was open; that is closed, and the sampler is not free — `vmTagBreakdown`
+    // walks every VM region, which takes the task's map lock and contends with
+    // every allocation the video pipeline makes. Sample slowly enough to still
+    // show a curve, and walk the regions only occasionally.
+    timer.schedule(deadline: .now() + 2, repeating: 2)
     timer.setEventHandler { [weak self] in
       guard let self else { return }
       let m = Self.memoryBreakdown()
@@ -263,10 +296,8 @@ final class MWDATBridge: RCTEventEmitter {
           self.writer != nil ? "YES" : "NO"
         )
       )
-      // Walking every VM region is far too heavy for the 0.5s sampler, but once
-      // every 2s is plenty to watch which tag owns the growth.
       self.memoryTick &+= 1
-      if self.memoryTick % 4 == 0 {
+      if self.memoryTick % 10 == 0 {
         Self.log("VMTAGS \(Self.vmTagBreakdown())")
       }
     }
@@ -287,8 +318,26 @@ final class MWDATBridge: RCTEventEmitter {
     MWDATBridge.current = self
   }
 
+  /// True while segments are actually being written — i.e. the wearer is armed
+  /// and the rolling buffer is live. A preview-only session has a stream but no
+  /// writer, and nothing is lost by dropping that one on background.
+  @objc static var isCapturing: Bool { current?.writer != nil }
+
   @objc static func releaseGlassesForAppLifecycle(_ reason: String) {
     guard let bridge = current, bridge.deviceSession != nil || bridge.stream != nil else { return }
+    // Backgrounding while armed is the whole point of the product: the wearer
+    // is out in the world with the phone in a pocket. Tearing down here is
+    // what made "say Clipso while using another app" impossible, so an active
+    // capture now keeps the session. Preview-only sessions still release —
+    // they hold the glasses' capture slot for nothing.
+    if reason == "didEnterBackground", bridge.writer != nil {
+      log("app lifecycle (\(reason)) — KEEPING glasses session, capture is armed")
+      bridge.sendEvent(
+        withName: Event.streamState,
+        body: ["state": "streaming", "reason": "background-capture"]
+      )
+      return
+    }
     log("app lifecycle (\(reason)) — releasing glasses session")
     bridge.stopping = true
     bridge.teardown()
@@ -339,6 +388,7 @@ final class MWDATBridge: RCTEventEmitter {
     [
       Event.segment, Event.error, Event.streamState,
       Event.registrationState, Event.devices, Event.previewFrame,
+      Event.streamHealth,
     ]
   }
 
@@ -875,6 +925,7 @@ final class MWDATBridge: RCTEventEmitter {
       newStream.videoFramePublisher.listen { [weak self] frame in
         guard let self else { return }
         self.frameCount += 1
+        self.lastFrameAt = Date().timeIntervalSince1970
         if self.frameCount == 1 || self.frameCount % 100 == 0 {
           Self.log("video frame #\(self.frameCount)")
         }
@@ -956,6 +1007,67 @@ final class MWDATBridge: RCTEventEmitter {
       }
     }
     Self.log("stream is .streaming — frames should follow")
+    startHealthWatch()
+  }
+
+  /// Reports the feed's real frame rate to JS once a second, and raises an
+  /// error when frames stop arriving even though nothing else says anything is
+  /// wrong. Without it a stalled link is indistinguishable from a quiet scene:
+  /// the UI keeps claiming LIVE over a frozen picture.
+  private func startHealthWatch() {
+    guard healthTimer == nil else { return }
+    lastFrameAt = Date().timeIntervalSince1970
+    lastHealthAt = lastFrameAt
+    frameCountAtLastHealth = frameCount
+    stallReported = false
+
+    let timer = DispatchSource.makeTimerSource(queue: healthQueue)
+    timer.schedule(deadline: .now() + 1, repeating: 1)
+    timer.setEventHandler { [weak self] in
+      guard let self else { return }
+      let now = Date().timeIntervalSince1970
+      let elapsed = max(0.001, now - self.lastHealthAt)
+      let delivered = self.frameCount - self.frameCountAtLastHealth
+      let fps = Double(max(0, delivered)) / elapsed
+      self.frameCountAtLastHealth = self.frameCount
+      self.lastHealthAt = now
+
+      let sinceFrame = now - self.lastFrameAt
+      self.sendEvent(
+        withName: Event.streamHealth,
+        body: [
+          "fps": (fps * 10).rounded() / 10,
+          "secondsSinceFrame": (sinceFrame * 10).rounded() / 10,
+          "recording": self.writer != nil,
+        ]
+      )
+
+      guard sinceFrame > Self.stallSeconds else {
+        if self.stallReported {
+          self.stallReported = false
+          Self.log("frames RESUMED after stall")
+          self.sendEvent(
+            withName: Event.streamState,
+            body: ["state": "streaming", "reason": "recovered"]
+          )
+        }
+        return
+      }
+      // Fire once per stall, not once per second: the UI shows one banner and
+      // the wearer is not buried under a repeating error.
+      guard !self.stallReported, !self.stopping else { return }
+      self.stallReported = true
+      Self.log(String(format: "STALL — no glasses frame for %.1fs", sinceFrame))
+      self.sendEvent(
+        withName: Event.error,
+        body: [
+          "message": "The glasses feed stalled — no video for "
+            + "\(Int(sinceFrame))s. Check they are unfolded, being worn and in range.",
+        ]
+      )
+    }
+    timer.resume()
+    healthTimer = timer
   }
 
   private func attachWriter(segmentSeconds: Double) throws {
@@ -990,6 +1102,8 @@ final class MWDATBridge: RCTEventEmitter {
     // driving live retry logic.
     sessionStateTask?.cancel()
     sessionStateTask = nil
+    healthTimer?.cancel()
+    healthTimer = nil
     writer?.stopAndDiscard()
     writer = nil
     stream?.stop()
@@ -1001,6 +1115,9 @@ final class MWDATBridge: RCTEventEmitter {
     // on the way down — which is exactly the failure we need to see.
     listenerTokens = []
     frameCount = 0
+    frameCountAtLastHealth = 0
+    lastFrameAt = 0
+    stallReported = false
     previewEmitCount = 0
     previewFailLogged = false
     streamHasLeftStopped = false
@@ -1055,38 +1172,61 @@ final class MWDATBridge: RCTEventEmitter {
     log("FRAME ANATOMY — " + parts.joined(separator: " "))
   }
 
-  /// ~4 fps JPEG preview of the wearer's view. Kept deliberately below the
-  /// clip encode rate so CoreImage/JPEG work does not starve the segment
-  /// writer (which is what makes recorded clips look laggy).
+  /// Longest edge of a preview frame, in pixels. The feed is a ~1/3-screen
+  /// viewfinder, so the glasses' native 504×896 is far more detail than is ever
+  /// displayed — and every extra pixel is paid for three times: CoreImage
+  /// render, JPEG encode, and a base64 string across the bridge. Halving the
+  /// edge quarters all three, which is what buys the higher frame rate below.
+  private static let previewMaxEdge: CGFloat = 448
+
+  /// ~8 fps JPEG preview of the wearer's view. Kept below the clip encode rate
+  /// so CoreImage/JPEG work does not starve the segment writer (which is what
+  /// makes recorded clips look laggy).
   private func emitPreviewFrame(_ frame: VideoFrame) {
     guard previewEnabled else { return }
     let now = Date().timeIntervalSince1970
-    guard now - lastPreviewAt > 0.25 else { return }
+    guard now - lastPreviewAt > 0.12 else { return }
+
+    previewLock.lock()
+    let busy = previewInFlight
+    if !busy { previewInFlight = true }
+    previewLock.unlock()
+    guard !busy else { return }
     lastPreviewAt = now
 
     previewQueue.async { [weak self] in
-      guard let self, !self.previewBusy else { return }
-      self.previewBusy = true
-      defer { self.previewBusy = false }
-
-      // Try the SDK's own conversion first (works for HVC1/compressed frames).
-      // For raw YCbCr frames the SDK returns nil, so fall back to CoreImage
-      // which handles any CVPixelBuffer format the glasses camera can produce.
-      let uiImage: UIImage?
-      if let img = frame.makeUIImage() {
-        uiImage = img
-      } else if let pixelBuffer = CMSampleBufferGetImageBuffer(frame.sampleBuffer) {
-        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        uiImage = Self.ciContext
-          .createCGImage(ciImage, from: ciImage.extent)
-          .map(UIImage.init)
-      } else {
-        uiImage = nil
+      guard let self else { return }
+      defer {
+        self.previewLock.lock()
+        self.previewInFlight = false
+        self.previewLock.unlock()
       }
 
-      guard let image = uiImage,
-            let jpeg = image.jpegData(compressionQuality: 0.35)
-      else {
+      // Raw YCbCr frames (what `.raw` delivers, and what the writer needs) come
+      // through as CVPixelBuffers, so scale and encode them on the GPU in one
+      // pass — `jpegRepresentation` skips the CGImage → UIImage → jpegData
+      // round trip that allocated a full-size bitmap per frame. `makeUIImage()`
+      // is the fallback for compressed/HVC1 frames, which it does decode.
+      let jpeg: Data?
+      if let pixelBuffer = CMSampleBufferGetImageBuffer(frame.sampleBuffer) {
+        var image = CIImage(cvPixelBuffer: pixelBuffer)
+        let longestEdge = max(image.extent.width, image.extent.height)
+        let scale = longestEdge > 0 ? min(1, Self.previewMaxEdge / longestEdge) : 1
+        if scale < 1 {
+          image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        }
+        jpeg = Self.ciContext.jpegRepresentation(
+          of: image,
+          colorSpace: CGColorSpaceCreateDeviceRGB(),
+          options: [
+            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.4,
+          ]
+        )
+      } else {
+        jpeg = frame.makeUIImage()?.jpegData(compressionQuality: 0.4)
+      }
+
+      guard let jpeg else {
         if !self.previewFailLogged {
           self.previewFailLogged = true
           Self.log("preview conversion FAILED (makeUIImage and CoreImage both nil) — frames arrive but cannot render")

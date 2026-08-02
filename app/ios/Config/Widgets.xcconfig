@@ -1,0 +1,27 @@
+// Base configuration for the ClipsoWidgets extension, both configurations.
+//
+// Deliberately does NOT include any Pods config: the widget extension links
+// only ActivityKit/SwiftUI/WidgetKit and must stay clear of React Native, or
+// its binary balloons and WidgetKit's memory limit kills it.
+
+// Per-developer signing. Untracked — see Signing.xcconfig.example.
+#include? "Signing.xcconfig"
+
+// Apple requires an extension's bundle id to be prefixed by the containing
+// app's. Derived from CLIPSO_BUNDLE_ID rather than PRODUCT_BUNDLE_IDENTIFIER
+// because assigning that key in terms of itself is a recursive reference and
+// Xcode resolves it to empty.
+PRODUCT_BUNDLE_IDENTIFIER = $(CLIPSO_BUNDLE_ID).ClipsoWidgets
+
+// An appex inherits NOTHING from its host app, so these must be set here or
+// the Info.plist substitutions resolve to empty strings and installd rejects
+// the bundle: "does not have a CFBundleVersion key with a non-zero length
+// string value". They must also MATCH the app target's values — Apple requires
+// an extension's version to equal its containing app's.
+CURRENT_PROJECT_VERSION = 1
+MARKETING_VERSION = 1.0
+
+// Live Activities need 16.2 for the ActivityContent API the bridge uses. The
+// app itself stays on 15.1; everything Live-Activity-shaped is availability
+// gated so older devices simply run without the widget.
+IPHONEOS_DEPLOYMENT_TARGET = 16.2

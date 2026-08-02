@@ -7,36 +7,77 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		015E99ED53749C931C5E359E /* ClipsoWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 0F86CA723E8264BC7FDABC50 /* ClipsoWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		0C80B921A6F3F58F76C31292 /* libPods-Clipso.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5DCACB8F33CDC322A6C60F78 /* libPods-Clipso.a */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		1C313A6A301AB48D00F4E893 /* MWDATCore in Frameworks */ = {isa = PBXBuildFile; productRef = 3C7E9BE3E2A7146C14CF60C4 /* MWDATCore */; };
 		1C313A6B301AB48D00F4E893 /* MWDATCamera in Frameworks */ = {isa = PBXBuildFile; productRef = 3DA9135D1916C99C81815599 /* MWDATCamera */; };
 		1C313A6C301AB48D00F4E893 /* MWDATMockDevice in Frameworks */ = {isa = PBXBuildFile; productRef = 8018480ED72052F17324316E /* MWDATMockDevice */; };
+		5BCAC6849FB26A8A24213F4F /* LiveActivityBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41DCE301BA184309E6B71F59 /* LiveActivityBridge.swift */; };
 		61662EB452689C12D4864E07 /* MWDATBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = B50CD06736D50709609B0DF7 /* MWDATBridge.m */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
+		768BB1A628C21D587FCAD590 /* LiveActivityBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = 8C2ED39333D84E1CFE37525B /* LiveActivityBridge.m */; };
 		773A9AC243E8E70C59CDD860 /* MWDATSegmentWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8439CF4812DD97E1C56847EC /* MWDATSegmentWriter.swift */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
+		829CBFD193E8CB5B9E835253 /* ClipsoActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A66F714E2955F9AA8DA525E7 /* ClipsoActivityAttributes.swift */; };
+		835919A1A4205CD1CFA58F11 /* ClipsoActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A66F714E2955F9AA8DA525E7 /* ClipsoActivityAttributes.swift */; };
 		B0BE19483E8FF5A24A62AE69 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
+		D99AAD48CD4A3815E9E94497 /* ClipsoWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EA39FB0659413DABE7CAA3B /* ClipsoWidgetsBundle.swift */; };
 		E5345EA5EACE870665C5A7E8 /* MockFeed.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 0BB5AC80AAC50026E2888293 /* MockFeed.mp4 */; };
+		EA94358F51861B263003D326 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AC343EE77DB7B8EF74C58C97 /* Foundation.framework */; };
 		F1124EF2E68B52680BC22CE3 /* MWDATBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B032E5A05050FA7ACD489623 /* MWDATBridge.swift */; };
+		FE3DD1566E52E214CC1B9FE1 /* ClipsoLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCA08829635EF83E8E0E079A /* ClipsoLiveActivity.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		F1725EB7962F15D1CC56DBE6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 83CBB9F71A601CBA00E9B192 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 31FB67C9839FC08DA1545447;
+			remoteInfo = ClipsoWidgets;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		647E546C22AA7EA8C4DD73F1 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				015E99ED53749C931C5E359E /* ClipsoWidgets.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		0BB5AC80AAC50026E2888293 /* MockFeed.mp4 */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = file; name = MockFeed.mp4; path = Clipso/MockFeed.mp4; sourceTree = "<group>"; };
+		0F86CA723E8264BC7FDABC50 /* ClipsoWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ClipsoWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07F961A680F5B00A75B9A /* Clipso.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Clipso.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = Clipso/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = Clipso/Info.plist; sourceTree = "<group>"; };
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = Clipso/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		29CAEC8BA0315448ED9AB553 /* Release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
 		3B4392A12AC88292D35C810B /* Pods-Clipso.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Clipso.debug.xcconfig"; path = "Target Support Files/Pods-Clipso/Pods-Clipso.debug.xcconfig"; sourceTree = "<group>"; };
+		3D3B6AAD4F588DDA7E78EB45 /* Widgets.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Widgets.xcconfig; path = Config/Widgets.xcconfig; sourceTree = "<group>"; };
+		3EA39FB0659413DABE7CAA3B /* ClipsoWidgetsBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClipsoWidgetsBundle.swift; sourceTree = "<group>"; };
+		41DCE301BA184309E6B71F59 /* LiveActivityBridge.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Clipso/LiveActivityBridge.swift; sourceTree = "<group>"; };
 		5709B34CF0A7D63546082F79 /* Pods-Clipso.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Clipso.release.xcconfig"; path = "Target Support Files/Pods-Clipso/Pods-Clipso.release.xcconfig"; sourceTree = "<group>"; };
 		5DCACB8F33CDC322A6C60F78 /* libPods-Clipso.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-Clipso.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		652F84B045C83DE0A1143493 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = Clipso/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = Clipso/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		8439CF4812DD97E1C56847EC /* MWDATSegmentWriter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Clipso/MWDATSegmentWriter.swift; sourceTree = "<group>"; };
+		8C2ED39333D84E1CFE37525B /* LiveActivityBridge.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = Clipso/LiveActivityBridge.m; sourceTree = "<group>"; };
+		A66F714E2955F9AA8DA525E7 /* ClipsoActivityAttributes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Clipso/ClipsoActivityAttributes.swift; sourceTree = "<group>"; };
+		AC343EE77DB7B8EF74C58C97 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS14.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		B032E5A05050FA7ACD489623 /* MWDATBridge.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Clipso/MWDATBridge.swift; sourceTree = "<group>"; };
 		B50CD06736D50709609B0DF7 /* MWDATBridge.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = Clipso/MWDATBridge.m; sourceTree = "<group>"; };
 		BD20E682B3ACCB006714C3EF /* Debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
+		CCA08829635EF83E8E0E079A /* ClipsoLiveActivity.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClipsoLiveActivity.swift; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -49,6 +90,14 @@
 				1C313A6B301AB48D00F4E893 /* MWDATCamera in Frameworks */,
 				1C313A6A301AB48D00F4E893 /* MWDATCore in Frameworks */,
 				0C80B921A6F3F58F76C31292 /* libPods-Clipso.a in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FA7283CB99F851C78E17896B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EA94358F51861B263003D326 /* Foundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -67,6 +116,9 @@
 				8439CF4812DD97E1C56847EC /* MWDATSegmentWriter.swift */,
 				B50CD06736D50709609B0DF7 /* MWDATBridge.m */,
 				0BB5AC80AAC50026E2888293 /* MockFeed.mp4 */,
+				A66F714E2955F9AA8DA525E7 /* ClipsoActivityAttributes.swift */,
+				41DCE301BA184309E6B71F59 /* LiveActivityBridge.swift */,
+				8C2ED39333D84E1CFE37525B /* LiveActivityBridge.m */,
 			);
 			name = Clipso;
 			sourceTree = "<group>";
@@ -76,8 +128,28 @@
 			children = (
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
 				5DCACB8F33CDC322A6C60F78 /* libPods-Clipso.a */,
+				3C4DC0F4DBABE0FDF5ACB70C /* iOS */,
 			);
 			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		2F54C4F1817B93892044A0A8 /* ClipsoWidgets */ = {
+			isa = PBXGroup;
+			children = (
+				3EA39FB0659413DABE7CAA3B /* ClipsoWidgetsBundle.swift */,
+				CCA08829635EF83E8E0E079A /* ClipsoLiveActivity.swift */,
+				652F84B045C83DE0A1143493 /* Info.plist */,
+			);
+			name = ClipsoWidgets;
+			path = ClipsoWidgets;
+			sourceTree = SOURCE_ROOT;
+		};
+		3C4DC0F4DBABE0FDF5ACB70C /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				AC343EE77DB7B8EF74C58C97 /* Foundation.framework */,
+			);
+			name = iOS;
 			sourceTree = "<group>";
 		};
 		832341AE1AAA6A7D00B99B32 /* Libraries */ = {
@@ -96,6 +168,8 @@
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
 				BBD78D7AC51CEA395F1C20DB /* Pods */,
 				93645C53E0E42DF73380889F /* Config */,
+				3D3B6AAD4F588DDA7E78EB45 /* Widgets.xcconfig */,
+				2F54C4F1817B93892044A0A8 /* ClipsoWidgets */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -106,6 +180,7 @@
 			isa = PBXGroup;
 			children = (
 				13B07F961A680F5B00A75B9A /* Clipso.app */,
+				0F86CA723E8264BC7FDABC50 /* ClipsoWidgets.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -144,10 +219,12 @@
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
 				00EEFC60759A1932668264C0 /* [CP] Embed Pods Frameworks */,
 				E235C05ADACE081382539298 /* [CP] Copy Pods Resources */,
+				647E546C22AA7EA8C4DD73F1 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				BD21897BB8023C1EAD0F8A82 /* PBXTargetDependency */,
 			);
 			name = Clipso;
 			packageProductDependencies = (
@@ -158,6 +235,23 @@
 			productName = Clipso;
 			productReference = 13B07F961A680F5B00A75B9A /* Clipso.app */;
 			productType = "com.apple.product-type.application";
+		};
+		31FB67C9839FC08DA1545447 /* ClipsoWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A153B3887447C17060672F37 /* Build configuration list for PBXNativeTarget "ClipsoWidgets" */;
+			buildPhases = (
+				D367FD2E2E3BEBC9926AEDCE /* Sources */,
+				FA7283CB99F851C78E17896B /* Frameworks */,
+				B17A72A911B71E2411A1D86A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ClipsoWidgets;
+			productName = ClipsoWidgets;
+			productReference = 0F86CA723E8264BC7FDABC50 /* ClipsoWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -189,6 +283,7 @@
 			projectRoot = "";
 			targets = (
 				13B07F861A680F5B00A75B9A /* Clipso */,
+				31FB67C9839FC08DA1545447 /* ClipsoWidgets */,
 			);
 		};
 /* End PBXProject section */
@@ -202,6 +297,13 @@
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				B0BE19483E8FF5A24A62AE69 /* PrivacyInfo.xcprivacy in Resources */,
 				E5345EA5EACE870665C5A7E8 /* MockFeed.mp4 in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B17A72A911B71E2411A1D86A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -310,12 +412,58 @@
 				F1124EF2E68B52680BC22CE3 /* MWDATBridge.swift in Sources */,
 				773A9AC243E8E70C59CDD860 /* MWDATSegmentWriter.swift in Sources */,
 				61662EB452689C12D4864E07 /* MWDATBridge.m in Sources */,
+				835919A1A4205CD1CFA58F11 /* ClipsoActivityAttributes.swift in Sources */,
+				5BCAC6849FB26A8A24213F4F /* LiveActivityBridge.swift in Sources */,
+				768BB1A628C21D587FCAD590 /* LiveActivityBridge.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D367FD2E2E3BEBC9926AEDCE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D99AAD48CD4A3815E9E94497 /* ClipsoWidgetsBundle.swift in Sources */,
+				FE3DD1566E52E214CC1B9FE1 /* ClipsoLiveActivity.swift in Sources */,
+				829CBFD193E8CB5B9E835253 /* ClipsoActivityAttributes.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		BD21897BB8023C1EAD0F8A82 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ClipsoWidgets;
+			target = 31FB67C9839FC08DA1545447 /* ClipsoWidgets */;
+			targetProxy = F1725EB7962F15D1CC56DBE6 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		0497736A61842653885A86B1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 3D3B6AAD4F588DDA7E78EB45 /* Widgets.xcconfig */;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = NO;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ClipsoWidgets/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 		13B07F941A680F5B00A75B9A /* Debug */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = BD20E682B3ACCB006714C3EF /* Debug.xcconfig */;
@@ -373,6 +521,29 @@
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Release;
+		};
+		48A62D76FFD1D1CABF1FEBE9 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 3D3B6AAD4F588DDA7E78EB45 /* Widgets.xcconfig */;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = NO;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ClipsoWidgets/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
 		};
 		83CBBA201A601CBA00E9B192 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -549,6 +720,15 @@
 			buildConfigurations = (
 				83CBBA201A601CBA00E9B192 /* Debug */,
 				83CBBA211A601CBA00E9B192 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A153B3887447C17060672F37 /* Build configuration list for PBXNativeTarget "ClipsoWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0497736A61842653885A86B1 /* Release */,
+				48A62D76FFD1D1CABF1FEBE9 /* Debug */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

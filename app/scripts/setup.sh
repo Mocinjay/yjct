@@ -77,6 +77,21 @@ if grep -q "ABCDE12345\|com.yourname.clipso" ios/Config/Signing.xcconfig; then
 fi
 ok "ios/Config/Signing.xcconfig configured"
 
+# The ClipsoWidgets extension derives its id as $(CLIPSO_BUNDLE_ID).ClipsoWidgets,
+# because Apple requires an extension's bundle id to be prefixed by the app's.
+# A Signing.xcconfig written before that variable existed still builds the app,
+# but the widget gets ".ClipsoWidgets" and fails with a confusing profile error.
+if ! grep -q "^CLIPSO_BUNDLE_ID" ios/Config/Signing.xcconfig; then
+  fail "ios/Config/Signing.xcconfig predates the widget target: no CLIPSO_BUNDLE_ID.
+Replace the PRODUCT_BUNDLE_IDENTIFIER line with:
+
+    CLIPSO_BUNDLE_ID = <your existing bundle id>
+    PRODUCT_BUNDLE_IDENTIFIER = \$(CLIPSO_BUNDLE_ID)
+
+See ios/Config/Signing.xcconfig.example."
+fi
+ok "CLIPSO_BUNDLE_ID set (the widget bundle id derives from it)"
+
 # Xcode writes DEVELOPMENT_TEAM / PRODUCT_BUNDLE_IDENTIFIER straight into the
 # pbxproj whenever you touch Signing & Capabilities in the UI. That commits one
 # developer's identity for everyone and silently overrides this xcconfig — the

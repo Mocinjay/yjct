@@ -25,4 +25,10 @@
 // stops launching after a week, rebuild from Xcode and it reissues.
 
 DEVELOPMENT_TEAM = ABCDE12345
-PRODUCT_BUNDLE_IDENTIFIER = com.yourname.clipso
+
+// Set your id ONCE here. The app takes it as-is; the ClipsoWidgets extension
+// derives its own id underneath it, because Apple requires an extension's
+// bundle id to be prefixed by its containing app's. Never write the literal id
+// anywhere else or the two drift and the extension fails to install.
+CLIPSO_BUNDLE_ID = com.yourname.clipso
+PRODUCT_BUNDLE_IDENTIFIER = $(CLIPSO_BUNDLE_ID)

@@ -18,11 +18,27 @@ export type CaptureState =
 
 export interface CaptureStatus {
   state: CaptureState;
+  /**
+   * Seconds of look-back the buffer held when `bufferedAsOf` was stamped.
+   *
+   * This only moves when a segment finishes — every SEGMENT_SECONDS — and it
+   * does not count the segment currently being written. Read on its own it is
+   * therefore always behind, by up to a whole segment. Extrapolate from
+   * `bufferedAsOf` to show the wearer what is really in the window.
+   */
   bufferedSeconds: number;
+  /** Epoch ms at which `bufferedSeconds` was measured. */
+  bufferedAsOf: number;
   /** Epoch ms of the trigger, set while state === 'recording'. */
   recordingSince?: number;
   lastError?: string;
   lastClip?: Clip;
+  /**
+   * How many clips have been saved since this armed session started, so the
+   * wearer can hear "Clipso" land and see *which* one it was — "Save #3" —
+   * without opening the library. Resets on every `arm()`.
+   */
+  sessionClipCount?: number;
 }
 
 /**
@@ -36,9 +52,14 @@ export interface CaptureStatus {
  */
 export class CaptureController {
   private buffer: SegmentRingBuffer;
-  private status: CaptureStatus = { state: 'idle', bufferedSeconds: 0 };
+  private status: CaptureStatus = {
+    state: 'idle',
+    bufferedSeconds: 0,
+    bufferedAsOf: Date.now(),
+  };
   private listeners = new Set<(s: CaptureStatus) => void>();
   private saving = false;
+  private sessionClipCount = 0;
   private maxRecordingTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
@@ -58,6 +79,7 @@ export class CaptureController {
   }
 
   async arm(): Promise<void> {
+    this.sessionClipCount = 0;
     this.setStatus({ state: 'arming', bufferedSeconds: 0 });
     try {
       await this.source.prepare();
@@ -118,7 +140,13 @@ export class CaptureController {
       const clip = await this.stitch(segments);
       await clipStore.add(clip);
       await Promise.all(segments.map(s => RNFS.unlink(s.path).catch(() => {})));
-      this.setStatus({ state: 'armed', bufferedSeconds: 0, lastClip: clip });
+      this.sessionClipCount += 1;
+      this.setStatus({
+        state: 'armed',
+        bufferedSeconds: 0,
+        lastClip: clip,
+        sessionClipCount: this.sessionClipCount,
+      });
       return clip;
     } catch (err) {
       this.setStatus({
@@ -170,10 +198,12 @@ export class CaptureController {
       const clip = await this.stitch(segments);
       await clipStore.add(clip);
       await Promise.all(segments.map(s => RNFS.unlink(s.path).catch(() => {})));
+      this.sessionClipCount += 1;
       this.setStatus({
         state: 'armed',
         bufferedSeconds: 0,
         lastClip: clip,
+        sessionClipCount: this.sessionClipCount,
       });
       return clip;
     } catch (err) {
@@ -231,9 +261,22 @@ export class CaptureController {
     }
   }
 
-  private setStatus(status: CaptureStatus): void {
-    this.status = status;
-    this.listeners.forEach(l => l(status));
+  /** The rolling look-back window, so the UI can cap what it displays. */
+  get lookBackSeconds(): number {
+    return this.windowSeconds;
+  }
+
+  private setStatus(status: Omit<CaptureStatus, 'bufferedAsOf'>): void {
+    // Re-stamp only when the measurement itself changed. Stamping on every
+    // transition (armed → saving → armed) would keep resetting the origin the
+    // UI extrapolates from, and the counter would never leave its last
+    // segment-boundary value.
+    const measured =
+      status.bufferedSeconds !== this.status.bufferedSeconds
+        ? Date.now()
+        : this.status.bufferedAsOf;
+    this.status = { ...status, bufferedAsOf: measured };
+    this.listeners.forEach(l => l(this.status));
   }
 }
 

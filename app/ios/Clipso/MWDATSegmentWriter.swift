@@ -105,6 +105,10 @@ final class MWDATSegmentWriter {
     var droppedNotReady = 0
     /// Last PTS actually handed to the video input, for the monotonicity guard.
     var lastVideoPTS: CMTime = .invalid
+    /// Longest gap between two consecutive frames. A segment whose worst gap is
+    /// far above the frame interval is a stalled link, not a slow encoder, and
+    /// that difference is the whole diagnosis when a wearer reports a freeze.
+    var longestGapSec: Double = 0
 
     init(
       writer: AVAssetWriter,
@@ -427,17 +431,31 @@ final class MWDATSegmentWriter {
   private func appendVideoOnQueue(_ sample: CMSampleBuffer, at arrival: CMTime) {
     guard running else { return }
 
-    // Video and audio share the host clock (audio is phone-mic). Keep that
-    // shared timeline, but clamp gaps: when the writer drops frames under
-    // load, the next arrival's wall-clock PTS used to jump ahead and insert
-    // a freeze in the file — that read as a laggy clip. Cap the step at
-    // ~2 frames (≈66 ms at 30 fps) so playback stays smooth.
+    // Video and audio share the host clock (audio is phone-mic), so a frame is
+    // stamped with the moment it arrived. Only monotonicity is enforced.
+    //
+    // There used to be an upper clamp here too — no more than ~2 frames (66 ms)
+    // past the previous PTS — meant to smooth over dropped frames. It did the
+    // opposite of what a rolling buffer needs: any gap longer than 66 ms (a
+    // Bluetooth hiccup, or simply the SDK's quality ladder dropping below
+    // 15 fps) was rewritten as 66 ms, so the file's timeline ran FASTER than
+    // real time. Three consequences, all of them things this app promises not
+    // to get wrong:
+    //   1. `durationSec` is the PTS span, so every segment under-reported how
+    //      much wall time it covered — that is why the buffered-seconds counter
+    //      was always low and the look-back window held more than it claimed.
+    //   2. Audio is NOT clamped (it is stamped from the host clock), so video
+    //      drifted ahead of audio by the whole accumulated gap — progressive
+    //      A/V desync inside a single segment.
+    //   3. Playback was time-compressed: the clip ran fast.
+    // A real gap in the feed is a real freeze; recording it honestly keeps the
+    // clip, its duration and its audio aligned.
     var pts = arrival
     if let segment = current, segment.lastVideoPTS.isValid {
       let minNext = CMTimeAdd(segment.lastVideoPTS, CMTime(value: 1, timescale: 30_000))
       if pts < minNext { pts = minNext }
-      let maxNext = CMTimeAdd(segment.lastVideoPTS, CMTime(value: 2, timescale: 30))
-      if pts > maxNext { pts = maxNext }
+      let gap = CMTimeSubtract(pts, segment.lastVideoPTS).seconds
+      if gap > segment.longestGapSec { segment.longestGapSec = gap }
     }
 
     guard let retimed = Self.retimed(sample, to: pts) else {
@@ -688,7 +706,8 @@ final class MWDATSegmentWriter {
         + "(failed=\(segment.videoAppendFailures), notReady=\(segment.droppedNotReady)) "
         + "audio=\(segment.audioSamples) samples (failed=\(segment.audioAppendFailures), "
         + "preSession=\(segment.audioPreSessionDrops), peak=\(segment.audioPeak)) "
-        + "span=\(finished.durationSec)s status=\(Self.describeStatus(segment.writer.status))"
+        + "span=\(finished.durationSec)s worstGap=\(String(format: "%.2f", segment.longestGapSec))s "
+        + "status=\(Self.describeStatus(segment.writer.status))"
     )
 
     // Audio is the only thing the wake word hears. If the mic never came up —

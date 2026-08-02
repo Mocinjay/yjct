@@ -81,8 +81,17 @@
 	<string>Clipso transcribes your recording on-device to hear “Clipso”. Nothing is sent anywhere.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
+		<!--
+		  `audio` is what keeps the AVAudioSession mic tap alive once the app is
+		  backgrounded. bluetooth-central keeps the *process* running for BT
+		  events, but without `audio` iOS deactivates the session, the writer's
+		  audio engine stops, and the "Clipso" wake word goes deaf.
+		-->
+		<string>audio</string>
 		<string>bluetooth-central</string>
 		<string>bluetooth-peripheral</string>
 		<string>external-accessory</string>

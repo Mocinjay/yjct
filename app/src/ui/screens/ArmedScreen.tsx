@@ -17,6 +17,7 @@ import { bump } from '../../debug/jsProbe';
 import { useGlassesLease } from '../../device/glassesLease';
 import type { CaptureSession } from '../../services/capture';
 import { buildCaptureSession } from '../../services/capture';
+import { LiveActivity } from '../../native/LiveActivity';
 import { GlassesPreview } from '../GlassesPreview';
 import { RecDot } from '../components';
 import type { RootStackParamList } from '../navigation';
@@ -24,6 +25,9 @@ import { formatDuration } from './LibraryScreen';
 import { colors, radius, spacing } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Armed'>;
+
+const MAX_RECOVERY_ATTEMPTS = 3;
+const RECOVERY_DELAY_MS = 4000;
 
 /**
  * Always-on live view: the rolling buffer arms as soon as the session is
@@ -36,11 +40,13 @@ export function ArmedScreen({ navigation }: Props) {
   const [status, setStatus] = useState<CaptureStatus>({
     state: 'idle',
     bufferedSeconds: 0,
+    bufferedAsOf: Date.now(),
   });
   const [now, setNow] = useState(Date.now());
   const armedRef = useRef(false);
   /** Sticky, unlike `armedRef`: stays true across a disarm. */
   const hasArmedOnce = useRef(false);
+  const recoveryAttempts = useRef(0);
   const isFocused = useIsFocused();
   useGlassesLease(isFocused);
   const insets = useSafeAreaInsets();
@@ -95,13 +101,58 @@ export function ArmedScreen({ navigation }: Props) {
     ]).start();
   }, [status.lastClip, toast]);
 
+  // One 1 Hz clock drives both readouts. It has to run while merely `armed`
+  // too, not just while recording: `bufferedSeconds` is only re-measured when a
+  // segment closes, so without a tick the "Xs buffered" readout sat frozen at
+  // its last value for a whole SEGMENT_SECONDS and then jumped.
   useEffect(() => {
-    if (status.state !== 'recording') {
+    if (status.state !== 'recording' && status.state !== 'armed') {
       return;
     }
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [status.state]);
+
+  // The Live Activity mirrors capture onto the Lock Screen and Dynamic Island,
+  // so leaving the app does not mean losing sight of whether Clipso is armed.
+  //
+  // ActivityKit only allows a *start* from the foreground, which is exactly
+  // when arming happens; updates and the end continue to work backgrounded.
+  const capturing =
+    status.state === 'armed' ||
+    status.state === 'recording' ||
+    status.state === 'saving';
+
+  useEffect(() => {
+    if (!capturing) {
+      return;
+    }
+    LiveActivity.start('Meta glasses');
+    // Ending here (rather than on unmount) keeps the banner alive exactly as
+    // long as capture is: the screen stays mounted under the Library, and the
+    // wearer backgrounding the app must NOT dismiss it.
+    return () => {
+      LiveActivity.end();
+    };
+  }, [capturing]);
+
+  useEffect(() => {
+    if (!capturing) {
+      return;
+    }
+    LiveActivity.update(
+      status.bufferedSeconds,
+      status.sessionClipCount ?? 0,
+      status.state === 'recording',
+      status.recordingSince ?? 0,
+    );
+  }, [
+    capturing,
+    status.bufferedSeconds,
+    status.sessionClipCount,
+    status.state,
+    status.recordingSince,
+  ]);
 
   const goLibrary = () => {
     // Blur tears capture down (see the focus effect below) and `useGlassesLease`
@@ -162,6 +213,35 @@ export function ArmedScreen({ navigation }: Props) {
     session.controller.disarm().catch(() => {});
   }, [isFocused, session, arm, status.state]);
 
+  // A stalled or dropped glasses link leaves capture in `error`, and until now
+  // the only way out was the wearer noticing the banner and tapping Retry —
+  // which is exactly what they cannot do, because the phone is in a pocket and
+  // the whole point is that Clipso keeps listening. Re-arm on its own, but a
+  // bounded number of times: if the glasses are folded, flat or out of range,
+  // renegotiating forever means a stop/start chime every few seconds and a
+  // session that never settles. After the last attempt the banner stands and
+  // Retry is the wearer's call.
+  useEffect(() => {
+    if (status.state === 'armed') {
+      recoveryAttempts.current = 0;
+      return;
+    }
+    if (
+      status.state !== 'error' ||
+      !isFocused ||
+      !session ||
+      recoveryAttempts.current >= MAX_RECOVERY_ATTEMPTS
+    ) {
+      return;
+    }
+    recoveryAttempts.current += 1;
+    const timer = setTimeout(() => {
+      armedRef.current = false;
+      arm();
+    }, RECOVERY_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [status.state, isFocused, session, arm]);
+
   // Coming back from the background: iOS may have torn the native session
   // down while we were away, so re-arm. Focus still gates it — if the user
   // backgrounded the app from the Library, nothing here should wake capture.
@@ -197,23 +277,17 @@ export function ArmedScreen({ navigation }: Props) {
   const recordingSecs = status.recordingSince
     ? Math.max(0, Math.round((now - status.recordingSince) / 1000))
     : 0;
+  // What is really in the look-back window right now: the last measurement plus
+  // the time since, capped at the window the buffer actually keeps.
+  const bufferedSecs = live
+    ? Math.min(
+        session?.controller.lookBackSeconds ?? status.bufferedSeconds,
+        status.bufferedSeconds + (now - status.bufferedAsOf) / 1000,
+      )
+    : status.bufferedSeconds;
 
   return (
     <View style={styles.root}>
-      {session?.mockSource && device ? (
-        <Camera
-          ref={ref => session.mockSource?.attachCamera(ref)}
-          style={StyleSheet.absoluteFill}
-          device={device}
-          isActive
-          video
-          audio
-          onInitialized={arm}
-        />
-      ) : session && !session.mockSource ? (
-        <GlassesPreview style={StyleSheet.absoluteFill} />
-      ) : null}
-
       <View style={[styles.topBar, { paddingTop: insets.top + spacing.s }]}>
         <Pressable
           onPress={goLibrary}
@@ -225,7 +299,9 @@ export function ArmedScreen({ navigation }: Props) {
 
         <View style={[styles.statusPill, recording && styles.statusPillRec]}>
           <RecDot size={8} live={live || recording} />
-          <Text style={styles.statusText}>{statusLabel(status, recordingSecs)}</Text>
+          <Text style={styles.statusText}>
+            {statusLabel(status, recordingSecs, bufferedSecs)}
+          </Text>
         </View>
 
         <Pressable
@@ -234,6 +310,51 @@ export function ArmedScreen({ navigation }: Props) {
           style={({ pressed }) => [styles.chromeButton, pressed && styles.pressed]}>
           <Text style={styles.chromeLabel}>Settings</Text>
         </Pressable>
+      </View>
+
+      {/* The feed is a framed viewfinder, not a full-bleed wall of video: this
+          screen is a monitor for what the glasses see, and the frame keeps the
+          eye on the status/deck chrome rather than the footage. */}
+      <View style={styles.stage}>
+        <View style={[styles.viewfinder, recording && styles.viewfinderRec]}>
+          {session?.mockSource && device ? (
+            <Camera
+              ref={ref => session.mockSource?.attachCamera(ref)}
+              style={StyleSheet.absoluteFill}
+              device={device}
+              isActive
+              video
+              audio
+              onInitialized={arm}
+            />
+          ) : session && !session.mockSource ? (
+            <GlassesPreview style={StyleSheet.absoluteFill} />
+          ) : null}
+
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.toast,
+              {
+                opacity: toast,
+                transform: [
+                  {
+                    translateY: toast.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [24, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}>
+            <Text style={styles.toastCheck}>✓</Text>
+            <Text style={styles.toastText}>
+              {status.sessionClipCount
+                ? `Save #${status.sessionClipCount} — in your library`
+                : 'Saved to library'}
+            </Text>
+          </Animated.View>
+        </View>
       </View>
 
       {status.lastError ? (
@@ -249,26 +370,6 @@ export function ArmedScreen({ navigation }: Props) {
           </Pressable>
         </View>
       ) : null}
-
-      <Animated.View
-        pointerEvents="none"
-        style={[
-          styles.toast,
-          {
-            opacity: toast,
-            transform: [
-              {
-                translateY: toast.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [24, 0],
-                }),
-              },
-            ],
-          },
-        ]}>
-        <Text style={styles.toastCheck}>✓</Text>
-        <Text style={styles.toastText}>Saved to library</Text>
-      </Animated.View>
 
       <View style={[styles.deck, { paddingBottom: insets.bottom + spacing.l }]}>
         <Text style={styles.voiceHint}>
@@ -322,7 +423,11 @@ export function ArmedScreen({ navigation }: Props) {
           {recording
             ? 'look-back plus everything since you started'
             : live
-              ? `listening · ${Math.round(status.bufferedSeconds)}s buffered`
+              ? `listening · ${Math.floor(bufferedSecs)}s buffered${
+                  status.sessionClipCount
+                    ? ` · ${status.sessionClipCount} saved this session`
+                    : ''
+                }`
               : 'opening the glasses feed…'}
         </Text>
       </View>
@@ -330,13 +435,17 @@ export function ArmedScreen({ navigation }: Props) {
   );
 }
 
-function statusLabel(status: CaptureStatus, recordingSecs: number): string {
+function statusLabel(
+  status: CaptureStatus,
+  recordingSecs: number,
+  bufferedSecs: number,
+): string {
   switch (status.state) {
     case 'idle':
     case 'arming':
       return 'Starting…';
     case 'armed':
-      return `LIVE · ${Math.round(status.bufferedSeconds)}s`;
+      return `LIVE · ${Math.floor(bufferedSecs)}s`;
     case 'recording':
       return `REC ${formatDuration(recordingSecs)}`;
     case 'saving':
@@ -351,17 +460,27 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.85 },
   dimmed: { opacity: 0.35 },
   topBar: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: spacing.m,
-    zIndex: 2,
+    paddingBottom: spacing.m,
     gap: spacing.s,
   },
+  stage: {
+    flex: 1,
+    paddingHorizontal: spacing.m,
+    justifyContent: 'center',
+  },
+  viewfinder: {
+    flex: 1,
+    borderRadius: radius.l,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: '#000',
+  },
+  viewfinderRec: { borderColor: colors.accent },
   chromeButton: {
     minWidth: 72,
     height: 36,
@@ -394,16 +513,13 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   errorBanner: {
-    position: 'absolute',
-    top: 110,
-    left: spacing.m,
-    right: spacing.m,
+    marginHorizontal: spacing.m,
+    marginTop: spacing.m,
     backgroundColor: colors.scrim,
     borderLeftWidth: 3,
     borderLeftColor: colors.warning,
     borderRadius: radius.s,
     padding: spacing.m,
-    zIndex: 2,
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.m,
@@ -412,7 +528,7 @@ const styles = StyleSheet.create({
   retryText: { color: colors.text, fontSize: 13, fontWeight: '800' },
   toast: {
     position: 'absolute',
-    bottom: 200,
+    bottom: spacing.m,
     alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
@@ -428,15 +544,10 @@ const styles = StyleSheet.create({
   toastCheck: { color: colors.success, fontSize: 15, fontWeight: '800' },
   toastText: { color: colors.text, fontSize: 14, fontWeight: '700' },
   deck: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
     alignItems: 'center',
     gap: spacing.m,
     paddingTop: spacing.l,
     paddingHorizontal: spacing.m,
-    backgroundColor: colors.scrimLight,
   },
   voiceHint: {
     color: colors.text,
