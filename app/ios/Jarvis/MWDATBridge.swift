@@ -94,6 +94,7 @@ final class MWDATBridge: RCTEventEmitter {
   /// registered".
   private var previewEnabled = false
   private var memoryWatch: DispatchSourceTimer?
+  private var memoryTick: UInt64 = 0
   private let memoryWatchQueue = DispatchQueue(label: "com.mocinjay.jarvis.mwdat.mem")
   private var frameCount = 0
   private var previewEmitCount = 0
@@ -109,8 +110,21 @@ final class MWDATBridge: RCTEventEmitter {
   }
 
   /// The app's memory footprint as iOS accounts it when deciding to terminate
-  /// (`phys_footprint`, the same number the memory-limit killer uses).
-  static func memoryFootprintMB() -> Double {
+  /// (`phys_footprint`, the same number the memory-limit killer uses), split
+  /// into the categories that say *which* subsystem is growing:
+  ///
+  /// - `internal`: ordinary heap/anonymous memory. Ours — objects we allocated
+  ///   and are retaining. A leak in Swift/ObjC/JS shows up here.
+  /// - `compressed`: pages the memory compressor has squeezed. Still counts
+  ///   against the limit, so a heap leak under pressure shifts here.
+  /// - `external`: file-backed and IOSurface-backed memory, which is where
+  ///   CoreAnimation render surfaces, offscreen composites and video buffers
+  ///   live. Growth here is the graphics pipeline, NOT a heap leak.
+  ///
+  /// The split is the whole point: 100+MB/s of `external` means surfaces are
+  /// piling up in the compositor, and no amount of auditing our object graph
+  /// would ever find it.
+  static func memoryBreakdown() -> (footprint: Double, heap: Double, compressed: Double, external: Double, malloc: Double) {
     var info = task_vm_info_data_t()
     var count = mach_msg_type_number_t(
       MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size
@@ -120,8 +134,104 @@ final class MWDATBridge: RCTEventEmitter {
         task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
       }
     }
-    guard result == KERN_SUCCESS else { return -1 }
-    return Double(info.phys_footprint) / 1024.0 / 1024.0
+    guard result == KERN_SUCCESS else { return (-1, -1, -1, -1, -1) }
+    let mb = 1024.0 * 1024.0
+
+    // Splits `heap` one level further. `malloc_zone_statistics(nil, ...)`
+    // aggregates every malloc zone — that is native ObjC/Swift/C++ allocation,
+    // which includes AVFoundation and react-native-video. Hermes keeps its GC
+    // heap in mmap'd regions OUTSIDE the malloc zones, so it shows up in
+    // `heap` but NOT in `malloc`. So:
+    //   malloc tracks heap  -> the leak is native (player / AVFoundation)
+    //   malloc stays flat   -> the leak is the JS heap (our React code)
+    // That fork decides which half of the codebase to look at, and nothing
+    // else we can log distinguishes them.
+    var mstats = malloc_statistics_t()
+    malloc_zone_statistics(nil, &mstats)
+
+    return (
+      Double(info.phys_footprint) / mb,
+      Double(info.`internal`) / mb,
+      Double(info.compressed) / mb,
+      Double(info.external) / mb,
+      Double(mstats.size_in_use) / mb
+    )
+  }
+
+  /// Resident memory grouped by the kernel's VM tag, biggest first.
+  ///
+  /// The footprint split already proved the growth is anonymous memory that is
+  /// neither malloc (flat) nor IOSurface/file-backed (`external`, flat), and the
+  /// JS probe proved the JS thread is idle with one render and no event storm.
+  /// What is left is a native allocator calling vm_allocate directly, and every
+  /// such region carries a tag saying who asked for it — CoreMedia, VideoToolbox,
+  /// CoreAnimation, Hermes' GC and so on all use distinct tags.
+  ///
+  /// So this names the culprit instead of inferring it. Tags are printed
+  /// numerically; the meanings live in <mach/vm_statistics.h> (VM_MEMORY_*).
+  static func vmTagBreakdown(top: Int = 6) -> String {
+    var address: vm_address_t = 0
+    var totals: [UInt32: UInt64] = [:]
+
+    while true {
+      var size: vm_size_t = 0
+      var depth: natural_t = 1
+      var info = vm_region_submap_info_data_64_t()
+      var count = mach_msg_type_number_t(
+        MemoryLayout<vm_region_submap_info_data_64_t>.size / MemoryLayout<Int32>.size
+      )
+      let kr = withUnsafeMutablePointer(to: &info) { infoPtr in
+        infoPtr.withMemoryRebound(to: Int32.self, capacity: Int(count)) { intPtr in
+          vm_region_recurse_64(mach_task_self_, &address, &size, &depth, intPtr, &count)
+        }
+      }
+      guard kr == KERN_SUCCESS else { break }
+      if info.is_submap == 0 {
+        // Resident, not virtual: reserved-but-untouched address space is not
+        // what the memory-limit killer counts.
+        totals[info.user_tag, default: 0] +=
+          UInt64(info.pages_resident) * UInt64(vm_page_size)
+      }
+      let next = address &+ vm_address_t(size)
+      if next <= address { break }
+      address = next
+    }
+
+    return totals
+      .sorted { $0.value > $1.value }
+      .prefix(top)
+      .map { "\(Self.vmTagName($0.key))=\(String(format: "%.1f", Double($0.value) / 1048576.0))" }
+      .joined(separator: " ")
+  }
+
+  /// The VM_MEMORY_* tags worth recognising here. The video ones are the point:
+  /// VIDEOBITSTREAM and the CM_* pools are CoreMedia/VideoToolbox, so if the
+  /// growth lands there it is the decode pipeline rather than anything of ours.
+  private static func vmTagName(_ tag: UInt32) -> String {
+    switch tag {
+    case 0: return "untagged"
+    case 1, 2, 3, 4, 7, 11: return "malloc\(tag)"
+    case 21: return "IOKIT"
+    case 30: return "STACK"
+    case 33: return "DYLIB"
+    case 42: return "COREGRAPHICS"
+    case 51: return "COREANIMATION"
+    case 52: return "CGIMAGE"
+    case 63: return "JAVASCRIPTCORE"
+    case 68: return "COREIMAGE"
+    case 70: return "IMAGEIO"
+    case 82: return "SWIFT_RUNTIME"
+    case 83: return "SWIFT_METADATA"
+    case 88: return "IOSURFACE"
+    case 90: return "AUDIO"
+    case 91: return "VIDEOBITSTREAM"
+    case 92: return "CM_XPC"
+    case 93: return "CM_RPC"
+    case 94: return "CM_MEMORYPOOL"
+    case 95: return "CM_READCACHE"
+    case 96: return "CM_CRABS"
+    default: return "tag\(tag)"
+    }
   }
 
   /// Samples memory on a timer so a growth curve is visible in the log without
@@ -129,19 +239,36 @@ final class MWDATBridge: RCTEventEmitter {
   private func startMemoryWatch() {
     guard memoryWatch == nil else { return }
     let timer = DispatchSource.makeTimerSource(queue: memoryWatchQueue)
-    timer.schedule(deadline: .now() + 2, repeating: 2)
+    // 0.5s, not 2s. At 2s the last run jumped 175MB -> 488MB in a single
+    // sample, which is too coarse to tell what the growth tracks: 24fps
+    // glasses frames and a 120Hz display refresh are indistinguishable when
+    // the window is that wide. `frames` is logged alongside so the curve can
+    // be divided by whichever clock actually explains it.
+    timer.schedule(deadline: .now() + 0.5, repeating: 0.5)
     timer.setEventHandler { [weak self] in
       guard let self else { return }
-      let mb = Self.memoryFootprintMB()
+      let m = Self.memoryBreakdown()
       Self.log(
         String(
-          format: "MEM footprint=%.1fMB previewEnabled=%@ previewEmits=%d recording=%@",
-          mb,
+          format: "MEM footprint=%.1fMB heap=%.1f malloc=%.1f compressed=%.1f external=%.1f "
+            + "previewEnabled=%@ previewEmits=%d frames=%d recording=%@",
+          m.footprint,
+          m.heap,
+          m.malloc,
+          m.compressed,
+          m.external,
           self.previewEnabled ? "YES" : "NO",
           self.previewEmitCount,
+          self.frameCount,
           self.writer != nil ? "YES" : "NO"
         )
       )
+      // Walking every VM region is far too heavy for the 0.5s sampler, but once
+      // every 2s is plenty to watch which tag owns the growth.
+      self.memoryTick &+= 1
+      if self.memoryTick % 4 == 0 {
+        Self.log("VMTAGS \(Self.vmTagBreakdown())")
+      }
     }
     timer.resume()
     memoryWatch = timer
