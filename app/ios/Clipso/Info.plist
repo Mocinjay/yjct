@@ -22,8 +22,6 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
-	<key>CFBundleVersion</key>
-	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -43,58 +41,23 @@
 			</array>
 		</dict>
 	</array>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>fb-viewapp</string>
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<!-- Begin Meta Wearables Device Access Toolkit -->
 	<key>MWDAT</key>
 	<dict>
 		<key>AppLinkURLScheme</key>
 		<string>jarvis://</string>
-		<!--
-		  MetaAppID 0 = Developer Mode (Meta AI → Settings → App Info → tap
-		  App version 5×, then enable Developer Mode). Official DAT docs: in
-		  Developer Mode attestation is off and MetaAppID may be "0".
-
-		  Do NOT paste another developer's Wearables Center credentials here.
-		  MetaAppID / ClientToken are bound to that project's Apple Team ID
-		  and release channel — using a friend's IDs with a different
-		  DEVELOPMENT_TEAM / bundle ID fails attestation and looks like a
-		  silent registration/stream failure.
-
-		  For release-channel distribution, create your own project in the
-		  Wearables Developer Center and set:
-		    MetaAppID, ClientToken (from the Center)
-		    TeamID = your Apple Developer Team ID (same as DEVELOPMENT_TEAM)
-		-->
 		<key>MetaAppID</key>
 		<string>0</string>
-		<!-- Present for when you leave Developer Mode; harmless at MetaAppID 0. -->
 		<key>TeamID</key>
 		<string>$(DEVELOPMENT_TEAM)</string>
 	</dict>
-	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Clipso connects to your Meta glasses over Bluetooth to buffer their camera feed.</string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Clipso finds and streams from your Meta glasses over local Wi-Fi.</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_bonjour._tcp</string>
-	</array>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>bluetooth-central</string>
-		<string>bluetooth-peripheral</string>
-		<string>external-accessory</string>
-	</array>
-	<key>UISupportedExternalAccessoryProtocols</key>
-	<array>
-		<string>com.meta.ar.wearable</string>
-	</array>
-	<!-- End Meta Wearables Device Access Toolkit -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
@@ -102,19 +65,37 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Clipso connects to your Meta glasses over Bluetooth to buffer their camera feed.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_bonjour._tcp</string>
+	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Clipso buffers video from your camera while recording so saying “Clipso” can save the last moments as a clip.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Clipso finds and streams from your Meta glasses over local Wi-Fi.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Clipso records audio with your clips and listens on-device for your trigger word. No audio leaves your phone.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Clipso transcribes your recording on-device to hear “Clipso”. Nothing is sent anywhere.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+		<string>bluetooth-peripheral</string>
+		<string>external-accessory</string>
+	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
 		<string>arm64</string>
+	</array>
+	<key>UISupportedExternalAccessoryProtocols</key>
+	<array>
+		<string>com.meta.ar.wearable</string>
 	</array>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>

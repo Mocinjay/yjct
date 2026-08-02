@@ -1,3 +1,4 @@
+import { useIsFocused } from '@react-navigation/native';
 import React, { useEffect, useState } from 'react';
 import { Image, StyleSheet, Text, View, type ViewStyle } from 'react-native';
 import {
@@ -13,27 +14,34 @@ import { colors } from './theme';
  * native bridge emits while the glasses stream is open (preview or armed).
  */
 /**
- * Both ConnectScreen and ArmedScreen mount a preview, and during
- * `replace('Armed')` both are briefly mounted at once. A plain enable-on-mount /
- * disable-on-unmount pair would let the outgoing screen's cleanup switch the
- * feed off underneath the incoming one, so count mounts instead.
+ * Number of previews currently *visible*, not merely mounted.
+ *
+ * Both ConnectScreen and ArmedScreen render a preview, and during
+ * `replace('Armed')` both are briefly live at once, so the outgoing screen's
+ * cleanup must not switch the feed off underneath the incoming one. Counting
+ * handles that overlap.
  */
-let previewMounts = 0;
+let previewViewers = 0;
 
 export function GlassesPreview({ style }: { style?: ViewStyle }) {
   const [frameUri, setFrameUri] = useState<string | null>(null);
+  // Focus, NOT mount. React Navigation keeps every screen below the top of the
+  // stack mounted so that going back restores its state, so ArmedScreen — and
+  // its preview — is still mounted while the Library and the clip player sit on
+  // top of it. Gating on mount therefore never turned the feed off: the bridge
+  // kept converting, JPEG-encoding and base64-ing ~7 frames/second, and this
+  // component kept calling setState on each one, the whole time a clip was
+  // playing. That is what starved the JS thread (video kept playing on the
+  // native side while every control went dead) and grew memory until iOS
+  // terminated the app.
+  const isFocused = useIsFocused();
 
   useEffect(() => {
-    if (!mwdatAvailable()) {
+    if (!mwdatAvailable() || !isFocused) {
       return;
     }
-    // Native encodes a preview frame only while this view is mounted. Without
-    // this the pipeline kept converting, JPEG-encoding and base64'ing ~7
-    // frames/second on every screen — including while a clip was playing,
-    // which flooded the JS thread (the player UI stopped responding to taps)
-    // and grew memory until the OS terminated the app.
-    previewMounts += 1;
-    if (previewMounts === 1) {
+    previewViewers += 1;
+    if (previewViewers === 1) {
       MWDATNative.setPreviewEnabled(true).catch(() => {});
     }
     const sub = mwdatEvents().addListener(
@@ -44,19 +52,22 @@ export function GlassesPreview({ style }: { style?: ViewStyle }) {
     );
     return () => {
       sub.remove();
-      previewMounts -= 1;
-      if (previewMounts === 0) {
+      previewViewers -= 1;
+      if (previewViewers === 0) {
         // Defer: Connect → Live uses navigation.reset, so the outgoing preview
         // unmounts before the incoming one mounts. Disabling synchronously
         // left a frame where emission was off and the handoff looked dead.
         setTimeout(() => {
-          if (previewMounts === 0) {
+          if (previewViewers === 0) {
             MWDATNative.setPreviewEnabled(false).catch(() => {});
           }
         }, 0);
       }
+      // Drop the retained frame so its decoded bitmap is not held while the
+      // screen is off-view.
+      setFrameUri(null);
     };
-  }, []);
+  }, [isFocused]);
 
   return (
     <View style={[styles.root, style]}>

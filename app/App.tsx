@@ -6,6 +6,7 @@ import { StatusBar } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { clipStore } from './src/core/ClipStore';
 import { entitlementStore } from './src/core/EntitlementStore';
+import { startJsProbe } from './src/debug/jsProbe';
 import { ClipsoSplash } from './src/ui/ClipsoSplash';
 import type { RootStackParamList } from './src/ui/navigation';
 import { ArmedScreen } from './src/ui/screens/ArmedScreen';
@@ -17,6 +18,10 @@ import { PlayerScreen } from './src/ui/screens/PlayerScreen';
 import { PublishScreen } from './src/ui/screens/PublishScreen';
 import { SettingsScreen } from './src/ui/screens/SettingsScreen';
 import { colors } from './src/ui/theme';
+
+// Temporary: see src/debug/jsProbe.ts. Started at module scope so it is running
+// before any screen mounts.
+startJsProbe();
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 

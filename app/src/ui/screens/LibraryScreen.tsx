@@ -16,6 +16,7 @@ import { FREE_RETENTION_HOURS } from '../../config';
 import { clipStore, isPending, msUntilExpiry } from '../../core/ClipStore';
 import { entitlementStore } from '../../core/EntitlementStore';
 import type { Clip } from '../../types';
+import { bump } from '../../debug/jsProbe';
 import { ProBadge, RecDot, RecRings } from '../components';
 import type { RootStackParamList } from '../navigation';
 import { colors, radius, spacing, type } from '../theme';
@@ -25,6 +26,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Library'>;
 type Tab = 'recent' | 'saved';
 
 export function LibraryScreen({ navigation }: Props) {
+  bump('render.Library');
   const [clips, setClips] = useState<Clip[]>([]);
   const [isPro, setIsPro] = useState(false);
   const [tab, setTab] = useState<Tab>('recent');

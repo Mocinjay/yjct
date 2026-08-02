@@ -240,14 +240,14 @@ export function ClipsoSplash({ onFinished }: Props) {
 
 const styles = StyleSheet.create({
   root: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: '#000000',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 100,
   },
   vignette: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: '#000',
     // soft radial feel via layered edges
     opacity: 1,
@@ -281,7 +281,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
   },
   wireCore: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: '#c8c8d0',
     opacity: 0.95,
   },

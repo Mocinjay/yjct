@@ -1,3 +1,4 @@
+import { useIsFocused } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -12,9 +13,10 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Camera, useCameraDevice } from 'react-native-vision-camera';
 import type { CaptureStatus } from '../../core/CaptureController';
+import { bump } from '../../debug/jsProbe';
+import { useGlassesLease } from '../../device/glassesLease';
 import type { CaptureSession } from '../../services/capture';
 import { buildCaptureSession } from '../../services/capture';
-import { MWDATNative, mwdatAvailable } from '../../native/MWDATNative';
 import { GlassesPreview } from '../GlassesPreview';
 import { RecDot } from '../components';
 import type { RootStackParamList } from '../navigation';
@@ -29,6 +31,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Armed'>;
  * controls are a quiet clip / extended affordance, not a camera shutter.
  */
 export function ArmedScreen({ navigation }: Props) {
+  bump('render.Armed');
   const [session, setSession] = useState<CaptureSession | null>(null);
   const [status, setStatus] = useState<CaptureStatus>({
     state: 'idle',
@@ -36,6 +39,10 @@ export function ArmedScreen({ navigation }: Props) {
   });
   const [now, setNow] = useState(Date.now());
   const armedRef = useRef(false);
+  /** Sticky, unlike `armedRef`: stays true across a disarm. */
+  const hasArmedOnce = useRef(false);
+  const isFocused = useIsFocused();
+  useGlassesLease(isFocused);
   const insets = useSafeAreaInsets();
   const device = useCameraDevice('back');
   const toast = useRef(new Animated.Value(0)).current;
@@ -53,16 +60,6 @@ export function ArmedScreen({ navigation }: Props) {
     };
   }, []);
 
-  const arm = useCallback(() => {
-    if (!session || armedRef.current) {
-      return;
-    }
-    armedRef.current = true;
-    session.controller.arm().catch(() => {
-      armedRef.current = false;
-    });
-  }, [session]);
-
   useEffect(() => {
     if (!session) {
       return;
@@ -74,33 +71,6 @@ export function ArmedScreen({ navigation }: Props) {
       session.controller.disarm().catch(() => {});
     };
   }, [session]);
-
-  // Glasses (and mock once the viewfinder is ready): buffer immediately —
-  // there is no separate "press to start recording" step.
-  useEffect(() => {
-    if (session && !session.mockSource) {
-      arm();
-    }
-  }, [session, arm]);
-
-  // After a background release, the native session is gone — re-arm on return.
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', state => {
-      if (state !== 'active' || !session || session.mockSource) {
-        return;
-      }
-      if (
-        status.state === 'armed' ||
-        status.state === 'recording' ||
-        status.state === 'arming'
-      ) {
-        return;
-      }
-      armedRef.current = false;
-      arm();
-    });
-    return () => sub.remove();
-  }, [session, status.state, arm]);
 
   useEffect(() => {
     if (!status.lastClip || status.lastClip.id === lastToastClip.current) {
@@ -134,21 +104,84 @@ export function ArmedScreen({ navigation }: Props) {
   }, [status.state]);
 
   const goLibrary = () => {
-    // Leaving Live for good: release the glasses capture slot entirely.
-    armedRef.current = false;
-    const release = async () => {
-      try {
-        await session?.controller.disarm();
-      } catch {
-        // ignore
-      }
-      if (mwdatAvailable()) {
-        await MWDATNative.stop().catch(() => {});
-      }
-      navigation.reset({ index: 0, routes: [{ name: 'Library' }] });
-    };
-    release();
+    // Blur tears capture down (see the focus effect below) and `useGlassesLease`
+    // closes the session, so this only has to navigate. Armed is reached two
+    // ways: pushed from Library, or replacing Connect on boot. In the second
+    // case it is the only screen on the stack, so goBack() has no target and
+    // React Navigation logs "The action 'GO_BACK' was not handled by any
+    // navigator". Closing belongs in the Library either way.
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.navigate('Library');
+    }
   };
+
+  const arm = useCallback(() => {
+    if (!session || armedRef.current) {
+      return;
+    }
+    armedRef.current = true;
+    hasArmedOnce.current = true;
+    session.controller.arm().catch(() => {
+      // Status listener already surfaces the error; clear the latch so
+      // refocusing can retry instead of sitting there permanently unarmed.
+      armedRef.current = false;
+    });
+  }, [session]);
+
+  // Capture follows FOCUS, not mount. React Navigation keeps this screen
+  // mounted underneath the Library and the clip player, so arming on mount left
+  // the glasses camera, the Bluetooth link, the H.264 writer, the mic and
+  // per-segment speech recognition all running the entire time the user was
+  // browsing or watching a clip. Nothing up there needs the wearer's feed.
+  //
+  // On blur: stop capturing. On return: arm again. `useGlassesLease` handles
+  // tearing the underlying glasses session down once no screen holds it.
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+    if (isFocused) {
+      // The mock path arms from the viewfinder's `onInitialized` instead, so on
+      // the FIRST visit leave it alone — arming before the camera is ready
+      // fails. On a return visit that callback has already fired and will not
+      // fire again, so re-arm here. `hasArmedOnce` is what distinguishes the
+      // two; `armedRef` cannot, since disarming resets it to false.
+      if (!session.mockSource || hasArmedOnce.current) {
+        arm();
+      }
+      return;
+    }
+    // Never interrupt a manual extended recording or an in-flight save — those
+    // own the writer and the user is deliberately capturing.
+    if (status.state === 'recording' || status.state === 'saving') {
+      return;
+    }
+    armedRef.current = false;
+    session.controller.disarm().catch(() => {});
+  }, [isFocused, session, arm, status.state]);
+
+  // Coming back from the background: iOS may have torn the native session
+  // down while we were away, so re-arm. Focus still gates it — if the user
+  // backgrounded the app from the Library, nothing here should wake capture.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', state => {
+      if (state !== 'active' || !isFocused || !session || session.mockSource) {
+        return;
+      }
+      if (
+        status.state === 'armed' ||
+        status.state === 'recording' ||
+        status.state === 'arming'
+      ) {
+        return;
+      }
+      armedRef.current = false;
+      arm();
+    });
+    return () => sub.remove();
+  }, [isFocused, session, status.state, arm]);
 
   const clipNow = () => {
     session?.controller.captureNow().catch(() => {});

@@ -1,6 +1,6 @@
 import { useIsFocused } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -14,6 +14,7 @@ import RNFS from 'react-native-fs';
 import Video from 'react-native-video';
 import { clipStore } from '../../core/ClipStore';
 import { entitlementStore } from '../../core/EntitlementStore';
+import { bump } from '../../debug/jsProbe';
 import { publishService } from '../../phase2/PublishService';
 import { Button, ProBadge } from '../components';
 import type { RootStackParamList } from '../navigation';
@@ -23,13 +24,21 @@ import { colors, radius, spacing, type } from '../theme';
 type Props = NativeStackScreenProps<RootStackParamList, 'Player'>;
 
 export function PlayerScreen({ route, navigation }: Props) {
+  bump('render.Player');
   const { clip } = route.params;
   const [name, setName] = useState(clip.name);
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(clip.name);
   const [isPro, setIsPro] = useState(false);
   const [captioning, setCaptioning] = useState(false);
-  const [ended, setEnded] = useState(false);
+
+  // Our own transport, because `controls` cannot be used — see the <Video>
+  // below. `userPaused` is ONLY ever set by a tap. Nothing the player emits
+  // feeds back into it, which is what makes this safe.
+  const videoRef = useRef<React.ComponentRef<typeof Video>>(null);
+  const [userPaused, setUserPaused] = useState(false);
+  const [atEnd, setAtEnd] = useState(false);
+  const [progress, setProgress] = useState({ current: 0, total: 0 });
 
   // A fresh `{ uri }` object on every render makes react-native-video treat the
   // source as changed and re-initialize the player. This screen re-renders on
@@ -50,6 +59,17 @@ export function PlayerScreen({ route, navigation }: Props) {
     entitlementStore.isPro().then(setIsPro);
     return entitlementStore.subscribe(setIsPro);
   }, []);
+
+  const togglePlayback = () => {
+    if (atEnd) {
+      // At the end AVPlayer will not resume without a seek.
+      videoRef.current?.seek(0);
+      setAtEnd(false);
+      setUserPaused(false);
+      return;
+    }
+    setUserPaused(p => !p);
+  };
 
   const publish = () => {
     if (isPro) {
@@ -124,18 +144,81 @@ export function PlayerScreen({ route, navigation }: Props) {
     <View style={styles.root}>
       <View style={styles.videoFrame}>
         <Video
+          ref={videoRef}
           source={source}
           style={styles.video}
-          // Native transport controls: play/pause, scrubbing, and skip.
-          controls
-          paused={!isFocused || ended}
-          onEnd={() => setEnded(true)}
-          onLoad={() => setEnded(false)}
+          // `controls` MUST stay off. It makes react-native-video mount an
+          // AVPlayerViewController (`usePlayerViewController()`), and AVKit
+          // pre-generates the scrubber's filmstrip thumbnails for the item as
+          // CGImages. That is the memory leak: VM tag 54,
+          // VM_MEMORY_COREGRAPHICS_DATA, climbing 0 -> 1889MB in ~20s while
+          // every other region stayed flat, until iOS killed the app. With
+          // `controls` false, RNV uses a bare AVPlayerLayer
+          // (`usePlayerLayer()`) with no AVKit chrome and no image generation.
+          //
+          // It also explains the symptom that never fit: the UI froze while the
+          // JS thread was provably IDLE (the probe's 1s interval kept firing on
+          // schedule). It was the MAIN thread stuck in CoreGraphics.
+          //
+          // Our own transport is below. If a scrubber is wanted later it must be
+          // built from `onProgress` + `seek()`, never by turning `controls` back
+          // on.
+          controls={false}
+          // Derived from focus and an explicit tap only. No player event feeds
+          // this, so there is no cycle.
+          paused={!isFocused || userPaused}
+          onLoad={(d: { duration: number }) => {
+            bump('video.onLoad');
+            setProgress({ current: 0, total: d.duration });
+          }}
+          onEnd={() => {
+            bump('video.onEnd');
+            setAtEnd(true);
+          }}
+          onProgress={(d: { currentTime: number; seekableDuration: number }) => {
+            bump('video.onProgress');
+            setProgress({ current: d.currentTime, total: d.seekableDuration });
+          }}
+          onBuffer={() => bump('video.onBuffer')}
+          onError={() => bump('video.onError')}
+          onPlaybackStateChanged={() => bump('video.onPlaybackStateChanged')}
           resizeMode="contain"
           ignoreSilentSwitch="ignore"
           playInBackground={false}
           playWhenInactive={false}
         />
+
+        {/* Transport. Replaces AVKit's controls, which cannot be used here. */}
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={togglePlayback}
+          accessibilityRole="button"
+          accessibilityLabel={
+            atEnd ? 'Replay' : userPaused ? 'Play' : 'Pause'
+          }>
+          {atEnd || userPaused ? (
+            <View style={styles.playOverlay}>
+              <View style={styles.playBadge}>
+                <Text style={styles.playGlyph}>{atEnd ? '↻' : '▶'}</Text>
+              </View>
+            </View>
+          ) : null}
+        </Pressable>
+
+        <View style={styles.scrubTrack} pointerEvents="none">
+          <View
+            style={[
+              styles.scrubFill,
+              {
+                width: `${
+                  progress.total > 0
+                    ? Math.min(100, (progress.current / progress.total) * 100)
+                    : 0
+                }%`,
+              },
+            ]}
+          />
+        </View>
       </View>
 
       <View style={styles.meta}>
@@ -223,6 +306,25 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   video: { flex: 1 },
+  playOverlay: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  playBadge: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: colors.scrim,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playGlyph: { color: colors.text, fontSize: 26, marginLeft: 2 },
+  scrubTrack: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 3,
+    backgroundColor: colors.border,
+  },
+  scrubFill: { height: 3, backgroundColor: colors.accent },
   meta: { paddingHorizontal: spacing.m, gap: 2 },
   name: { ...type.heading, color: colors.text },
   sub: { ...type.caption, color: colors.textFaint },
