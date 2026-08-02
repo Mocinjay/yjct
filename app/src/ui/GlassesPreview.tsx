@@ -42,7 +42,6 @@ export function GlassesPreview({ style }: { style?: ViewStyle }) {
     }
     previewViewers += 1;
     if (previewViewers === 1) {
-      console.log('[GlassesPreview] visible -> enabling preview emission');
       MWDATNative.setPreviewEnabled(true).catch(() => {});
     }
     const sub = mwdatEvents().addListener(
@@ -55,7 +54,6 @@ export function GlassesPreview({ style }: { style?: ViewStyle }) {
       sub.remove();
       previewViewers -= 1;
       if (previewViewers === 0) {
-        console.log('[GlassesPreview] hidden -> disabling preview emission');
         MWDATNative.setPreviewEnabled(false).catch(() => {});
       }
       // Drop the retained frame so its decoded bitmap is not held while the

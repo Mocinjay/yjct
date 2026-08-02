@@ -1,3 +1,4 @@
+import { useIsFocused } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -11,6 +12,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Camera, useCameraDevice } from 'react-native-vision-camera';
 import type { CaptureStatus } from '../../core/CaptureController';
+import { bump } from '../../debug/jsProbe';
+import { useGlassesLease } from '../../device/glassesLease';
 import type { CaptureSession } from '../../services/capture';
 import { buildCaptureSession } from '../../services/capture';
 import { GlassesPreview } from '../GlassesPreview';
@@ -22,6 +25,7 @@ import { colors, radius, spacing, type } from '../theme';
 type Props = NativeStackScreenProps<RootStackParamList, 'Armed'>;
 
 export function ArmedScreen({ navigation }: Props) {
+  bump('render.Armed');
   const [session, setSession] = useState<CaptureSession | null>(null);
   const [status, setStatus] = useState<CaptureStatus>({
     state: 'idle',
@@ -29,6 +33,10 @@ export function ArmedScreen({ navigation }: Props) {
   });
   const [now, setNow] = useState(Date.now());
   const armedRef = useRef(false);
+  /** Sticky, unlike `armedRef`: stays true across a disarm. */
+  const hasArmedOnce = useRef(false);
+  const isFocused = useIsFocused();
+  useGlassesLease(isFocused);
   const insets = useSafeAreaInsets();
   const device = useCameraDevice('back');
   const toast = useRef(new Animated.Value(0)).current;
@@ -95,17 +103,43 @@ export function ArmedScreen({ navigation }: Props) {
       return;
     }
     armedRef.current = true;
+    hasArmedOnce.current = true;
     session.controller.arm().catch(() => {
       // status listener already reflects the error
     });
   }, [session]);
 
-  // MWDAT (no viewfinder to wait for): arm as soon as the session exists.
+  // Capture follows FOCUS, not mount. React Navigation keeps this screen
+  // mounted underneath the Library and the clip player, so arming on mount left
+  // the glasses camera, the Bluetooth link, the H.264 writer, the mic and
+  // per-segment speech recognition all running the entire time the user was
+  // browsing or watching a clip. Nothing up there needs the wearer's feed.
+  //
+  // On blur: stop capturing. On return: arm again. `useGlassesLease` handles
+  // tearing the underlying glasses session down once no screen holds it.
   useEffect(() => {
-    if (session && !session.mockSource) {
-      arm();
+    if (!session) {
+      return;
     }
-  }, [session, arm]);
+    if (isFocused) {
+      // The mock path arms from the viewfinder's `onInitialized` instead, so on
+      // the FIRST visit leave it alone — arming before the camera is ready
+      // fails. On a return visit that callback has already fired and will not
+      // fire again, so re-arm here. `hasArmedOnce` is what distinguishes the
+      // two; `armedRef` cannot, since disarming resets it to false.
+      if (!session.mockSource || hasArmedOnce.current) {
+        arm();
+      }
+      return;
+    }
+    // Never interrupt a manual extended recording or an in-flight save — those
+    // own the writer and the user is deliberately capturing.
+    if (status.state === 'recording' || status.state === 'saving') {
+      return;
+    }
+    armedRef.current = false;
+    session.controller.disarm().catch(() => {});
+  }, [isFocused, session, arm, status.state]);
 
   const clipNow = () => {
     session?.controller.captureNow().catch(() => {});

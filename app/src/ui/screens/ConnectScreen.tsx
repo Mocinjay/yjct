@@ -1,3 +1,4 @@
+import { useIsFocused } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -8,6 +9,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { useGlassesLease } from '../../device/glassesLease';
 import {
   MWDATNative,
   mwdatAvailable,
@@ -36,6 +38,19 @@ export function ConnectScreen({ navigation }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const previewStarted = useRef(false);
+  const isFocused = useIsFocused();
+  useGlassesLease(isFocused);
+
+  // The lease closes the glasses session once no screen holds it, so leaving
+  // this screen must also clear the "already opened" latch — otherwise coming
+  // back would find `previewStarted` still true and never reopen the feed.
+  useEffect(() => {
+    if (isFocused) {
+      return;
+    }
+    previewStarted.current = false;
+    setPreviewing(false);
+  }, [isFocused]);
   /** Bumped when native tears the stream down so the auto-open effect re-runs. */
   const [previewEpoch, setPreviewEpoch] = useState(0);
   const [mockReady, setMockReady] = useState(!AUTO_MOCK);
@@ -126,7 +141,13 @@ export function ConnectScreen({ navigation }: Props) {
 
   // As soon as we're registered with a device in sight, open the live view.
   useEffect(() => {
-    if ((!registered && !AUTO_MOCK) || !mockReady || !device || previewStarted.current) {
+    if (
+      (!registered && !AUTO_MOCK) ||
+      !mockReady ||
+      !device ||
+      !isFocused ||
+      previewStarted.current
+    ) {
       return;
     }
     previewStarted.current = true;
@@ -144,7 +165,7 @@ export function ConnectScreen({ navigation }: Props) {
         setBusy(null);
       }
     })();
-  }, [registered, device, mockReady, previewEpoch]);
+  }, [registered, device, mockReady, previewEpoch, isFocused]);
 
   // Dev/simulator: once mock frames flow, walk into the Armed screen so the
   // whole record pipeline can be exercised hands-free.

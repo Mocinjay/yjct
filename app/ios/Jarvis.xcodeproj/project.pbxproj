@@ -12,13 +12,13 @@
 		1C313A6A301AB48D00F4E893 /* MWDATCore in Frameworks */ = {isa = PBXBuildFile; productRef = 3C7E9BE3E2A7146C14CF60C4 /* MWDATCore */; };
 		1C313A6B301AB48D00F4E893 /* MWDATCamera in Frameworks */ = {isa = PBXBuildFile; productRef = 3DA9135D1916C99C81815599 /* MWDATCamera */; };
 		1C313A6C301AB48D00F4E893 /* MWDATMockDevice in Frameworks */ = {isa = PBXBuildFile; productRef = 8018480ED72052F17324316E /* MWDATMockDevice */; };
-		61662EB452689C12D4864E07 /* MWDATBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = B50CD06736D50709609B0DF7 /* MWDATBridge.m */; };
+		61662EB452689C12D4864E07 /* Jarvis/MWDATBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = B50CD06736D50709609B0DF7 /* Jarvis/MWDATBridge.m */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
-		773A9AC243E8E70C59CDD860 /* MWDATSegmentWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8439CF4812DD97E1C56847EC /* MWDATSegmentWriter.swift */; };
+		773A9AC243E8E70C59CDD860 /* Jarvis/MWDATSegmentWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8439CF4812DD97E1C56847EC /* Jarvis/MWDATSegmentWriter.swift */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
 		B0BE19483E8FF5A24A62AE69 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
 		E5345EA5EACE870665C5A7E8 /* MockFeed.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 0BB5AC80AAC50026E2888293 /* MockFeed.mp4 */; };
-		F1124EF2E68B52680BC22CE3 /* MWDATBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B032E5A05050FA7ACD489623 /* MWDATBridge.swift */; };
+		F1124EF2E68B52680BC22CE3 /* Jarvis/MWDATBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B032E5A05050FA7ACD489623 /* Jarvis/MWDATBridge.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -33,9 +33,9 @@
 		5DCACB8F33CDC322A6C60F78 /* libPods-Jarvis.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-Jarvis.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = Jarvis/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = Jarvis/LaunchScreen.storyboard; sourceTree = "<group>"; };
-		8439CF4812DD97E1C56847EC /* MWDATSegmentWriter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Jarvis/MWDATSegmentWriter.swift; sourceTree = "<group>"; };
-		B032E5A05050FA7ACD489623 /* MWDATBridge.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Jarvis/MWDATBridge.swift; sourceTree = "<group>"; };
-		B50CD06736D50709609B0DF7 /* MWDATBridge.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = Jarvis/MWDATBridge.m; sourceTree = "<group>"; };
+		8439CF4812DD97E1C56847EC /* Jarvis/MWDATSegmentWriter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Jarvis/MWDATSegmentWriter.swift; sourceTree = "<group>"; };
+		B032E5A05050FA7ACD489623 /* Jarvis/MWDATBridge.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Jarvis/MWDATBridge.swift; sourceTree = "<group>"; };
+		B50CD06736D50709609B0DF7 /* Jarvis/MWDATBridge.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = Jarvis/MWDATBridge.m; sourceTree = "<group>"; };
 		BD20E682B3ACCB006714C3EF /* Debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
@@ -63,9 +63,9 @@
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */,
 				13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */,
-				B032E5A05050FA7ACD489623 /* MWDATBridge.swift */,
-				8439CF4812DD97E1C56847EC /* MWDATSegmentWriter.swift */,
-				B50CD06736D50709609B0DF7 /* MWDATBridge.m */,
+				B032E5A05050FA7ACD489623 /* Jarvis/MWDATBridge.swift */,
+				8439CF4812DD97E1C56847EC /* Jarvis/MWDATSegmentWriter.swift */,
+				B50CD06736D50709609B0DF7 /* Jarvis/MWDATBridge.m */,
 				0BB5AC80AAC50026E2888293 /* MockFeed.mp4 */,
 			);
 			name = Jarvis;
@@ -116,7 +116,6 @@
 				BD20E682B3ACCB006714C3EF /* Debug.xcconfig */,
 				29CAEC8BA0315448ED9AB553 /* Release.xcconfig */,
 			);
-			name = Config;
 			path = Config;
 			sourceTree = SOURCE_ROOT;
 		};
@@ -315,9 +314,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
-				F1124EF2E68B52680BC22CE3 /* MWDATBridge.swift in Sources */,
-				773A9AC243E8E70C59CDD860 /* MWDATSegmentWriter.swift in Sources */,
-				61662EB452689C12D4864E07 /* MWDATBridge.m in Sources */,
+				F1124EF2E68B52680BC22CE3 /* Jarvis/MWDATBridge.swift in Sources */,
+				773A9AC243E8E70C59CDD860 /* Jarvis/MWDATSegmentWriter.swift in Sources */,
+				61662EB452689C12D4864E07 /* Jarvis/MWDATBridge.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
