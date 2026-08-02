@@ -51,6 +51,17 @@ export function PlayerScreen({ route, navigation }: Props) {
     return entitlementStore.subscribe(setIsPro);
   }, []);
 
+  // Temporary lifecycle logging: proves one player per selected clip, and that
+  // it is released on leaving. Remove once the memory behaviour is settled.
+  useEffect(() => {
+    console.log('[PlayerScreen] mounted, source =', source.uri);
+    return () => console.log('[PlayerScreen] unmounted, player released');
+  }, [source]);
+
+  useEffect(() => {
+    console.log('[PlayerScreen] focus =', isFocused, '-> paused =', !isFocused);
+  }, [isFocused]);
+
   const publish = () => {
     if (isPro) {
       navigation.navigate('Publish', { clip });
