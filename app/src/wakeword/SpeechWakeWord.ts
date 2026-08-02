@@ -4,10 +4,10 @@ import { matchesWakePhrase } from './phraseMatch';
 import type { WakeWordProvider } from './WakeWordProvider';
 
 /** Ignore repeat detections for this long after one fires. */
-const DEBOUNCE_MS = 5000;
+const DEBOUNCE_MS = 3500;
 
 /**
- * Keyless "yo Jarvis, clip that" detection with the OS's own speech
+ * Keyless "Clipso" detection with the OS's own speech
  * recognition — no vendor, no API key, on-device where supported.
  *
  * iOS: rolling segment files are transcribed as they land (the audio is
@@ -26,10 +26,11 @@ export class SpeechWakeWord implements WakeWordProvider {
 
   async start(onDetected: () => void): Promise<void> {
     const ok = await SpeechWakeWordNative.requestPermission();
+    console.log('[wakeword] start — speech permission granted:', ok);
     if (!ok) {
       throw new Error(
         Platform.OS === 'ios'
-          ? 'Speech recognition permission denied — enable it in iOS Settings → Jarvis.'
+          ? 'Speech recognition permission denied — enable it in iOS Settings → Clipso.'
           : 'Speech recognition is not available on this device.',
       );
     }
@@ -67,18 +68,25 @@ export class SpeechWakeWord implements WakeWordProvider {
           this.handleTranscript(transcript);
         }
       })
-      .catch(() => {
+      .catch(err => {
         // Segment may have been evicted mid-transcription; quiet segments
-        // resolve empty. Either way: not an error worth surfacing.
+        // resolve empty. Not worth surfacing in the UI, but a recognizer that
+        // is rejecting every segment must not look like a quiet room.
+        console.log('[wakeword] transcribe failed:', String(err));
       });
   }
 
   private handleTranscript(transcript: string): void {
-    if (!this.onDetected || !matchesWakePhrase(transcript)) {
+    const matched = matchesWakePhrase(transcript);
+    console.log(
+      `[wakeword] transcript "${transcript}" → ${matched ? 'HIT' : 'miss'}`,
+    );
+    if (!this.onDetected || !matched) {
       return;
     }
     const now = Date.now();
     if (now - this.lastFiredAt < DEBOUNCE_MS) {
+      console.log('[wakeword] HIT ignored — inside debounce window');
       return;
     }
     this.lastFiredAt = now;

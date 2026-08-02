@@ -27,12 +27,6 @@ PODS:
   - hermes-engine (250829098.0.14):
     - hermes-engine/Pre-built (= 250829098.0.14)
   - hermes-engine/Pre-built (250829098.0.14)
-  - ios-voice-processor (1.2.0)
-  - Porcupine-iOS (4.0.1):
-    - ios-voice-processor (~> 1.2.0)
-  - porcupine-react-native (4.0.0):
-    - Porcupine-iOS (~> 4.0.0)
-    - React
   - RCTDeprecation (0.86.0)
   - RCTRequired (0.86.0)
   - RCTSwiftUI (0.86.0)
@@ -1593,9 +1587,6 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
-  - react-native-voice-processor (1.2.3):
-    - ios-voice-processor (~> 1.2.0)
-    - React-Core
   - React-NativeModulesApple (0.86.0):
     - hermes-engine
     - React-callinvoker
@@ -2077,7 +2068,6 @@ DEPENDENCIES:
   - ClipStitcher (from `../modules/clip-stitcher`)
   - FBLazyVector (from `../node_modules/react-native/Libraries/FBLazyVector`)
   - hermes-engine (from `../node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec`)
-  - "porcupine-react-native (from `../node_modules/@picovoice/porcupine-react-native`)"
   - RCTDeprecation (from `../node_modules/react-native/ReactApple/Libraries/RCTFoundation/RCTDeprecation`)
   - RCTRequired (from `../node_modules/react-native/Libraries/Required`)
   - RCTSwiftUI (from `../node_modules/react-native/ReactApple/RCTSwiftUI`)
@@ -2118,7 +2108,6 @@ DEPENDENCIES:
   - React-mutationobservernativemodule (from `../node_modules/react-native/ReactCommon/react/nativemodule/mutationobserver`)
   - react-native-safe-area-context (from `../node_modules/react-native-safe-area-context`)
   - react-native-video (from `../node_modules/react-native-video`)
-  - "react-native-voice-processor (from `../node_modules/@picovoice/react-native-voice-processor`)"
   - React-NativeModulesApple (from `../node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios`)
   - React-networking (from `../node_modules/react-native/ReactCommon/react/networking`)
   - React-oscompat (from `../node_modules/react-native/ReactCommon/oscompat`)
@@ -2160,11 +2149,6 @@ DEPENDENCIES:
   - VisionCamera (from `../node_modules/react-native-vision-camera`)
   - Yoga (from `../node_modules/react-native/ReactCommon/yoga`)
 
-SPEC REPOS:
-  trunk:
-    - ios-voice-processor
-    - Porcupine-iOS
-
 EXTERNAL SOURCES:
   AsyncStorage:
     :path: "../node_modules/@react-native-async-storage/async-storage"
@@ -2175,8 +2159,6 @@ EXTERNAL SOURCES:
   hermes-engine:
     :podspec: "../node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec"
     :tag: hermes-v250829098.0.14
-  porcupine-react-native:
-    :path: "../node_modules/@picovoice/porcupine-react-native"
   RCTDeprecation:
     :path: "../node_modules/react-native/ReactApple/Libraries/RCTFoundation/RCTDeprecation"
   RCTRequired:
@@ -2255,8 +2237,6 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-safe-area-context"
   react-native-video:
     :path: "../node_modules/react-native-video"
-  react-native-voice-processor:
-    :path: "../node_modules/@picovoice/react-native-voice-processor"
   React-NativeModulesApple:
     :path: "../node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios"
   React-networking:
@@ -2343,9 +2323,6 @@ SPEC CHECKSUMS:
   ClipStitcher: 9e50c74d0a4238baf82ab6ee77f0917120c3ba58
   FBLazyVector: b3e7ad108f0d882e30445c5527d774e3fd432f3d
   hermes-engine: 2d5f60a5101e2f3b384977a2f645cd6f061d2a12
-  ios-voice-processor: 6b5ca08962f39e434fe39dca0f483d923a3b1b97
-  Porcupine-iOS: 7271749e41b7513a10d207bc45ee4433bf828136
-  porcupine-react-native: 76d3535ed1d80788c047f6e9ebdca99fade6b7e7
   RCTDeprecation: 2a74a2c57675e64419bd89078efde81f7c1de90b
   RCTRequired: 30451112e6fef4e6f31b4e7eee0845156e35e4b0
   RCTSwiftUI: 5aaf0b07e747ba749dc6acc94d8bd41eea4b570f
@@ -2354,7 +2331,7 @@ SPEC CHECKSUMS:
   React: 2574546f2d017abd14d0c9b48cf2b6a0547c2591
   React-callinvoker: 03cd4b931d1d583d87aae99b8f7b6fe26bf571ee
   React-Core: b0a0038e05720fb8148759404e9c354e3e60043c
-  React-Core-prebuilt: 13924a267683b3d6fa4bde9c80380becf83a9c5c
+  React-Core-prebuilt: 7da85c26e5616d52f119b81ce5e3e6fc5c9bda49
   React-CoreModules: a1121b3182200be11e078940159c67ff95ee98b4
   React-cxxreact: 8f74977959064bee99af63bb0ad95b6c3dbec921
   React-debug: 8cc8d99ccc664ef9e873027f7fc3fb0a50496012
@@ -2385,7 +2362,6 @@ SPEC CHECKSUMS:
   React-mutationobservernativemodule: 2e568e13c98bd185fe83266795233fa7ad2cbc19
   react-native-safe-area-context: c1eb308f4b36372a4de4b3bdaa8ed695ec3dd461
   react-native-video: 84f5283aaed3484b5b4914095ab16a9dd3477cca
-  react-native-voice-processor: 47d7906332e258dcd1f2ee089bdb9bf0f6809ccf
   React-NativeModulesApple: a4713821c9caae40ae33eef933a6e692a6f4a81d
   React-networking: b344a1a41a4729ef859123b7a234f3092761cb25
   React-oscompat: 0b72a7e926954a0415ccd83e0748b6561fe45367
@@ -2427,6 +2403,6 @@ SPEC CHECKSUMS:
   VisionCamera: 3ea10c46a5c612f5f89fb46a54bef4a0de8b58a7
   Yoga: fe50ab299e578f397fef753cf309c6703a4db29b
 
-PODFILE CHECKSUM: 111cc3e5a41c5d6432b7f21f56be3df1d308f1a5
+PODFILE CHECKSUM: 4beabcd724938379ab5df36e8db2d1429d4a1541
 
 COCOAPODS: 1.15.2

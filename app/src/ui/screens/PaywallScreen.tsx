@@ -32,7 +32,7 @@ export function PaywallScreen({ navigation }: Props) {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-      <Text style={styles.kicker}>JARVIS PRO</Text>
+      <Text style={styles.kicker}>CLIPSO PRO</Text>
       <Text style={styles.title}>Bigger moments.{'\n'}Zero busywork.</Text>
       <View style={styles.priceRow}>
         <Text style={styles.price}>$15</Text>

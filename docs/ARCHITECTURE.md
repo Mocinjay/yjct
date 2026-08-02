@@ -9,7 +9,7 @@
 ┌──────▼───────┐  ┌───────▼────────┐  ┌─────────▼──────────┐
 │ DeviceVideo  │  │ WakeWord       │  │ SegmentRingBuffer  │
 │ Source       │  │ Provider       │  │ (pure TS, tested)  │
-│  • Mock      │  │  • Porcupine   │  └─────────┬──────────┘
+│  • Mock      │  │  • Speech      │  └─────────┬──────────┘
 │  • MWDAT ⛔  │  │  • Mock (tap)  │            │ flush(N s)
 └──────────────┘  └────────────────┘  ┌─────────▼──────────┐
                                       │ ClipStitcher       │
@@ -28,7 +28,7 @@
 
 **`DeviceVideoSource` interface.** `MockDeviceSource` drives `react-native-vision-camera` on the phone. `MWDATSource` is a typed stub that throws until the Meta Wearables Device Access Toolkit native bridge lands — no code path pretends glasses exist. Swapping sources is a Settings toggle.
 
-**Wake word is our problem, not Meta's.** There is no third-party "Hey Meta" hook. `PorcupineWakeWord` runs Picovoice Porcupine fully on-device against the app's own mic stream (low latency, low battery). `MockWakeWord` exposes a manual trigger button so the loop is testable with no Picovoice key.
+**Wake word is our problem, not Meta's.** There is no third-party "Hey Meta" hook. `SpeechWakeWord` runs the OS's own speech recognition on-device — keyless, no vendor SDK — and `phraseMatch.ts` scores the transcript for "Clipso" and its common mis-hearings ("clip so", "clips o"). Detection trails the spoken word by up to one segment; the look-back window still contains the moment. `MockWakeWord` exposes a manual trigger button so the loop is testable with no microphone.
 
 **Battery honesty.** Armed mode holds an open camera+mic session continuously. Onboarding states this before the user ever arms it.
 

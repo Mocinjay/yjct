@@ -46,7 +46,14 @@ export function GlassesPreview({ style }: { style?: ViewStyle }) {
       sub.remove();
       previewMounts -= 1;
       if (previewMounts === 0) {
-        MWDATNative.setPreviewEnabled(false).catch(() => {});
+        // Defer: Connect → Live uses navigation.reset, so the outgoing preview
+        // unmounts before the incoming one mounts. Disabling synchronously
+        // left a frame where emission was off and the handoff looked dead.
+        setTimeout(() => {
+          if (previewMounts === 0) {
+            MWDATNative.setPreviewEnabled(false).catch(() => {});
+          }
+        }, 0);
       }
     };
   }, []);

@@ -2,7 +2,7 @@ import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
 
 /**
  * Native bridge to the Meta Wearables Device Access Toolkit (iOS: Swift
- * bridge in ios/Jarvis/MWDATBridge.swift; Android bridge lands later).
+ * bridge in ios/Clipso/MWDATBridge.swift; Android bridge lands later).
  */
 export interface MWDATSegmentEvent {
   path: string;
@@ -55,6 +55,9 @@ interface MWDATBridgeModule {
   setPreviewEnabled(enabled: boolean): Promise<void>;
   start(segmentSeconds: number): Promise<void>;
   cut(): Promise<void>;
+  /** Stop the segment writer only — keeps the glasses camera stream alive. */
+  stopRecording(): Promise<void>;
+  /** Tear down the whole glasses session (stream + writer). */
   stop(): Promise<void>;
 }
 
@@ -92,6 +95,7 @@ export const MWDATNative = {
     requireNative().setPreviewEnabled(enabled),
   start: (segmentSeconds: number) => requireNative().start(segmentSeconds),
   cut: () => requireNative().cut(),
+  stopRecording: () => requireNative().stopRecording(),
   stop: () => requireNative().stop(),
 };
 

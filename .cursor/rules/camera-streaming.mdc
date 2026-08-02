@@ -1,0 +1,140 @@
+---
+description: Stream, video frames, photo capture, resolution/frame rate configuration
+globs: **/*Stream*, **/*Camera*, **/*Video*
+---
+
+# Camera Streaming (iOS)
+
+Guide for implementing camera streaming and photo capture with the DAT SDK.
+
+## Key concepts
+
+- **Stream**: Main interface for camera streaming
+- **VideoFrame**: Individual video frames — call `.makeUIImage()` to render
+- **StreamConfiguration**: Configure resolution, frame rate, and codec
+- **PhotoData**: Still image captured from glasses
+
+## Creating a DeviceSession
+
+```swift
+import MWDATCamera
+import MWDATCore
+
+let wearables = Wearables.shared
+let deviceSelector = AutoDeviceSelector(wearables: wearables)
+// Or for a specific device: SpecificDeviceSelector(device: deviceId)
+let deviceSession = try wearables.createSession(deviceSelector: deviceSelector)
+try deviceSession.start()
+
+// Wait for the device session to reach the started state
+for await state in deviceSession.stateStream() {
+    if state == .started { break }
+}
+```
+
+## Adding a Stream
+
+Once the `DeviceSession` is started, add a `Stream` capability:
+
+```swift
+let config = StreamConfiguration(
+    videoCodec: .raw,
+    resolution: .medium,  // 504x896
+    frameRate: 24
+)
+
+guard let stream = try deviceSession.addStream(config: config) else {
+    // DeviceSession must be in the started state before adding a stream
+    return
+}
+```
+
+### Resolution options
+
+| Resolution | Size |
+|-----------|------|
+| `.high` | 720 x 1280 |
+| `.medium` | 504 x 896 |
+| `.low` | 360 x 640 |
+
+### Frame rate options
+
+Valid values: `2`, `7`, `15`, `24`, `30` FPS.
+
+Lower resolution and frame rate yield higher visual quality due to less Bluetooth compression.
+
+## Observing stream state
+
+`StreamState` transitions: `stopping` → `stopped` → `waitingForDevice` → `starting` → `streaming` → `paused`
+
+```swift
+let stateToken = stream.statePublisher.listen { state in
+    Task { @MainActor in
+        switch state {
+        case .streaming:
+            // Stream is active, frames are flowing
+        case .waitingForDevice:
+            // Waiting for glasses to connect
+        case .stopped:
+            // Stream ended — release resources
+        case .paused:
+            // Temporarily suspended — keep connection, wait
+        default:
+            break
+        }
+    }
+}
+```
+
+## Receiving video frames
+
+```swift
+let frameToken = stream.videoFramePublisher.listen { frame in
+    guard let image = frame.makeUIImage() else { return }
+    Task { @MainActor in
+        self.previewImage = image
+    }
+}
+```
+
+## Starting and stopping
+
+```swift
+// Start the stream capability
+stream.start()
+
+// Stop streaming
+stream.stop()
+
+// Stop the parent device session when you're done with all capabilities
+deviceSession.stop()
+```
+
+## Photo capture
+
+Capture a still photo while streaming:
+
+```swift
+// Listen for photo data
+let photoToken = stream.photoDataPublisher.listen { photoData in
+    let imageData = photoData.data
+    // Convert to UIImage or save
+}
+
+// Trigger capture
+stream.capturePhoto(format: .jpeg)
+```
+
+## Bandwidth and quality
+
+Resolution and frame rate are constrained by Bluetooth Classic bandwidth. The SDK automatically reduces quality when bandwidth is limited:
+1. First lowers resolution (e.g., High → Medium)
+2. Then reduces frame rate (e.g., 30 → 24), never below 15 FPS
+
+Request lower settings for higher visual quality per frame.
+
+## Links
+
+- [Stream API reference](https://wearables.developer.meta.com/docs/reference/ios_swift/dat/0.8/mwdatcamera_stream)
+- [StreamConfiguration API reference](https://wearables.developer.meta.com/docs/reference/ios_swift/dat/0.8/mwdatcamera_streamconfiguration)
+- [Integration guide](https://wearables.developer.meta.com/docs/build-integration-ios)

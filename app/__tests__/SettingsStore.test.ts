@@ -25,35 +25,35 @@ describe('SettingsStore', () => {
     await AsyncStorage.clear();
   });
 
-  it('defaults to the built-in jarvis wake word', async () => {
+  it('defaults to keyless speech recognition', async () => {
     const store = new SettingsStore();
     const settings = await store.get();
-    expect(settings.wakeWord.keyword).toBe('jarvis');
+    expect(settings.wakeWord.provider).toBe('speech');
     expect(settings.bufferSeconds).toBe(30);
   });
 
-  it('migrates the legacy "fade away" keyword to jarvis', async () => {
+  it('retires a stored porcupine provider back to speech', async () => {
     await AsyncStorage.setItem(
-      'settings.v1',
+      'settings.v2',
       JSON.stringify({
         bufferSeconds: 60,
-        wakeWord: { provider: 'porcupine', keyword: 'fade away' },
+        deviceKind: 'mwdat',
+        wakeWord: { provider: 'porcupine', keyword: 'jarvis' },
       }),
     );
     const store = new SettingsStore();
     const settings = await store.get();
-    expect(settings.wakeWord.keyword).toBe('jarvis');
+    expect(settings.wakeWord.provider).toBe('speech');
     expect(settings.bufferSeconds).toBe(60); // everything else untouched
-    expect(settings.wakeWord.provider).toBe('porcupine');
   });
 
-  it('leaves genuinely custom keywords alone', async () => {
+  it('leaves an explicit manual-trigger choice alone', async () => {
     await AsyncStorage.setItem(
-      'settings.v1',
-      JSON.stringify({ wakeWord: { provider: 'porcupine', keyword: 'clip it chief' } }),
+      'settings.v2',
+      JSON.stringify({ deviceKind: 'mwdat', wakeWord: { provider: 'mock' } }),
     );
     const store = new SettingsStore();
-    expect((await store.get()).wakeWord.keyword).toBe('clip it chief');
+    expect((await store.get()).wakeWord.provider).toBe('mock');
   });
 
   it('clamps buffer seconds into the 30-90 range on update', async () => {

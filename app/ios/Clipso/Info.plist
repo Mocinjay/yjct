@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Clipso</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+			<key>CFBundleURLSchemes</key>
+			<!--
+			  Still "jarvis" after the rename to Clipso, on purpose: this scheme
+			  is registered on the Meta side as the MWDAT AppLinkURLScheme, and
+			  the two must match or glasses registration never returns. Rename
+			  it here only in the same change that updates the Meta app config.
+			-->
+			<array>
+				<string>jarvis</string>
+			</array>
+		</dict>
+	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>fb-viewapp</string>
+	</array>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<!-- Begin Meta Wearables Device Access Toolkit -->
+	<key>MWDAT</key>
+	<dict>
+		<key>AppLinkURLScheme</key>
+		<string>jarvis://</string>
+		<!--
+		  MetaAppID 0 = Developer Mode (Meta AI → Settings → App Info → tap
+		  App version 5×, then enable Developer Mode). Official DAT docs: in
+		  Developer Mode attestation is off and MetaAppID may be "0".
+
+		  Do NOT paste another developer's Wearables Center credentials here.
+		  MetaAppID / ClientToken are bound to that project's Apple Team ID
+		  and release channel — using a friend's IDs with a different
+		  DEVELOPMENT_TEAM / bundle ID fails attestation and looks like a
+		  silent registration/stream failure.
+
+		  For release-channel distribution, create your own project in the
+		  Wearables Developer Center and set:
+		    MetaAppID, ClientToken (from the Center)
+		    TeamID = your Apple Developer Team ID (same as DEVELOPMENT_TEAM)
+		-->
+		<key>MetaAppID</key>
+		<string>0</string>
+		<!-- Present for when you leave Developer Mode; harmless at MetaAppID 0. -->
+		<key>TeamID</key>
+		<string>$(DEVELOPMENT_TEAM)</string>
+	</dict>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Clipso connects to your Meta glasses over Bluetooth to buffer their camera feed.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Clipso finds and streams from your Meta glasses over local Wi-Fi.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_bonjour._tcp</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+		<string>bluetooth-peripheral</string>
+		<string>external-accessory</string>
+	</array>
+	<key>UISupportedExternalAccessoryProtocols</key>
+	<array>
+		<string>com.meta.ar.wearable</string>
+	</array>
+	<!-- End Meta Wearables Device Access Toolkit -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<false/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Clipso buffers video from your camera while recording so saying “Clipso” can save the last moments as a clip.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Clipso records audio with your clips and listens on-device for your trigger word. No audio leaves your phone.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Clipso transcribes your recording on-device to hear “Clipso”. Nothing is sent anywhere.</string>
+	<key>RCTNewArchEnabled</key>
+	<true/>
+	<key>UILaunchStoryboardName</key>
+	<string>LaunchScreen</string>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+	</array>
+	<key>UIViewControllerBasedStatusBarAppearance</key>
+	<false/>
+</dict>
+</plist>

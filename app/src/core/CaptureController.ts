@@ -1,10 +1,11 @@
 import RNFS from 'react-native-fs';
-import { MAX_CLIP_RECORDING_SECONDS } from '../config';
+import { FREE_RETENTION_HOURS, MAX_CLIP_RECORDING_SECONDS } from '../config';
 import type { DeviceVideoSource } from '../device/DeviceVideoSource';
 import { stitchSegments } from '../native/ClipStitcher';
 import type { Clip, Segment } from '../types';
 import type { WakeWordProvider } from '../wakeword/WakeWordProvider';
 import { clipStore } from './ClipStore';
+import { entitlementStore } from './EntitlementStore';
 import { SegmentRingBuffer } from './SegmentRingBuffer';
 
 export type CaptureState =
@@ -28,7 +29,7 @@ export interface CaptureStatus {
  * The core loop:
  *
  *   armed      — rolling buffer keeps the last N seconds, evicting old files
- *   "jarvis"   — the wake word AUTO-SAVES the look-back window as a clip
+ *   "clipso"   — the wake word AUTO-SAVES the look-back window as a clip
  *   extended   — the manual REC button instead pins the window and keeps
  *                recording until stopped (stop button / wake phrase /
  *                safety cap): [start − N seconds … stop]
@@ -197,6 +198,9 @@ export class CaptureController {
       segments.map(s => s.path),
       outputPath,
     );
+    // Free clips are temporary and start counting down immediately; Pro clips
+    // are kept until the wearer deletes them.
+    const isPro = await entitlementStore.isPro();
     return {
       id,
       name: defaultClipName(capturedAt),
@@ -205,6 +209,8 @@ export class CaptureController {
       capturedAt,
       durationSec: result.durationSec,
       sourceKind: this.source.kind,
+      savedAt: isPro ? capturedAt : null,
+      expiresAt: isPro ? null : capturedAt + FREE_RETENTION_HOURS * 3600_000,
     };
   }
 

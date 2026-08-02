@@ -12,10 +12,17 @@
 //   Xcode > Settings > Accounts > pick your team; the ID is in parentheses.
 //
 // PRODUCT_BUNDLE_IDENTIFIER
-//   Must be unique to you — reverse-DNS on a domain or name you control.
+//   Must be unique to YOU — reverse-DNS on a domain or name you control.
+//   Never reuse a teammate's. Bundle ids are globally unique to one Apple
+//   team, and the Meta Wearables app registration is keyed to the bundle id
+//   too, so sharing one means whoever does not own it gets signing failures
+//   and silent glasses-registration failures. One id per developer:
+//     com.mocinjay.clipso     — Allen Williams
+//     com.ajdinahmedi.clipso  — Ajdin Ahmedi
+//   Add your own line rather than borrowing either of these.
 //
 // Free "Personal Team" accounts get 7-day provisioning profiles. When the app
 // stops launching after a week, rebuild from Xcode and it reissues.
 
 DEVELOPMENT_TEAM = ABCDE12345
-PRODUCT_BUNDLE_IDENTIFIER = com.yourname.jarvis
+PRODUCT_BUNDLE_IDENTIFIER = com.yourname.clipso

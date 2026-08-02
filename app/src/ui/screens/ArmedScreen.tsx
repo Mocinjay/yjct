@@ -2,6 +2,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Animated,
+  AppState,
   Easing,
   Pressable,
   StyleSheet,
@@ -13,14 +14,20 @@ import { Camera, useCameraDevice } from 'react-native-vision-camera';
 import type { CaptureStatus } from '../../core/CaptureController';
 import type { CaptureSession } from '../../services/capture';
 import { buildCaptureSession } from '../../services/capture';
+import { MWDATNative, mwdatAvailable } from '../../native/MWDATNative';
 import { GlassesPreview } from '../GlassesPreview';
 import { RecDot } from '../components';
 import type { RootStackParamList } from '../navigation';
 import { formatDuration } from './LibraryScreen';
-import { colors, radius, spacing, type } from '../theme';
+import { colors, radius, spacing } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Armed'>;
 
+/**
+ * Always-on live view: the rolling buffer arms as soon as the session is
+ * ready. Voice (“Clipso”) is the primary trigger; the on-screen
+ * controls are a quiet clip / extended affordance, not a camera shutter.
+ */
 export function ArmedScreen({ navigation }: Props) {
   const [session, setSession] = useState<CaptureSession | null>(null);
   const [status, setStatus] = useState<CaptureStatus>({
@@ -46,6 +53,16 @@ export function ArmedScreen({ navigation }: Props) {
     };
   }, []);
 
+  const arm = useCallback(() => {
+    if (!session || armedRef.current) {
+      return;
+    }
+    armedRef.current = true;
+    session.controller.arm().catch(() => {
+      armedRef.current = false;
+    });
+  }, [session]);
+
   useEffect(() => {
     if (!session) {
       return;
@@ -53,11 +70,38 @@ export function ArmedScreen({ navigation }: Props) {
     const unsubscribe = session.controller.subscribe(setStatus);
     return () => {
       unsubscribe();
+      armedRef.current = false;
       session.controller.disarm().catch(() => {});
     };
   }, [session]);
 
-  // Slide-up "saved" toast whenever a new clip lands.
+  // Glasses (and mock once the viewfinder is ready): buffer immediately —
+  // there is no separate "press to start recording" step.
+  useEffect(() => {
+    if (session && !session.mockSource) {
+      arm();
+    }
+  }, [session, arm]);
+
+  // After a background release, the native session is gone — re-arm on return.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', state => {
+      if (state !== 'active' || !session || session.mockSource) {
+        return;
+      }
+      if (
+        status.state === 'armed' ||
+        status.state === 'recording' ||
+        status.state === 'arming'
+      ) {
+        return;
+      }
+      armedRef.current = false;
+      arm();
+    });
+    return () => sub.remove();
+  }, [session, status.state, arm]);
+
   useEffect(() => {
     if (!status.lastClip || status.lastClip.id === lastToastClip.current) {
       return;
@@ -81,7 +125,6 @@ export function ArmedScreen({ navigation }: Props) {
     ]).start();
   }, [status.lastClip, toast]);
 
-  // Tick the elapsed-recording clock.
   useEffect(() => {
     if (status.state !== 'recording') {
       return;
@@ -90,22 +133,22 @@ export function ArmedScreen({ navigation }: Props) {
     return () => clearInterval(timer);
   }, [status.state]);
 
-  const arm = useCallback(() => {
-    if (!session || armedRef.current) {
-      return;
-    }
-    armedRef.current = true;
-    session.controller.arm().catch(() => {
-      // status listener already reflects the error
-    });
-  }, [session]);
-
-  // MWDAT (no viewfinder to wait for): arm as soon as the session exists.
-  useEffect(() => {
-    if (session && !session.mockSource) {
-      arm();
-    }
-  }, [session, arm]);
+  const goLibrary = () => {
+    // Leaving Live for good: release the glasses capture slot entirely.
+    armedRef.current = false;
+    const release = async () => {
+      try {
+        await session?.controller.disarm();
+      } catch {
+        // ignore
+      }
+      if (mwdatAvailable()) {
+        await MWDATNative.stop().catch(() => {});
+      }
+      navigation.reset({ index: 0, routes: [{ name: 'Library' }] });
+    };
+    release();
+  };
 
   const clipNow = () => {
     session?.controller.captureNow().catch(() => {});
@@ -138,25 +181,13 @@ export function ArmedScreen({ navigation }: Props) {
         <GlassesPreview style={StyleSheet.absoluteFill} />
       ) : null}
 
-      {/* Top chrome */}
       <View style={[styles.topBar, { paddingTop: insets.top + spacing.s }]}>
         <Pressable
-          onPress={() => {
-            // Armed is reached two ways: pushed from Library, or replacing
-            // Connect on boot (ConnectScreen uses `replace`). In the second
-            // case it is the only screen on the stack, so goBack() has no
-            // target and React Navigation logs "The action 'GO_BACK' was not
-            // handled by any navigator". Closing belongs in the Library either
-            // way, so fall through to it.
-            if (navigation.canGoBack()) {
-              navigation.goBack();
-            } else {
-              navigation.navigate('Library');
-            }
-          }}
+          onPress={goLibrary}
           hitSlop={12}
-          style={({ pressed }) => [styles.closeButton, pressed && styles.pressed]}>
-          <Text style={styles.closeGlyph}>✕</Text>
+          style={({ pressed }) => [styles.chromeButton, pressed && styles.pressed]}>
+          <Text style={styles.chromeGlyph}>←</Text>
+          <Text style={styles.chromeLabel}>Library</Text>
         </Pressable>
 
         <View style={[styles.statusPill, recording && styles.statusPillRec]}>
@@ -164,17 +195,28 @@ export function ArmedScreen({ navigation }: Props) {
           <Text style={styles.statusText}>{statusLabel(status, recordingSecs)}</Text>
         </View>
 
-        {/* spacer to balance the close button */}
-        <View style={styles.closeButton} />
+        <Pressable
+          onPress={() => navigation.navigate('Settings')}
+          hitSlop={12}
+          style={({ pressed }) => [styles.chromeButton, pressed && styles.pressed]}>
+          <Text style={styles.chromeLabel}>Settings</Text>
+        </Pressable>
       </View>
 
       {status.lastError ? (
         <View style={styles.errorBanner}>
           <Text style={styles.errorText}>{status.lastError}</Text>
+          <Pressable
+            onPress={() => {
+              armedRef.current = false;
+              arm();
+            }}
+            hitSlop={8}>
+            <Text style={styles.retryText}>Retry</Text>
+          </Pressable>
         </View>
       ) : null}
 
-      {/* Saved toast */}
       <Animated.View
         pointerEvents="none"
         style={[
@@ -195,78 +237,60 @@ export function ArmedScreen({ navigation }: Props) {
         <Text style={styles.toastText}>Saved to library</Text>
       </Animated.View>
 
-      {/* Bottom control deck */}
       <View style={[styles.deck, { paddingBottom: insets.bottom + spacing.l }]}>
-        {live || saving ? (
-          <Text style={styles.hint}>
-            {session?.mockWakeWord
-              ? 'mock mode — tap the ring to clip'
-              : '🎙 say “yo Jarvis, clip that”'}
-          </Text>
-        ) : null}
-        {recording ? (
-          <Text style={styles.hint}>extended clip — tap to stop & save</Text>
-        ) : null}
+        <Text style={styles.voiceHint}>
+          {recording
+            ? 'extended clip — tap Stop when you’re done'
+            : session?.mockWakeWord
+              ? 'mock mode — tap Clip to save the look-back'
+              : 'say “Clipso”'}
+        </Text>
 
-        <View style={styles.deckRow}>
-          {/* Extended-clip toggle (left) */}
+        <View style={styles.actions}>
           {!recording ? (
             <Pressable
               onPress={startExtended}
               disabled={!live}
               style={({ pressed }) => [
-                styles.sideButton,
+                styles.secondaryBtn,
                 pressed && styles.pressed,
                 !live && styles.dimmed,
               ]}>
-              <View style={styles.extendedGlyph} />
-              <Text style={styles.sideLabel}>Extended</Text>
+              <Text style={styles.secondaryLabel}>Extended</Text>
             </Pressable>
           ) : (
-            <View style={styles.sideButton}>
+            <View style={styles.secondaryBtn}>
               <Text style={styles.elapsed}>{formatDuration(recordingSecs)}</Text>
-              <Text style={styles.sideLabel}>+ look-back</Text>
             </View>
           )}
 
-          {/* Main ring button (center) */}
           <Pressable
-            onPress={recording ? stop : session?.mockWakeWord ? () => session.mockWakeWord?.fire() : clipNow}
+            onPress={
+              recording
+                ? stop
+                : session?.mockWakeWord
+                  ? () => session.mockWakeWord?.fire()
+                  : clipNow
+            }
             disabled={saving || (!live && !recording)}
             style={({ pressed }) => [
-              styles.ring,
-              pressed && styles.ringPressed,
+              styles.primaryBtn,
+              recording && styles.primaryBtnStop,
+              pressed && styles.pressed,
               saving && styles.dimmed,
             ]}>
-            {recording ? (
-              <View style={styles.stopSquare} />
-            ) : (
-              <View style={styles.ringInner} />
-            )}
+            <Text style={styles.primaryLabel}>
+              {saving ? 'Saving…' : recording ? 'Stop' : 'Clip'}
+            </Text>
           </Pressable>
-
-          {/* Clip-now (right, redundant with voice) */}
-          {!recording ? (
-            <Pressable
-              onPress={clipNow}
-              disabled={!live}
-              style={({ pressed }) => [
-                styles.sideButton,
-                pressed && styles.pressed,
-                !live && styles.dimmed,
-              ]}>
-              <Text style={styles.scissorGlyph}>✂</Text>
-              <Text style={styles.sideLabel}>Clip now</Text>
-            </Pressable>
-          ) : (
-            <View style={styles.sideButton} />
-          )}
         </View>
 
         <Text style={styles.deckCaption}>
           {recording
-            ? 'everything since you started — plus the look-back — becomes one clip'
-            : `clips reach back ${Math.round(status.bufferedSeconds)}s`}
+            ? 'look-back plus everything since you started'
+            : live
+              ? `listening · ${Math.round(status.bufferedSeconds)}s buffered`
+              : 'opening the glasses feed…'}
         </Text>
       </View>
     </View>
@@ -276,25 +300,22 @@ export function ArmedScreen({ navigation }: Props) {
 function statusLabel(status: CaptureStatus, recordingSecs: number): string {
   switch (status.state) {
     case 'idle':
-      return 'Starting…';
     case 'arming':
       return 'Starting…';
     case 'armed':
-      return `LIVE · ${Math.round(status.bufferedSeconds)}s buffered`;
+      return `LIVE · ${Math.round(status.bufferedSeconds)}s`;
     case 'recording':
       return `REC ${formatDuration(recordingSecs)}`;
     case 'saving':
-      return 'Saving clip…';
+      return 'Saving…';
     case 'error':
-      return 'Something broke';
+      return 'Error';
   }
 }
 
-const RING = 84;
-
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
-  pressed: { transform: [{ scale: 0.94 }], opacity: 0.9 },
+  pressed: { opacity: 0.85 },
   dimmed: { opacity: 0.35 },
   topBar: {
     position: 'absolute',
@@ -306,16 +327,21 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: spacing.m,
     zIndex: 2,
+    gap: spacing.s,
   },
-  closeButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  chromeButton: {
+    minWidth: 72,
+    height: 36,
+    borderRadius: radius.pill,
     backgroundColor: colors.scrim,
+    paddingHorizontal: spacing.m,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 4,
   },
-  closeGlyph: { color: colors.text, fontSize: 16, fontWeight: '700' },
+  chromeGlyph: { color: colors.text, fontSize: 16, fontWeight: '700' },
+  chromeLabel: { color: colors.text, fontSize: 13, fontWeight: '700' },
   statusPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -324,11 +350,12 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     paddingHorizontal: spacing.m,
     paddingVertical: spacing.s + 2,
+    flexShrink: 1,
   },
   statusPillRec: { backgroundColor: colors.accent },
   statusText: {
     color: colors.text,
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '800',
     fontVariant: ['tabular-nums'],
     letterSpacing: 0.3,
@@ -344,11 +371,15 @@ const styles = StyleSheet.create({
     borderRadius: radius.s,
     padding: spacing.m,
     zIndex: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.m,
   },
-  errorText: { color: colors.warning, ...type.caption },
+  errorText: { color: colors.warning, fontSize: 13, flex: 1 },
+  retryText: { color: colors.text, fontSize: 13, fontWeight: '800' },
   toast: {
     position: 'absolute',
-    bottom: 250,
+    bottom: 200,
     alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
@@ -371,57 +402,50 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.m,
     paddingTop: spacing.l,
+    paddingHorizontal: spacing.m,
     backgroundColor: colors.scrimLight,
   },
-  hint: { color: colors.text, fontSize: 14, fontWeight: '600', opacity: 0.9 },
-  deckRow: {
+  voiceHint: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '700',
+    textAlign: 'center',
+    opacity: 0.95,
+  },
+  actions: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
+    gap: spacing.m,
     width: '100%',
-    paddingHorizontal: spacing.xl,
   },
-  ring: {
-    width: RING,
-    height: RING,
-    borderRadius: RING / 2,
-    borderWidth: 5,
-    borderColor: colors.text,
+  secondaryBtn: {
+    minWidth: 100,
+    height: 48,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.35)',
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: spacing.m,
   },
-  ringPressed: { transform: [{ scale: 0.93 }] },
-  ringInner: {
-    width: RING - 22,
-    height: RING - 22,
-    borderRadius: (RING - 22) / 2,
+  secondaryLabel: { color: colors.text, fontSize: 14, fontWeight: '700' },
+  primaryBtn: {
+    minWidth: 140,
+    height: 52,
+    borderRadius: radius.pill,
     backgroundColor: colors.accent,
-  },
-  stopSquare: {
-    width: RING * 0.38,
-    height: RING * 0.38,
-    borderRadius: 6,
-    backgroundColor: colors.accent,
-  },
-  sideButton: {
-    width: 76,
     alignItems: 'center',
-    gap: 6,
+    justifyContent: 'center',
+    paddingHorizontal: spacing.l,
   },
-  sideLabel: { color: colors.text, fontSize: 12, fontWeight: '600', opacity: 0.85 },
-  extendedGlyph: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 2.5,
-    borderColor: colors.text,
-  },
-  scissorGlyph: { color: colors.text, fontSize: 20, fontWeight: '700' },
+  primaryBtnStop: { backgroundColor: colors.text },
+  primaryLabel: { color: '#fff', fontSize: 17, fontWeight: '800' },
   elapsed: {
     color: colors.accent,
     fontSize: 18,
     fontWeight: '800',
     fontVariant: ['tabular-nums'],
   },
-  deckCaption: { color: colors.textDim, fontSize: 12 },
+  deckCaption: { color: colors.textDim, fontSize: 12, textAlign: 'center' },
 });

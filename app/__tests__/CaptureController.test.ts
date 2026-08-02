@@ -4,6 +4,27 @@ import type { WakeWordProvider } from '../src/wakeword/WakeWordProvider';
 
 const mockFiles = new Map<string, string>();
 
+// CaptureController reads the Pro entitlement to decide whether a new clip
+// gets a retention clock, which pulls AsyncStorage into this suite.
+jest.mock('@react-native-async-storage/async-storage', () => {
+  const store = new Map<string, string>();
+  return {
+    __esModule: true,
+    default: {
+      getItem: jest.fn(async (k: string) => store.get(k) ?? null),
+      setItem: jest.fn(async (k: string, v: string) => {
+        store.set(k, v);
+      }),
+      removeItem: jest.fn(async (k: string) => {
+        store.delete(k);
+      }),
+      clear: jest.fn(async () => {
+        store.clear();
+      }),
+    },
+  };
+});
+
 jest.mock('react-native-fs', () => ({
   DocumentDirectoryPath: '/docs',
   mkdir: jest.fn(async () => {}),
@@ -84,8 +105,25 @@ describe('CaptureController', () => {
   beforeEach(() => {
     mockFiles.clear();
     mockStitch.mockClear();
-    // reset the singleton store's cache between tests
-    (clipStore as unknown as { clips: unknown }).clips = null;
+    clipStore.resetCache();
+  });
+
+  it('gives a free-tier clip a 24h retention clock', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10);
+
+    await controller.arm();
+    for (let i = 0; i < 6; i++) {
+      source.emit();
+    }
+    wake.fire();
+    await settle();
+    await settle();
+
+    const [clip] = await clipStore.list();
+    expect(clip.savedAt).toBeNull();
+    expect(clip.expiresAt).toBe(clip.capturedAt + 24 * 3600_000);
   });
 
   it('wake word auto-saves the look-back window as a clip', async () => {

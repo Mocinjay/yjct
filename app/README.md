@@ -1,4 +1,4 @@
-# Jarvis
+# Clipso
 
 React Native app for capturing clips from Meta glasses via the Meta Wearables
 Device Access Toolkit (MWDAT).
@@ -14,7 +14,7 @@ It is idempotent, and it stops with an explanation instead of guessing whenever
 something needs you. Then open the **workspace**, never the project:
 
 ```bash
-open ios/Jarvis.xcworkspace
+open ios/Clipso.xcworkspace
 ```
 
 ### Why a fetch can break your build
@@ -31,7 +31,7 @@ on its own:
 **Signing is per-developer on purpose.** A bundle identifier registered to one
 Apple Developer team cannot be signed by another, so committing a team ID breaks
 every other developer with `No profiles for '<bundle id>' were found`. Do not
-put your team ID back into `Jarvis.xcodeproj/project.pbxproj` — that is exactly
+put your team ID back into `Clipso.xcodeproj/project.pbxproj` — that is exactly
 what `Signing.xcconfig` exists to prevent.
 
 **`Podfile.lock` churn is expected.** Several React Native pods

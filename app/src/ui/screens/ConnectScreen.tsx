@@ -36,6 +36,8 @@ export function ConnectScreen({ navigation }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const previewStarted = useRef(false);
+  /** Set when the user leaves Connect so the auto-advance timer cannot yank them back. */
+  const leftConnect = useRef(false);
   /** Bumped when native tears the stream down so the auto-open effect re-runs. */
   const [previewEpoch, setPreviewEpoch] = useState(0);
   const [mockReady, setMockReady] = useState(!AUTO_MOCK);
@@ -146,18 +148,23 @@ export function ConnectScreen({ navigation }: Props) {
     })();
   }, [registered, device, mockReady, previewEpoch]);
 
-  // Dev/simulator: once mock frames flow, walk into the Armed screen so the
-  // whole record pipeline can be exercised hands-free.
+  // Once the glasses feed is live, go straight into the always-on live view.
+  // Buffering starts there automatically — no separate "start recording" step.
   useEffect(() => {
-    if (!AUTO_MOCK || !streaming) {
+    if (!streaming || (!registered && !AUTO_MOCK) || leftConnect.current) {
       return;
     }
     const t = setTimeout(() => {
-      console.log('[connect] mock streaming — auto-advancing to Armed');
-      navigation.replace('Armed');
-    }, 5000);
+      if (leftConnect.current) {
+        return;
+      }
+      leftConnect.current = true;
+      // Give the stream a beat to settle before Live attaches the writer —
+      // jumping too early was racing a teardown and shutting the glasses off.
+      navigation.reset({ index: 0, routes: [{ name: 'Armed' }] });
+    }, AUTO_MOCK ? 1200 : 1600);
     return () => clearTimeout(t);
-  }, [streaming, navigation]);
+  }, [streaming, registered, navigation]);
 
   const connect = async () => {
     setBusy('Waiting for Meta AI…');
@@ -180,12 +187,18 @@ export function ConnectScreen({ navigation }: Props) {
   };
 
   const proceed = () => {
-    navigation.replace('Armed');
+    leftConnect.current = true;
+    navigation.reset({ index: 0, routes: [{ name: 'Armed' }] });
+  };
+
+  const skipToLibrary = () => {
+    leftConnect.current = true;
+    navigation.reset({ index: 0, routes: [{ name: 'Library' }] });
   };
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-      <Text style={styles.kicker}>● JARVIS</Text>
+      <Text style={styles.kicker}>● CLIPSO</Text>
       <Text style={styles.title}>Link your{'\n'}Meta glasses.</Text>
 
       <View style={styles.previewBox}>
@@ -249,7 +262,7 @@ export function ConnectScreen({ navigation }: Props) {
         </Pressable>
       ) : streaming ? (
         <Pressable style={styles.cta} onPress={proceed}>
-          <Text style={styles.ctaText}>Start clipping</Text>
+          <Text style={styles.ctaText}>Continue to live view</Text>
         </Pressable>
       ) : (
         <Pressable
@@ -262,11 +275,12 @@ export function ConnectScreen({ navigation }: Props) {
 
       <Text style={styles.hint}>
         Glasses unfolded and on your head · paired in Meta AI · Developer Mode
-        on (Meta AI → Settings → App Info → tap App version 5×) · Jarvis
+        on (Meta AI → Settings → App Info → tap App version 5×) · Clipso
         enabled under Meta AI → Settings → App connections.
+        {streaming ? '\n\nOpening live view…' : ''}
       </Text>
 
-      <Pressable onPress={() => navigation.replace('Library')}>
+      <Pressable onPress={skipToLibrary}>
         <Text style={styles.skip}>Skip to library</Text>
       </Pressable>
     </ScrollView>

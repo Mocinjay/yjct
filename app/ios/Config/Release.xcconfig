@@ -1,7 +1,7 @@
-// Base configuration for the Jarvis target, Release.
+// Base configuration for the Clipso target, Release.
 // See Debug.xcconfig for why this file exists.
 
-#include "../Pods/Target Support Files/Pods-Jarvis/Pods-Jarvis.release.xcconfig"
+#include "../Pods/Target Support Files/Pods-Clipso/Pods-Clipso.release.xcconfig"
 
 // Per-developer signing. Untracked — see Signing.xcconfig.example.
 #include? "Signing.xcconfig"

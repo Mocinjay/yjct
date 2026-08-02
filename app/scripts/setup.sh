@@ -16,7 +16,7 @@ bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 fail() { printf '\033[31m%s\033[0m\n' "$1" >&2; exit 1; }
 ok()   { printf '  ok  %s\n' "$1"; }
 
-bold "Jarvis setup"
+bold "Clipso setup"
 echo "in $APP_DIR"
 echo
 
@@ -64,7 +64,7 @@ if [ ! -f ios/Config/Signing.xcconfig ]; then
     DEVELOPMENT_TEAM           your 10-character Apple Developer Team ID
                                (Xcode > Settings > Accounts > your team;
                                the ID is in parentheses)
-    PRODUCT_BUNDLE_IDENTIFIER  must be unique to you, e.g. com.yourname.jarvis
+    PRODUCT_BUNDLE_IDENTIFIER  must be unique to you, e.g. com.yourname.clipso
 
   Then run this script again.
 
@@ -72,10 +72,19 @@ EOF
   exit 1
 fi
 
-if grep -q "ABCDE12345\|com.yourname.jarvis" ios/Config/Signing.xcconfig; then
+if grep -q "ABCDE12345\|com.yourname.clipso" ios/Config/Signing.xcconfig; then
   fail "ios/Config/Signing.xcconfig still has example placeholder values. Edit it, then re-run."
 fi
 ok "ios/Config/Signing.xcconfig configured"
+
+# Xcode writes DEVELOPMENT_TEAM / PRODUCT_BUNDLE_IDENTIFIER straight into the
+# pbxproj whenever you touch Signing & Capabilities in the UI. That commits one
+# developer's identity for everyone and silently overrides this xcconfig — the
+# exact regression this layout exists to prevent. Catch it before it ships.
+if grep -q "DEVELOPMENT_TEAM\|PRODUCT_BUNDLE_IDENTIFIER" ios/Clipso.xcodeproj/project.pbxproj; then
+  fail "Signing identity leaked into ios/Clipso.xcodeproj/project.pbxproj. Remove those lines; they belong only in ios/Config/Signing.xcconfig."
+fi
+ok "no signing identity hardcoded in project.pbxproj"
 
 # --- 4. CocoaPods -----------------------------------------------------------
 # Podfile.lock records a checksum per pod. Several React Native pods
@@ -113,7 +122,7 @@ cat <<'EOF'
 
   Open the WORKSPACE, never the project:
 
-      open ios/Jarvis.xcworkspace
+      open ios/Clipso.xcworkspace
 
   Re-run this script after any pull that changes Podfile.lock or package-lock.json.
 EOF

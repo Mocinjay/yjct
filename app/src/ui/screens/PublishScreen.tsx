@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import Video from 'react-native-video';
+import { clipStore } from '../../core/ClipStore';
 import { publishService } from '../../phase2/PublishService';
 import type {
   PublishPrivacy,
@@ -86,6 +87,9 @@ export function PublishScreen({ route }: Props) {
         privacy,
         withCaptions,
       });
+      // Publishing is an implicit save — a clip the user put on a platform
+      // must not evaporate when its retention clock runs out.
+      await clipStore.markPublished(clip.id, target.platform);
       const status = await publishService.checkStatus(target, publishId);
       setPhase({ step: 'status', target, publishId, status });
       pollTimer.current = setInterval(async () => {

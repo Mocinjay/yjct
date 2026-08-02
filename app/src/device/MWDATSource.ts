@@ -12,7 +12,7 @@ import type { DeviceVideoSource } from './DeviceVideoSource';
 
 /**
  * Meta Wearables Device Access Toolkit source — Ray-Ban / Oakley Meta glasses
- * camera session via the native MWDATBridge (ios/Jarvis/MWDATBridge.swift).
+ * camera session via the native MWDATBridge (ios/Clipso/MWDATBridge.swift).
  *
  * The native side opens a wearables session, streams glasses video, muxes in
  * mic audio (glasses Bluetooth mic while connected), and reports fixed-length
@@ -67,7 +67,10 @@ export class MWDATSource implements DeviceVideoSource {
   async stop(): Promise<void> {
     this.clearSubscriptions();
     try {
-      await MWDATNative.stop();
+      // Soft stop: drop the rolling-buffer writer but keep the glasses stream.
+      // A full session teardown here is what made the glasses play their stop
+      // chime and refuse to re-arm when Live remounted or React cleaned up.
+      await MWDATNative.stopRecording();
     } catch {
       // native side already torn down
     }

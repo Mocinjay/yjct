@@ -27,16 +27,13 @@ export class SettingsStore {
       } else {
         // One-time v1 → v2 migration: old defaults were the mock trigger
         // and the "fade away" phrase; the product default is now keyless
-        // speech recognition for "jarvis". Explicit v2 choices stick.
+        // speech recognition for "clipso". Explicit v2 choices stick.
         const legacy = await AsyncStorage.getItem(LEGACY_KEY);
         const migrated: Settings = legacy
           ? { ...DEFAULT_SETTINGS, ...(JSON.parse(legacy) as Partial<Settings>) }
           : DEFAULT_SETTINGS;
         if (migrated.wakeWord.provider === 'mock') {
           migrated.wakeWord = { ...migrated.wakeWord, provider: 'speech' };
-        }
-        if (migrated.wakeWord.keyword === 'fade away') {
-          migrated.wakeWord = { ...migrated.wakeWord, keyword: 'jarvis' };
         }
         this.cached = migrated;
         await AsyncStorage.setItem(KEY, JSON.stringify(migrated));
@@ -47,6 +44,12 @@ export class SettingsStore {
     // Glasses-only: stored 'mock' choices from earlier builds are retired.
     if (this.cached.deviceKind !== 'mwdat') {
       this.cached = { ...this.cached, deviceKind: 'mwdat' };
+    }
+    // The Porcupine provider is retired; installs that stored it land back
+    // on keyless speech recognition.
+    const { provider } = this.cached.wakeWord;
+    if (provider !== 'speech' && provider !== 'mock') {
+      this.cached = { ...this.cached, wakeWord: { provider: 'speech' } };
     }
     return this.cached;
   }

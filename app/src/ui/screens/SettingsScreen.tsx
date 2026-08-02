@@ -8,7 +8,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { FREE_BUFFER_SECONDS_MAX } from '../../config';
+import { FREE_BUFFER_SECONDS_MAX, WAKE_PHRASE } from '../../config';
 import { MWDATNative, mwdatAvailable, mwdatEvents } from '../../native/MWDATNative';
 import { entitlementStore } from '../../core/EntitlementStore';
 import { settingsStore } from '../../core/SettingsStore';
@@ -78,81 +78,31 @@ export function SettingsScreen({ navigation }: Props) {
 
       <Section title="Meta glasses">
         <Text style={styles.hint}>
-          Jarvis records from your glasses' camera and microphone. Keep them
+          Clipso records from your glasses' camera and microphone. Keep them
           paired and connected in the Meta AI app.
         </Text>
         <GlassesConnection />
       </Section>
 
-      <Section title="Voice trigger — “yo Jarvis, clip that”">
+      <Section title={`Voice trigger — “${WAKE_PHRASE}”`}>
         <View style={styles.row}>
           <Choice
-            label="Built-in (no key)"
+            label="Voice"
             selected={settings.wakeWord.provider === 'speech'}
-            onPress={() =>
-              settingsStore.update({
-                wakeWord: { ...settings.wakeWord, provider: 'speech' },
-              })
-            }
-          />
-          <Choice
-            label="Porcupine (needs key)"
-            selected={settings.wakeWord.provider === 'porcupine'}
-            onPress={() =>
-              settingsStore.update({
-                wakeWord: { ...settings.wakeWord, provider: 'porcupine' },
-              })
-            }
+            onPress={() => settingsStore.update({ wakeWord: { provider: 'speech' } })}
           />
           <Choice
             label="Manual button"
             selected={settings.wakeWord.provider === 'mock'}
-            onPress={() =>
-              settingsStore.update({
-                wakeWord: { ...settings.wakeWord, provider: 'mock' },
-              })
-            }
+            onPress={() => settingsStore.update({ wakeWord: { provider: 'mock' } })}
           />
         </View>
         {settings.wakeWord.provider === 'speech' ? (
           <Text style={styles.hint}>
             Uses your phone's own speech recognition — free, on-device, no
-            account. Detection lands a few seconds after you say it; the clip
-            still contains the moment. Porcupine reacts faster if you ever
-            want to upgrade.
+            account, no setup. Detection lands a few seconds after you say
+            “{WAKE_PHRASE}”; the look-back window still contains the moment.
           </Text>
-        ) : null}
-        {settings.wakeWord.provider === 'porcupine' ? (
-          <>
-            <Text style={styles.hint}>
-              Trigger phrase (Porcupine built-in keyword, e.g. “jarvis”,
-              “computer”, “porcupine”):
-            </Text>
-            <TextInput
-              style={styles.input}
-              value={settings.wakeWord.keyword}
-              autoCapitalize="none"
-              onChangeText={keyword =>
-                settingsStore.update({
-                  wakeWord: { ...settings.wakeWord, keyword },
-                })
-              }
-            />
-            <Text style={styles.hint}>Picovoice access key:</Text>
-            <TextInput
-              style={styles.input}
-              value={settings.wakeWord.picovoiceAccessKey ?? ''}
-              autoCapitalize="none"
-              autoCorrect={false}
-              placeholder="Get one free at console.picovoice.ai"
-              placeholderTextColor={colors.textDim}
-              onChangeText={picovoiceAccessKey =>
-                settingsStore.update({
-                  wakeWord: { ...settings.wakeWord, picovoiceAccessKey },
-                })
-              }
-            />
-          </>
         ) : null}
       </Section>
 
@@ -267,7 +217,7 @@ export function SettingsScreen({ navigation }: Props) {
         </Text>
       </Section>
 
-      <Section title="Jarvis Pro">
+      <Section title="Clipso Pro">
         <View style={styles.rowBetween}>
           <Text style={styles.hint}>
             {isPro
@@ -291,7 +241,7 @@ export function SettingsScreen({ navigation }: Props) {
       </Section>
 
       <Text style={styles.footer}>
-        Jarvis · “yo Jarvis, clip that” · clips stay on this phone until you
+        Clipso · say “Clipso” · clips stay on this phone until you
         share them
       </Text>
     </ScrollView>

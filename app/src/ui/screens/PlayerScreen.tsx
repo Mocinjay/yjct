@@ -81,7 +81,11 @@ export function PlayerScreen({ route, navigation }: Props) {
         capturedAt: Date.now(),
       });
       Alert.alert('Captioned', 'The captioned clip was added to your library.');
-      navigation.goBack();
+      if (navigation.canGoBack()) {
+        navigation.goBack();
+      } else {
+        navigation.reset({ index: 0, routes: [{ name: 'Library' }] });
+      }
     } catch (e) {
       Alert.alert('Captioning failed', e instanceof Error ? e.message : String(e));
     } finally {
@@ -106,7 +110,11 @@ export function PlayerScreen({ route, navigation }: Props) {
         style: 'destructive',
         onPress: async () => {
           await clipStore.remove(clip.id);
-          navigation.goBack();
+          if (navigation.canGoBack()) {
+            navigation.goBack();
+          } else {
+            navigation.reset({ index: 0, routes: [{ name: 'Library' }] });
+          }
         },
       },
     ]);

@@ -1,8 +1,8 @@
-# Jarvis — *"Yo Jarvis, clip that."*
+# Clipso — *"Clipso."*
 
 Mobile companion app (iOS + Android) for Meta smart glasses (Ray-Ban Meta, Oakley Meta HSTN, Ray-Ban Display), built for clippers/streamers.
 
-**Core loop:** wearer says a trigger phrase → the app flushes the last N seconds from a rolling video buffer → clip lands in a local library → share via the native OS share sheet (free tier). Auto-captioning + one-tap publishing are the paid tier and live behind Phase 2 gates.
+**Core loop:** wearer says “Clipso” → the app flushes the last N seconds from a rolling video buffer → clip lands in a local library → share via the native OS share sheet (free tier). Auto-captioning + one-tap publishing are the paid tier and live behind Phase 2 gates.
 
 ## Phase gating (non-negotiable build order)
 
@@ -31,4 +31,4 @@ npx react-native run-ios
 npx react-native run-android
 ```
 
-The app runs end-to-end with **no glasses hardware**: the mock device source uses the phone camera as the stand-in glasses feed, and the mock wake-word provider gives you a manual trigger button. Set a Picovoice access key in Settings to enable the real on-device wake word.
+The app runs end-to-end with **no glasses hardware**: the mock device source uses the phone camera as the stand-in glasses feed, and the mock wake-word provider gives you a manual trigger button. The real trigger uses the OS's own speech recognition — keyless, on-device, nothing to configure.

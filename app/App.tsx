@@ -1,9 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DarkTheme, NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { StatusBar } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { clipStore } from './src/core/ClipStore';
+import { entitlementStore } from './src/core/EntitlementStore';
+import { ClipsoSplash } from './src/ui/ClipsoSplash';
 import type { RootStackParamList } from './src/ui/navigation';
 import { ArmedScreen } from './src/ui/screens/ArmedScreen';
 import { ConnectScreen } from './src/ui/screens/ConnectScreen';
@@ -31,6 +34,8 @@ const theme = {
 export default function App() {
   const [initialRoute, setInitialRoute] =
     useState<keyof RootStackParamList | null>(null);
+  const [splashDone, setSplashDone] = useState(false);
+  const onSplashFinished = useCallback(() => setSplashDone(true), []);
 
   useEffect(() => {
     // Glasses-first boot: always land on Connect so the link to Meta AI is
@@ -40,8 +45,37 @@ export default function App() {
     );
   }, []);
 
+  useEffect(() => {
+    // Retention runs at launch as well as on Library focus, so expired clips
+    // are reclaimed even if the user never opens the library this session.
+    clipStore.sweepExpired().catch(() => {});
+    // Upgrading rescues whatever was mid-countdown — Pro should never cost
+    // someone a clip that was about to expire as they paid.
+    return entitlementStore.subscribe(isPro => {
+      if (isPro) {
+        clipStore.rescueExpiring().catch(() => {});
+      }
+    });
+  }, []);
+
+  // Native launch storyboard → JS splash (paperclip → CLIPSO wordmark).
+  // Unmount the splash only after it finishes so the animation never restarts
+  // while AsyncStorage is still resolving the first route.
+  if (!splashDone) {
+    return (
+      <SafeAreaProvider>
+        <StatusBar barStyle="light-content" />
+        <ClipsoSplash onFinished={onSplashFinished} />
+      </SafeAreaProvider>
+    );
+  }
+
   if (!initialRoute) {
-    return null;
+    return (
+      <SafeAreaProvider>
+        <StatusBar barStyle="light-content" />
+      </SafeAreaProvider>
+    );
   }
 
   return (

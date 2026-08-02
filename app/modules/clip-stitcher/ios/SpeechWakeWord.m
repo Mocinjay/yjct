@@ -1,13 +1,57 @@
 #import <AVFoundation/AVFoundation.h>
 #import <React/RCTBridgeModule.h>
 #import <Speech/Speech.h>
+#import <fcntl.h>
+#import <unistd.h>
+
+/// Mirror into Documents/clipso-diagnostics.log, the same file MWDATSegmentWriter
+/// appends to. A capture run can then be pulled off the device with one
+/// `devicectl device copy from --domain-type appDataContainer`, and the video
+/// and speech halves of the wake-word path read as a single timeline. The live
+/// console drops its connection partway through a long run, which loses exactly
+/// the part that matters.
+///
+/// O_APPEND writes are atomic for line-sized payloads, so interleaving with the
+/// Swift writer's own appends cannot tear a line.
+static void SWWDiag(NSString *message)
+{
+  static NSString *path;
+  static dispatch_queue_t queue;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    path = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
+                                                NSUserDomainMask, YES).firstObject
+        stringByAppendingPathComponent:@"clipso-diagnostics.log"];
+    queue = dispatch_queue_create("com.mocinjay.clipso.swwdiag",
+                                  DISPATCH_QUEUE_SERIAL);
+  });
+  if (path == nil) {
+    return;
+  }
+  NSString *line = [NSString
+      stringWithFormat:@"%@ [SpeechWakeWord] %@\n",
+                       [[NSISO8601DateFormatter new] stringFromDate:[NSDate date]],
+                       message];
+  dispatch_async(queue, ^{
+    NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
+    int fd = open(path.fileSystemRepresentation, O_WRONLY | O_APPEND | O_CREAT, 0644);
+    if (fd < 0) {
+      return;
+    }
+    write(fd, data.bytes, data.length);
+    close(fd);
+  });
+}
 
 // ASCII-only: a non-ASCII format string compiles to a UTF-16 CFString that
 // `strings` cannot see, which makes it useless for verifying on-device builds.
 #define SWWLog(fmt, ...)                                                       \
-  NSLog(@"[SpeechWakeWord] %s:%d %s: " fmt,                                    \
-        [[@(__FILE__) lastPathComponent] UTF8String], __LINE__, __func__,      \
-        ##__VA_ARGS__)
+  do {                                                                         \
+    NSLog(@"[SpeechWakeWord] %s:%d %s: " fmt,                                  \
+          [[@(__FILE__) lastPathComponent] UTF8String], __LINE__, __func__,    \
+          ##__VA_ARGS__);                                                      \
+    SWWDiag([NSString stringWithFormat:fmt, ##__VA_ARGS__]);                   \
+  } while (0)
 
 /// A track that exists is not a track that has content: a writer input that
 /// received no samples still leaves a track in the file.
@@ -45,7 +89,7 @@ static BOOL SWWLoadAssetKeys(AVAsset *asset, NSArray<NSString *> *keys)
  *
  * Instead of fighting the camera for the microphone, JS feeds each rolling
  * 5s segment file here as it is recorded; we transcribe it (on-device when
- * the model is available) and JS matches "jarvis" / "clip that" against the
+ * the model is available) and JS matches "clipso" / "clip that" against the
  * text. No vendor, no API key, no audio-session conflict.
  */
 @interface SpeechWakeWord : NSObject <RCTBridgeModule>
@@ -84,7 +128,12 @@ RCT_EXPORT_METHOD(requestPermission:(RCTPromiseResolveBlock)resolve
 {
   [SFSpeechRecognizer
       requestAuthorization:^(SFSpeechRecognizerAuthorizationStatus status) {
-        resolve(@(status == SFSpeechRecognizerAuthorizationStatusAuthorized));
+        BOOL authorized = status == SFSpeechRecognizerAuthorizationStatusAuthorized;
+        SFSpeechRecognizer *recognizer = self.recognizer;
+        SWWLog(@"authorization status=%ld authorized=%d available=%d onDevice=%d",
+               (long)status, authorized, recognizer.isAvailable,
+               recognizer.supportsOnDeviceRecognition);
+        resolve(@(authorized));
       }];
 }
 
@@ -94,6 +143,8 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
 {
   SFSpeechRecognizer *recognizer = self.recognizer;
   if (recognizer == nil || !recognizer.isAvailable) {
+    SWWLog(@"recognizer unavailable (nil=%d) - cannot transcribe %@",
+           recognizer == nil, path.lastPathComponent);
     reject(@"speech_unavailable",
            @"Speech recognition is not available on this device.", nil);
     return;
@@ -150,6 +201,20 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
   SFSpeechURLRecognitionRequest *request =
       [[SFSpeechURLRecognitionRequest alloc] initWithURL:url];
   request.shouldReportPartialResults = NO;
+  // Bias the recognizer toward our brand / trigger — "Clipso" is not in the
+  // default vocabulary, so without hints it becomes "clip so" / "calypso" /
+  // garbage. contextualStrings heavily favor these tokens in the lattice.
+  if (@available(iOS 16.0, *)) {
+    request.contextualStrings = @[
+      @"Clipso", @"clipso", @"yo Clipso", @"yo clipso",
+      @"clip that", @"clip it", @"clip this", @"clip now",
+    ];
+  } else {
+    request.contextualStrings = @[
+      @"Clipso", @"clipso", @"clip that", @"clip it",
+    ];
+  }
+  request.taskHint = SFSpeechRecognitionTaskHintDictation;
   if (recognizer.supportsOnDeviceRecognition) {
     // Keeps detection free, offline, and private.
     request.requiresOnDeviceRecognition = YES;
@@ -168,11 +233,20 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
                      if (error != nil) {
                        settled = YES;
                        // Silence / no-speech segments error out — that is
-                       // the normal quiet case, not a failure.
+                       // the normal quiet case, not a failure. Log the code
+                       // anyway: a recognizer that is failing for a real
+                       // reason is otherwise indistinguishable from a quiet
+                       // room, and both go silently unheard.
+                       SWWLog(@"no transcript for %@ - %@ [%@ %ld]",
+                              path.lastPathComponent, error.localizedDescription,
+                              error.domain, (long)error.code);
                        resolve(@"");
                      } else if (result != nil && result.isFinal) {
                        settled = YES;
-                       resolve(result.bestTranscription.formattedString);
+                       NSString *text = result.bestTranscription.formattedString;
+                       SWWLog(@"transcript for %@: \"%@\"", path.lastPathComponent,
+                              text);
+                       resolve(text);
                      } else {
                        return;
                      }

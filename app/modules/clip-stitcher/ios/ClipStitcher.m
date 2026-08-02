@@ -315,8 +315,8 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
     [writer startSessionAtSourceTime:kCMTimeZero];
 
     dispatch_group_t writingGroup = dispatch_group_create();
-    dispatch_queue_t videoQueue = dispatch_queue_create("com.mocinjay.jarvis.clipstitcher.video", DISPATCH_QUEUE_SERIAL);
-    dispatch_queue_t audioQueue = dispatch_queue_create("com.mocinjay.jarvis.clipstitcher.audio", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_t videoQueue = dispatch_queue_create("com.mocinjay.clipso.clipstitcher.video", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_t audioQueue = dispatch_queue_create("com.mocinjay.clipso.clipstitcher.audio", DISPATCH_QUEUE_SERIAL);
     __block BOOL didFail = NO;
     void (^failOnce)(NSString *, NSString *, NSError *) =
         ^(NSString *code, NSString *message, NSError *error) {

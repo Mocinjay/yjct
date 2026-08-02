@@ -16,10 +16,20 @@ export const SEGMENT_SECONDS = 5;
 export const MAX_CLIP_RECORDING_SECONDS = 180;
 
 /**
- * The product's trigger phrase ("Yo Jarvis, clip that"). "jarvis" is a
- * Porcupine BUILT-IN keyword — no custom model training required.
+ * Free-tier clips are temporary: unless the wearer saves or publishes one,
+ * it is wiped this many hours after capture. Pro clips never expire.
+ *
+ * Expiry is evaluated lazily on app launch and on Library focus — iOS gives
+ * no dependable background execution, so a clip outlives its deadline until
+ * the user next opens the app.
  */
-export const WAKE_PHRASE = 'jarvis';
+export const FREE_RETENTION_HOURS = 24;
+
+/**
+ * The product's trigger word, as shown to the wearer. Say it and the
+ * look-back window is saved. Detection lives in wakeword/phraseMatch.ts.
+ */
+export const WAKE_PHRASE = 'Clipso';
 
 export const DEFAULT_SETTINGS: Settings = {
   bufferSeconds: 30,
@@ -27,9 +37,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // but the product records exclusively from Meta glasses.
   deviceKind: 'mwdat',
   wakeWord: {
-    // Keyless OS speech recognition out of the box — say "yo Jarvis, clip
-    // that" with zero setup. Porcupine remains an opt-in for lower latency.
+    // Keyless OS speech recognition — say "Clipso" with zero setup, no
+    // vendor key, no model download.
     provider: 'speech',
-    keyword: WAKE_PHRASE,
   },
 };
