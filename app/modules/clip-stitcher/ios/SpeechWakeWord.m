@@ -1,7 +1,9 @@
 #import <AVFoundation/AVFoundation.h>
+#import <AudioToolbox/AudioToolbox.h>
 #import <React/RCTBridgeModule.h>
 #import <Speech/Speech.h>
 #import <fcntl.h>
+#import <math.h>
 #import <unistd.h>
 
 /// Mirror into Documents/clipso-diagnostics.log, the same file MWDATSegmentWriter
@@ -84,6 +86,170 @@ static BOOL SWWLoadAssetKeys(AVAsset *asset, NSArray<NSString *> *keys)
   return YES;
 }
 
+/// Recognition sample rate. Speech downsamples to 16 kHz internally anyway, and
+/// a 5s mono segment at this rate is ~160 KB, so the boosted copy is cheap.
+static const double kSWWRecognitionSampleRate = 16000.0;
+/// Target RMS for the boosted copy, ~-20 dBFS. Apple's voice-activity gate
+/// rejects anything much quieter than this as silence.
+static const float kSWWTargetRMS = 0.1f;
+/// Never amplify beyond this. A segment of pure room tone has a tiny RMS, and
+/// without a ceiling the gain would blow the noise floor up into something the
+/// recognizer tries — and fails — to read as speech.
+static const float kSWWMaxGain = 40.0f;
+/// Leave headroom so the boost cannot clip.
+static const float kSWWPeakCeiling = 0.95f;
+
+/// Minimal 16-bit mono WAV container around already-scaled PCM.
+static BOOL SWWWriteWAV(NSData *pcm, double sampleRate, NSURL *url)
+{
+  uint32_t dataBytes = (uint32_t)pcm.length;
+  uint32_t sr = (uint32_t)sampleRate;
+  uint16_t channels = 1, bitsPerSample = 16;
+  uint32_t byteRate = sr * channels * bitsPerSample / 8;
+  uint16_t blockAlign = channels * bitsPerSample / 8;
+  uint32_t chunkSize = 36 + dataBytes;
+  uint32_t fmtSize = 16;
+  uint16_t audioFormat = 1;
+
+  NSMutableData *out = [NSMutableData dataWithCapacity:44 + dataBytes];
+  [out appendBytes:"RIFF" length:4];
+  [out appendBytes:&chunkSize length:4];
+  [out appendBytes:"WAVEfmt " length:8];
+  [out appendBytes:&fmtSize length:4];
+  [out appendBytes:&audioFormat length:2];
+  [out appendBytes:&channels length:2];
+  [out appendBytes:&sr length:4];
+  [out appendBytes:&byteRate length:4];
+  [out appendBytes:&blockAlign length:2];
+  [out appendBytes:&bitsPerSample length:2];
+  [out appendBytes:"data" length:4];
+  [out appendBytes:&dataBytes length:4];
+  [out appendData:pcm];
+  return [out writeToURL:url atomically:YES];
+}
+
+/**
+ * Renders a level-normalized 16 kHz mono copy of `asset`'s audio.
+ *
+ * The glasses expose no microphone, so wake-word audio comes from the phone —
+ * typically in a pocket or on a table, several feet from the wearer's mouth.
+ * Measured on real captures that lands around -34 LUFS, roughly 15 dB below
+ * ordinary speech, and Apple's VAD front-end discards the whole segment with
+ * kAFAssistantErrorDomain 1110 "No speech detected" before any transcription
+ * happens. Boosting only this throwaway copy fixes detection while leaving the
+ * audio muxed into the user's saved clip untouched.
+ *
+ * Normalizes on RMS rather than peak so a single cough or door slam cannot
+ * swallow the gain that quiet speech needs, then backs the gain off if that
+ * would push the peak into clipping.
+ *
+ * Returns nil if the asset has no readable audio; caller treats that as silence.
+ */
+static NSURL *SWWRenderBoostedAudio(AVAsset *asset, NSString *label)
+{
+  NSError *error = nil;
+  AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:asset error:&error];
+  if (reader == nil) {
+    SWWLog(@"boost: reader init failed for %@ - %@", label, error.localizedDescription);
+    return nil;
+  }
+
+  AVAssetTrack *track = [asset tracksWithMediaType:AVMediaTypeAudio].firstObject;
+  if (track == nil) {
+    return nil;
+  }
+
+  NSDictionary *settings = @{
+    AVFormatIDKey : @(kAudioFormatLinearPCM),
+    AVSampleRateKey : @(kSWWRecognitionSampleRate),
+    AVNumberOfChannelsKey : @1,
+    AVLinearPCMBitDepthKey : @16,
+    AVLinearPCMIsFloatKey : @NO,
+    AVLinearPCMIsBigEndianKey : @NO,
+    AVLinearPCMIsNonInterleaved : @NO,
+  };
+  AVAssetReaderTrackOutput *output =
+      [[AVAssetReaderTrackOutput alloc] initWithTrack:track outputSettings:settings];
+  if (![reader canAddOutput:output]) {
+    return nil;
+  }
+  [reader addOutput:output];
+  if (![reader startReading]) {
+    SWWLog(@"boost: startReading failed for %@ - %@", label,
+           reader.error.localizedDescription);
+    return nil;
+  }
+
+  NSMutableData *pcm = [NSMutableData data];
+  CMSampleBufferRef sample = NULL;
+  while ((sample = [output copyNextSampleBuffer])) {
+    CMBlockBufferRef block = CMSampleBufferGetDataBuffer(sample);
+    if (block != NULL) {
+      size_t length = CMBlockBufferGetDataLength(block);
+      void *bytes = malloc(length);
+      if (bytes != NULL) {
+        if (CMBlockBufferCopyDataBytes(block, 0, length, bytes) == kCMBlockBufferNoErr) {
+          [pcm appendBytes:bytes length:length];
+        }
+        free(bytes);
+      }
+    }
+    CFRelease(sample);
+  }
+
+  if (reader.status == AVAssetReaderStatusFailed || pcm.length < 2) {
+    SWWLog(@"boost: no PCM read for %@ (status=%ld)", label, (long)reader.status);
+    return nil;
+  }
+
+  int16_t *samples = (int16_t *)pcm.mutableBytes;
+  NSUInteger count = pcm.length / sizeof(int16_t);
+
+  double sumSquares = 0.0;
+  float peak = 0.0f;
+  for (NSUInteger i = 0; i < count; i++) {
+    float v = samples[i] / 32768.0f;
+    sumSquares += (double)v * v;
+    float a = fabsf(v);
+    if (a > peak) {
+      peak = a;
+    }
+  }
+  float rms = (float)sqrt(sumSquares / (double)count);
+  if (rms <= 0.0f || peak <= 0.0f) {
+    return nil;
+  }
+
+  float gain = kSWWTargetRMS / rms;
+  if (gain * peak > kSWWPeakCeiling) {
+    gain = kSWWPeakCeiling / peak;
+  }
+  gain = MIN(gain, kSWWMaxGain);
+  // Only ever amplify. Attenuating a segment that is already healthy would
+  // just walk it back toward the VAD threshold.
+  gain = MAX(gain, 1.0f);
+
+  for (NSUInteger i = 0; i < count; i++) {
+    float v = (samples[i] / 32768.0f) * gain;
+    v = MAX(-1.0f, MIN(1.0f, v));
+    samples[i] = (int16_t)lrintf(v * 32767.0f);
+  }
+
+  SWWLog(@"boost: %@ rms=%.5f peak=%.5f gain=%.2fx samples=%lu", label, rms, peak,
+         gain, (unsigned long)count);
+
+  NSURL *url = [NSURL fileURLWithPath:
+                          [NSTemporaryDirectory()
+                              stringByAppendingPathComponent:
+                                  [NSString stringWithFormat:@"swwboost-%@.wav",
+                                                             [[NSUUID UUID] UUIDString]]]];
+  if (!SWWWriteWAV(pcm, kSWWRecognitionSampleRate, url)) {
+    SWWLog(@"boost: WAV write failed for %@", label);
+    return nil;
+  }
+  return url;
+}
+
 /**
  * Keyless wake-phrase detection using Apple's on-device Speech framework.
  *
@@ -95,6 +261,10 @@ static BOOL SWWLoadAssetKeys(AVAsset *asset, NSArray<NSString *> *keys)
 @interface SpeechWakeWord : NSObject <RCTBridgeModule>
 @property (nonatomic, strong) SFSpeechRecognizer *recognizer;
 @property (nonatomic, strong) NSMutableSet<SFSpeechRecognitionTask *> *tasks;
+- (void)recognizeURL:(NSURL *)url
+            onDevice:(BOOL)onDevice
+               label:(NSString *)label
+          completion:(void (^)(NSString *text, NSError *error))completion;
 @end
 
 @implementation SpeechWakeWord
@@ -198,6 +368,59 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
     return;
   }
 
+  NSString *label = path.lastPathComponent;
+  // Recognize from a level-normalized copy, never the segment itself — the
+  // saved clip must keep the audio the wearer actually recorded.
+  NSURL *boosted = SWWRenderBoostedAudio(asset, label);
+  NSURL *recognitionURL = boosted ?: url;
+
+  void (^cleanup)(void) = ^{
+    if (boosted != nil) {
+      [[NSFileManager defaultManager] removeItemAtURL:boosted error:NULL];
+    }
+  };
+
+  BOOL canRunOnDevice = recognizer.supportsOnDeviceRecognition;
+  __weak SpeechWakeWord *weakSelf = self;
+  [self recognizeURL:recognitionURL
+            onDevice:canRunOnDevice
+               label:label
+          completion:^(NSString *text, NSError *error) {
+            BOOL emptyResult = (error != nil || text.length == 0);
+            // On-device is tried first because it is free, offline and private,
+            // but its acoustic model is the stricter of the two and it largely
+            // ignores contextualStrings — so "Clipso" gets no vocabulary help
+            // there. When it comes back with nothing, one server retry gets
+            // both a more forgiving model and real biasing toward the trigger.
+            if (emptyResult && canRunOnDevice) {
+              SWWLog(@"on-device found nothing for %@ - retrying server-side", label);
+              SpeechWakeWord *strongSelf = weakSelf;
+              if (strongSelf == nil) {
+                cleanup();
+                resolve(@"");
+                return;
+              }
+              [strongSelf recognizeURL:recognitionURL
+                              onDevice:NO
+                                 label:label
+                            completion:^(NSString *retryText, NSError *retryError) {
+                              cleanup();
+                              resolve(retryError != nil ? @"" : (retryText ?: @""));
+                            }];
+              return;
+            }
+            cleanup();
+            resolve(error != nil ? @"" : (text ?: @""));
+          }];
+}
+
+/// One recognition pass. Always calls `completion` exactly once.
+- (void)recognizeURL:(NSURL *)url
+            onDevice:(BOOL)onDevice
+               label:(NSString *)label
+          completion:(void (^)(NSString *text, NSError *error))completion
+{
+  SFSpeechRecognizer *recognizer = self.recognizer;
   SFSpeechURLRecognitionRequest *request =
       [[SFSpeechURLRecognitionRequest alloc] initWithURL:url];
   request.shouldReportPartialResults = NO;
@@ -215,10 +438,7 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
     ];
   }
   request.taskHint = SFSpeechRecognitionTaskHintDictation;
-  if (recognizer.supportsOnDeviceRecognition) {
-    // Keeps detection free, offline, and private.
-    request.requiresOnDeviceRecognition = YES;
-  }
+  request.requiresOnDeviceRecognition = onDevice;
 
   __block BOOL settled = NO;
   __block SFSpeechRecognitionTask *task = nil;
@@ -237,16 +457,16 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
                        // anyway: a recognizer that is failing for a real
                        // reason is otherwise indistinguishable from a quiet
                        // room, and both go silently unheard.
-                       SWWLog(@"no transcript for %@ - %@ [%@ %ld]",
-                              path.lastPathComponent, error.localizedDescription,
+                       SWWLog(@"no transcript for %@ (onDevice=%d) - %@ [%@ %ld]",
+                              label, onDevice, error.localizedDescription,
                               error.domain, (long)error.code);
-                       resolve(@"");
+                       completion(nil, error);
                      } else if (result != nil && result.isFinal) {
                        settled = YES;
                        NSString *text = result.bestTranscription.formattedString;
-                       SWWLog(@"transcript for %@: \"%@\"", path.lastPathComponent,
-                              text);
-                       resolve(text);
+                       SWWLog(@"transcript for %@ (onDevice=%d): \"%@\"", label,
+                              onDevice, text);
+                       completion(text, nil);
                      } else {
                        return;
                      }
@@ -261,6 +481,16 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
     // Retain the task for the duration of recognition.
     @synchronized(self.tasks) {
       [self.tasks addObject:task];
+    }
+  } else {
+    // recognitionTaskWithRequest can return nil (e.g. server path with no
+    // network). Without this the promise would never settle and the segment
+    // would leak a pending JS promise on every rotation.
+    if (!settled) {
+      settled = YES;
+      SWWLog(@"could not create recognition task for %@ (onDevice=%d)", label,
+             onDevice);
+      completion(nil, [NSError errorWithDomain:@"SpeechWakeWord" code:-1 userInfo:nil]);
     }
   }
 }
