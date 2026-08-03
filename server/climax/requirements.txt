@@ -1,0 +1,15 @@
+# Pinned deliberately — same policy as server/captioning: unpinned deps drift
+# into known CVEs and silently change numerical behaviour between machines,
+# which for a scoring pipeline means irreproducible edits.
+#
+# ffmpeg must be on PATH (brew install ffmpeg / apt install ffmpeg).
+
+faster-whisper==1.1.1
+librosa==0.10.2.post1
+opencv-python==4.10.0.84
+ffmpeg-python==0.2.0
+
+# librosa 0.10.x is not numpy 2.x clean, and 1.26.4 is the last release
+# supporting Python 3.9. Pinning here rather than letting pip resolve it keeps
+# feature values bit-identical across machines.
+numpy==1.26.4

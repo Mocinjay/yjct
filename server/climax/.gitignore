@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Extracted features and transcripts. Regenerable from the source video, keyed
+# by its content hash, and large.
+.climax-cache/
+
+# Default pipeline output.
+climax_edited_output.mp4
+*.hook.json
