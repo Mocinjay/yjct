@@ -1,9 +1,13 @@
 import RNFS from 'react-native-fs';
-import { FREE_RETENTION_HOURS, MAX_CLIP_RECORDING_SECONDS } from '../config';
+import {
+  FREE_RETENTION_HOURS,
+  MAX_CLIP_RECORDING_SECONDS,
+  WAKE_TRIM_PADDING_SECONDS,
+} from '../config';
 import type { DeviceVideoSource } from '../device/DeviceVideoSource';
 import { stitchSegments } from '../native/ClipStitcher';
 import type { Clip, Segment } from '../types';
-import type { WakeWordProvider } from '../wakeword/WakeWordProvider';
+import type { WakeDetection, WakeWordProvider } from '../wakeword/WakeWordProvider';
 import { clipStore } from './ClipStore';
 import { entitlementStore } from './EntitlementStore';
 import { SegmentRingBuffer } from './SegmentRingBuffer';
@@ -87,8 +91,8 @@ export class CaptureController {
         seg => this.onSegment(seg),
         err => this.setStatus({ ...this.status, state: 'error', lastError: err.message }),
       );
-      await this.wakeWord.start(() => {
-        this.onWakePhrase().catch(err =>
+      await this.wakeWord.start(detection => {
+        this.onWakePhrase(detection).catch(err =>
           this.setStatus({ ...this.status, state: 'error', lastError: String(err) }),
         );
       });
@@ -116,34 +120,59 @@ export class CaptureController {
    * Wake word heard: if an extended recording is running, stop & save it;
    * otherwise auto-save the look-back window as a clip right now.
    */
-  async onWakePhrase(): Promise<void> {
+  async onWakePhrase(detection?: WakeDetection): Promise<void> {
     if (this.status.state === 'recording') {
       await this.stopClip();
     } else if (this.status.state === 'armed') {
-      await this.captureNow();
+      await this.captureNow(detection);
     }
   }
 
-  /** Auto-save the buffered look-back window as a clip. Capture keeps running. */
-  async captureNow(): Promise<Clip | null> {
+  /**
+   * Auto-save the buffered look-back window as a clip. Capture keeps running.
+   *
+   * With a `detection` the clip ends on the trigger word instead of at the
+   * buffer boundary: the wake segment is already on disk, so there is nothing
+   * to cut and the trailing dead air (0–5s of segment plus transcription time)
+   * is trimmed off the last segment. Without one — the manual button, Android,
+   * or a wake segment that has already been evicted — the in-flight segment is
+   * cut and the whole window saved, as before.
+   */
+  async captureNow(detection?: WakeDetection): Promise<Clip | null> {
     if (this.status.state !== 'armed' || this.saving) {
       return null;
     }
     this.saving = true;
     this.setStatus({ ...this.status, state: 'saving' });
     try {
-      await this.source.cut();
-      const segments = this.buffer.flush();
+      let segments: Segment[] = [];
+      let trimEndSec = 0;
+      if (detection) {
+        segments = this.buffer.flushEndingAt(detection.segmentPath);
+        if (segments.length > 0) {
+          const last = segments[segments.length - 1];
+          trimEndSec = Math.max(
+            0,
+            last.durationSec - (detection.endOffsetSec + WAKE_TRIM_PADDING_SECONDS),
+          );
+        }
+      }
+      if (segments.length === 0) {
+        await this.source.cut();
+        segments = this.buffer.flush();
+      }
       if (segments.length === 0) {
         throw new Error('Buffer is empty — nothing to clip yet.');
       }
-      const clip = await this.stitch(segments);
+      const clip = await this.stitch(segments, trimEndSec);
       await clipStore.add(clip);
       await Promise.all(segments.map(s => RNFS.unlink(s.path).catch(() => {})));
       this.sessionClipCount += 1;
       this.setStatus({
         state: 'armed',
-        bufferedSeconds: 0,
+        // Segments recorded after the wake word are kept as the next clip's
+        // look-back, so the counter does not necessarily fall back to zero.
+        bufferedSeconds: this.buffer.totalBufferedSeconds,
         lastClip: clip,
         sessionClipCount: this.sessionClipCount,
       });
@@ -219,7 +248,7 @@ export class CaptureController {
     }
   }
 
-  private async stitch(segments: Segment[]): Promise<Clip> {
+  private async stitch(segments: Segment[], trimEndSec = 0): Promise<Clip> {
     const capturedAt = Date.now();
     const id = `clip_${capturedAt}_${Math.random().toString(36).slice(2, 8)}`;
     const dir = await clipStore.ensureDir();
@@ -227,6 +256,7 @@ export class CaptureController {
     const result = await stitchSegments(
       segments.map(s => s.path),
       outputPath,
+      trimEndSec,
     );
     // Free clips are temporary and start counting down immediately; Pro clips
     // are kept until the wearer deletes them.

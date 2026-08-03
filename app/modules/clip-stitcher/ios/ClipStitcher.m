@@ -67,8 +67,18 @@ RCT_EXPORT_MODULE();
   return NO;
 }
 
+/**
+ * `trimEndSec` drops that many seconds off the END of the last segment.
+ *
+ * Wake-word detection reads a segment only after it has been written, so the
+ * clip would otherwise run past the trigger word by a variable amount — up to
+ * a whole segment plus recognition time. The caller knows where the word
+ * finished and asks for the remainder to be cut here, where the composition
+ * time ranges are built, so no re-encode or second pass is involved.
+ */
 RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
                   outputPath:(NSString *)outputPath
+                  trimEndSec:(double)trimEndSec
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
@@ -90,7 +100,8 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
     NSUInteger srcAudioTrackTotal = 0;   // audio tracks seen across all segments
     NSUInteger srcAudioUsableTotal = 0;  // ...of those, ones with real content
     NSUInteger skippedEmptyAudio = 0;    // ...of those, ones skipped as empty
-    for (NSString *path in segmentPaths) {
+    for (NSUInteger index = 0; index < segmentPaths.count; index++) {
+      NSString *path = segmentPaths[index];
       NSURL *url = [NSURL fileURLWithPath:path];
       AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:nil];
 
@@ -100,7 +111,24 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
         return;
       }
 
-      CMTimeRange range = CMTimeRangeMake(kCMTimeZero, asset.duration);
+      CMTime take = asset.duration;
+      if (index == segmentPaths.count - 1 && trimEndSec > 0) {
+        CMTime trimmed = CMTimeSubtract(
+            take, CMTimeMakeWithSeconds(trimEndSec, take.timescale));
+        // A trim that would swallow the whole segment is a bug upstream, not
+        // an instruction to emit a zero-length tail: keep the segment intact
+        // and let the clip be a little long rather than truncated wrong.
+        if (CMTimeCompare(trimmed, kCMTimeZero) > 0) {
+          JVSLog(@"trimming %.3fs off %@ (%.3fs -> %.3fs)", trimEndSec,
+                 path.lastPathComponent, CMTimeGetSeconds(take),
+                 CMTimeGetSeconds(trimmed));
+          take = trimmed;
+        } else {
+          JVSLog(@"ignoring trim of %.3fs: exceeds %@ duration %.3fs", trimEndSec,
+                 path.lastPathComponent, CMTimeGetSeconds(take));
+        }
+      }
+      CMTimeRange range = CMTimeRangeMake(kCMTimeZero, take);
 
       NSError *error = nil;
       AVAssetTrack *srcVideo = [asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
@@ -149,7 +177,7 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
           return;
         }
       }
-      cursor = CMTimeAdd(cursor, asset.duration);
+      cursor = CMTimeAdd(cursor, take);
     }
 
     // Final safety net. Whatever the reason a track ended up with no segments,

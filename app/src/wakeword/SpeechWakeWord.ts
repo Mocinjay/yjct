@@ -1,10 +1,33 @@
 import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
+import type { TranscriptWord } from '../native/SpeechWakeWordNative';
 import { SpeechWakeWordNative } from '../native/SpeechWakeWordNative';
 import { matchesWakePhrase } from './phraseMatch';
-import type { WakeWordProvider } from './WakeWordProvider';
+import type { WakeDetection, WakeWordProvider } from './WakeWordProvider';
 
 /** Ignore repeat detections for this long after one fires. */
 const DEBOUNCE_MS = 3500;
+
+/**
+ * Seconds into the segment where the trigger phrase finishes, or null when the
+ * recognizer gave no timings or none of the prefixes match.
+ *
+ * Works by replaying the transcript one word at a time through the SAME
+ * matcher the detection itself used, so there is exactly one definition of
+ * what counts as the wake phrase. The first prefix that matches is the first
+ * utterance of it, and that word's end is where the clip should stop.
+ */
+function findPhraseEndSec(words: TranscriptWord[]): number | null {
+  for (let i = 0; i < words.length; i++) {
+    const prefix = words
+      .slice(0, i + 1)
+      .map(w => w.text)
+      .join(' ');
+    if (matchesWakePhrase(prefix)) {
+      return words[i].end;
+    }
+  }
+  return null;
+}
 
 /**
  * Keyless "Clipso" detection with the OS's own speech
@@ -20,11 +43,11 @@ const DEBOUNCE_MS = 3500;
 export class SpeechWakeWord implements WakeWordProvider {
   readonly name = 'speech';
 
-  private onDetected: (() => void) | null = null;
+  private onDetected: ((detection?: WakeDetection) => void) | null = null;
   private lastFiredAt = 0;
   private subscription: { remove: () => void } | null = null;
 
-  async start(onDetected: () => void): Promise<void> {
+  async start(onDetected: (detection?: WakeDetection) => void): Promise<void> {
     const ok = await SpeechWakeWordNative.requestPermission();
     console.log('[wakeword] start — speech permission granted:', ok);
     if (!ok) {
@@ -63,9 +86,9 @@ export class SpeechWakeWord implements WakeWordProvider {
       return;
     }
     SpeechWakeWordNative.transcribeFile(path)
-      .then(transcript => {
+      .then(({ transcript, words }) => {
         if (transcript) {
-          this.handleTranscript(transcript);
+          this.handleTranscript(transcript, words, path);
         }
       })
       .catch(err => {
@@ -76,7 +99,11 @@ export class SpeechWakeWord implements WakeWordProvider {
       });
   }
 
-  private handleTranscript(transcript: string): void {
+  private handleTranscript(
+    transcript: string,
+    words?: TranscriptWord[],
+    segmentPath?: string,
+  ): void {
     const matched = matchesWakePhrase(transcript);
     console.log(
       `[wakeword] transcript "${transcript}" → ${matched ? 'HIT' : 'miss'}`,
@@ -90,6 +117,16 @@ export class SpeechWakeWord implements WakeWordProvider {
       return;
     }
     this.lastFiredAt = now;
-    this.onDetected();
+
+    // Android recognizes live from the mic and reports a bare transcript, so
+    // there is no segment and no timing to hand back — the clip just ends at
+    // the buffer boundary as before.
+    const endOffsetSec = words ? findPhraseEndSec(words) : null;
+    if (segmentPath === undefined || endOffsetSec === null) {
+      this.onDetected();
+      return;
+    }
+    console.log(`[wakeword] phrase ends ${endOffsetSec.toFixed(2)}s into segment`);
+    this.onDetected({ segmentPath, endOffsetSec });
   }
 }

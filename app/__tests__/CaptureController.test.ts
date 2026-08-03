@@ -1,6 +1,9 @@
 import type { DeviceVideoSource } from '../src/device/DeviceVideoSource';
 import type { Segment } from '../src/types';
-import type { WakeWordProvider } from '../src/wakeword/WakeWordProvider';
+import type {
+  WakeDetection,
+  WakeWordProvider,
+} from '../src/wakeword/WakeWordProvider';
 
 const mockFiles = new Map<string, string>();
 
@@ -50,13 +53,14 @@ jest.mock('react-native-fs', () => ({
   }),
 }));
 
-const mockStitch = jest.fn(async (paths: string[], out: string) => ({
+const mockStitch = jest.fn(async (paths: string[], out: string, trim: number) => ({
   outputPath: out,
   thumbnailPath: out.replace(/\.mp4$/, '.jpg'),
-  durationSec: paths.length * 5,
+  durationSec: paths.length * 5 - trim,
 }));
 jest.mock('../src/native/ClipStitcher', () => ({
-  stitchSegments: (paths: string[], out: string) => mockStitch(paths, out),
+  stitchSegments: (paths: string[], out: string, trim = 0) =>
+    mockStitch(paths, out, trim),
 }));
 
 import { CaptureController } from '../src/core/CaptureController';
@@ -72,28 +76,32 @@ class FakeSource implements DeviceVideoSource {
     this.onSegment = onSegment;
   }
   async cut() {
+    this.cuts += 1;
     this.emit(); // in-flight segment gets finalized and delivered
   }
   async stop() {
     this.onSegment = null;
   }
-  emit() {
+  cuts = 0;
+  emit(): string {
     const n = this.counter++;
-    this.onSegment?.({ path: `/seg_${n}.mp4`, startedAt: n * 5000, durationSec: 5 });
+    const path = `/seg_${n}.mp4`;
+    this.onSegment?.({ path, startedAt: n * 5000, durationSec: 5 });
+    return path;
   }
 }
 
 class FakeWakeWord implements WakeWordProvider {
   readonly name = 'fake';
-  private cb: (() => void) | null = null;
-  async start(onDetected: () => void) {
+  private cb: ((detection?: WakeDetection) => void) | null = null;
+  async start(onDetected: (detection?: WakeDetection) => void) {
     this.cb = onDetected;
   }
   async stop() {
     this.cb = null;
   }
-  fire() {
-    this.cb?.();
+  fire(detection?: WakeDetection) {
+    this.cb?.(detection);
   }
 }
 
@@ -146,6 +154,49 @@ describe('CaptureController', () => {
     const clips = await clipStore.list();
     expect(clips).toHaveLength(1);
     expect(clips[0].filePath).toMatch(/\.mp4$/);
+  });
+
+  it('a timed detection ends the clip on the wake word without cutting', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10);
+
+    await controller.arm();
+    for (let i = 0; i < 4; i++) {
+      source.emit();
+    }
+    const wakeSegment = source.emit(); // "Clipso" lands 1.2s into this one
+    source.emit(); // ...and another segment finishes while it transcribes
+
+    wake.fire({ segmentPath: wakeSegment, endOffsetSec: 1.2 });
+    await settle();
+    await settle();
+
+    // Everything needed is already on disk, so no cut is forced.
+    expect(source.cuts).toBe(0);
+    const [paths, , trim] = mockStitch.mock.calls[0];
+    // the window ends at the wake segment, not at the newest one
+    expect(paths[paths.length - 1]).toBe(wakeSegment);
+    // 5s segment, phrase ends at 1.2s, 0.3s padding → drop the last 3.5s
+    expect(trim).toBeCloseTo(3.5);
+  });
+
+  it('falls back to cut + flush when the wake segment is already gone', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10);
+
+    await controller.arm();
+    for (let i = 0; i < 6; i++) {
+      source.emit();
+    }
+
+    wake.fire({ segmentPath: '/seg_0.mp4', endOffsetSec: 1.2 });
+    await settle();
+    await settle();
+
+    expect(source.cuts).toBe(1);
+    expect(mockStitch.mock.calls[0][2]).toBe(0);
   });
 
   it('extended clip records past the window until stopClip', async () => {

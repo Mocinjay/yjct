@@ -31,6 +31,14 @@ export const FREE_RETENTION_HOURS = 24;
  */
 export const WAKE_PHRASE = 'Clipso';
 
+/**
+ * Padding kept after the trigger word finishes when ending a clip on it.
+ * Word timings land on the last audible frame, so cutting exactly there
+ * clips the tail of the word off; this leaves it intact without letting
+ * dead air back in.
+ */
+export const WAKE_TRIM_PADDING_SECONDS = 0.3;
+
 export const DEFAULT_SETTINGS: Settings = {
   bufferSeconds: 30,
   // Glasses-only: the phone-camera mock remains in the codebase for tests,

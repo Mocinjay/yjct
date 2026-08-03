@@ -1,4 +1,4 @@
-import type { WakeWordProvider } from './WakeWordProvider';
+import type { WakeDetection, WakeWordProvider } from './WakeWordProvider';
 
 /**
  * Manual trigger for development: the Armed screen shows a "Trigger" button
@@ -7,9 +7,9 @@ import type { WakeWordProvider } from './WakeWordProvider';
 export class MockWakeWord implements WakeWordProvider {
   readonly name = 'mock';
 
-  private onDetected: (() => void) | null = null;
+  private onDetected: ((detection?: WakeDetection) => void) | null = null;
 
-  async start(onDetected: () => void): Promise<void> {
+  async start(onDetected: (detection?: WakeDetection) => void): Promise<void> {
     this.onDetected = onDetected;
   }
 

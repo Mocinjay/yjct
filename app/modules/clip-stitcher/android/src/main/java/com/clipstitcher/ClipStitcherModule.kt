@@ -28,15 +28,25 @@ class ClipStitcherModule(reactContext: ReactApplicationContext) :
 
   override fun getName() = "ClipStitcher"
 
+  /**
+   * @param trimEndSec seconds to drop off the end of the LAST segment, so a
+   *   wake-word clip can end on the trigger word instead of at the segment
+   *   boundary. 0 keeps every segment whole.
+   */
   @ReactMethod
-  fun stitch(segmentPaths: ReadableArray, outputPath: String, promise: Promise) {
+  fun stitch(
+    segmentPaths: ReadableArray,
+    outputPath: String,
+    trimEndSec: Double,
+    promise: Promise,
+  ) {
     executor.execute {
       try {
         val paths = (0 until segmentPaths.size()).map { segmentPaths.getString(it)!! }
         require(paths.isNotEmpty()) { "No segments to stitch" }
 
         File(outputPath).delete()
-        concat(paths, outputPath)
+        concat(paths, outputPath, trimEndSec)
         val thumbnailPath = writeThumbnail(outputPath)
         val durationSec = readDurationSec(outputPath)
 
@@ -52,7 +62,7 @@ class ClipStitcherModule(reactContext: ReactApplicationContext) :
     }
   }
 
-  private fun concat(paths: List<String>, outputPath: String) {
+  private fun concat(paths: List<String>, outputPath: String, trimEndSec: Double) {
     val muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
     var videoTrack = -1
     var audioTrack = -1
@@ -79,10 +89,24 @@ class ClipStitcherModule(reactContext: ReactApplicationContext) :
     val info = android.media.MediaCodec.BufferInfo()
     var offsetUs = 0L
 
-    for (path in paths) {
+    for ((pathIndex, path) in paths.withIndex()) {
       val extractor = MediaExtractor()
       extractor.setDataSource(path)
       var segmentEndUs = 0L
+
+      // Samples past this are dropped. A trim that would swallow the whole
+      // segment is a bug upstream, not an instruction to emit nothing, so it
+      // is ignored rather than acted on.
+      val cutoffUs = if (pathIndex == paths.lastIndex && trimEndSec > 0) {
+        val durationUs = (0 until extractor.trackCount)
+          .map { extractor.getTrackFormat(it) }
+          .filter { it.containsKey(MediaFormat.KEY_DURATION) }
+          .maxOfOrNull { it.getLong(MediaFormat.KEY_DURATION) } ?: 0L
+        val cutoff = durationUs - (trimEndSec * 1_000_000).toLong()
+        if (cutoff > 0) cutoff else Long.MAX_VALUE
+      } else {
+        Long.MAX_VALUE
+      }
 
       for (i in 0 until extractor.trackCount) {
         val format = extractor.getTrackFormat(i)
@@ -96,7 +120,7 @@ class ClipStitcherModule(reactContext: ReactApplicationContext) :
         extractor.selectTrack(i)
         while (true) {
           info.size = extractor.readSampleData(buffer, 0)
-          if (info.size < 0) {
+          if (info.size < 0 || extractor.sampleTime > cutoffUs) {
             break
           }
           info.presentationTimeUs = extractor.sampleTime + offsetUs
@@ -109,7 +133,8 @@ class ClipStitcherModule(reactContext: ReactApplicationContext) :
         extractor.unselectTrack(i)
 
         if (format.containsKey(MediaFormat.KEY_DURATION)) {
-          segmentEndUs = maxOf(segmentEndUs, format.getLong(MediaFormat.KEY_DURATION))
+          val declared = minOf(format.getLong(MediaFormat.KEY_DURATION), cutoffUs)
+          segmentEndUs = maxOf(segmentEndUs, declared)
         }
       }
 

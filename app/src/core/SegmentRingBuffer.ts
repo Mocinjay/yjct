@@ -76,6 +76,46 @@ export class SegmentRingBuffer {
     return covering;
   }
 
+  /**
+   * Returns the window ENDING at `path` — the segments covering the last
+   * `windowSeconds` up to and including that segment, oldest first — and hands
+   * their files to the caller.
+   *
+   * Anything older is evicted, but anything recorded *after* that segment is
+   * kept: it is already the next clip's look-back, so the wearer does not drop
+   * back to an empty buffer every time one is saved.
+   *
+   * The buffer only ever retains the window itself, so if newer segments have
+   * already landed the result is short by that much. In practice the trigger is
+   * reported while its own segment is still the newest one, and it is a full
+   * window.
+   *
+   * Returns [] when the segment has already been evicted; the caller then
+   * falls back to cutting the in-flight segment and flushing.
+   */
+  flushEndingAt(path: string): Segment[] {
+    const end = this.segments.findIndex(s => s.path === path);
+    if (end < 0) {
+      return [];
+    }
+    let start = end;
+    let covered = 0;
+    for (let i = end; i >= 0; i--) {
+      start = i;
+      covered += this.segments[i].durationSec;
+      if (covered >= this.windowSeconds) {
+        break;
+      }
+    }
+    const out = this.segments.slice(start, end + 1);
+    for (const seg of this.segments.slice(0, start)) {
+      this.onEvict(seg);
+    }
+    this.segments = this.segments.slice(end + 1);
+    this.evict();
+    return out;
+  }
+
   /** Drops everything, evicting all files. Used when disarming. */
   clear(): void {
     for (const seg of this.segments) {

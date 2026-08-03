@@ -11,16 +11,27 @@ export interface StitchResult {
 interface ClipStitcherModule {
   /**
    * Losslessly concatenates the given segment MP4s (oldest first) into
-   * `outputPath` and writes a poster-frame JPEG next to it.
+   * `outputPath` and writes a poster-frame JPEG next to it, dropping
+   * `trimEndSec` seconds off the end of the LAST segment.
    */
-  stitch(segmentPaths: string[], outputPath: string): Promise<StitchResult>;
+  stitch(
+    segmentPaths: string[],
+    outputPath: string,
+    trimEndSec: number,
+  ): Promise<StitchResult>;
 }
 
 const native: ClipStitcherModule | undefined = NativeModules.ClipStitcher;
 
+/**
+ * @param trimEndSec seconds to cut off the end of the final segment — used to
+ *   end a wake-word clip on the trigger word rather than at the segment
+ *   boundary. 0 keeps the whole thing.
+ */
 export function stitchSegments(
   segmentPaths: string[],
   outputPath: string,
+  trimEndSec = 0,
 ): Promise<StitchResult> {
   if (!native) {
     return Promise.reject(
@@ -29,5 +40,5 @@ export function stitchSegments(
       ),
     );
   }
-  return native.stitch(segmentPaths, outputPath);
+  return native.stitch(segmentPaths, outputPath, trimEndSec);
 }

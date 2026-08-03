@@ -258,13 +258,21 @@ static NSURL *SWWRenderBoostedAudio(AVAsset *asset, NSString *label)
  * the model is available) and JS matches "clipso" / "clip that" against the
  * text. No vendor, no API key, no audio-session conflict.
  */
+/// Shape JS expects from `transcribeFile` when nothing was heard.
+static NSDictionary *SWWTranscriptResult(NSString *text, NSArray *words)
+{
+  return @{ @"transcript" : text ?: @"", @"words" : words ?: @[] };
+}
+
 @interface SpeechWakeWord : NSObject <RCTBridgeModule>
 @property (nonatomic, strong) SFSpeechRecognizer *recognizer;
 @property (nonatomic, strong) NSMutableSet<SFSpeechRecognitionTask *> *tasks;
 - (void)recognizeURL:(NSURL *)url
             onDevice:(BOOL)onDevice
                label:(NSString *)label
-          completion:(void (^)(NSString *text, NSError *error))completion;
+          completion:(void (^)(NSString *text,
+                               NSArray<NSDictionary *> *words,
+                               NSError *error))completion;
 @end
 
 @implementation SpeechWakeWord
@@ -307,6 +315,15 @@ RCT_EXPORT_METHOD(requestPermission:(RCTPromiseResolveBlock)resolve
       }];
 }
 
+/**
+ * Transcribes a recorded segment.
+ *
+ * Resolves `{transcript, words}` rather than a bare string: JS needs to know
+ * *where inside the segment* the trigger finished speaking so the clip can end
+ * there instead of trailing dead air to the segment boundary. `words` carries
+ * `{text, end}` per recognized word, `end` in seconds from the start of the
+ * segment.
+ */
 RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
@@ -336,7 +353,7 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
   // samples still leaves a track behind, and reading it is equally invalid.
   if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
     SWWLog(@"file does not exist: %@ - treating as no speech", path.lastPathComponent);
-    resolve(@"");
+    resolve(SWWTranscriptResult(@"", nil));
     return;
   }
 
@@ -344,7 +361,7 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
   if (!SWWLoadAssetKeys(asset, @[ @"tracks" ])) {
     SWWLog(@"could not load tracks for %@ - treating as no speech",
            path.lastPathComponent);
-    resolve(@"");
+    resolve(SWWTranscriptResult(@"", nil));
     return;
   }
 
@@ -364,7 +381,7 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
            @"recognition request is created (video-only segment)");
     // No audio means no speech. Resolving empty matches the existing contract
     // for a silent segment, so JS keeps polling instead of seeing an error.
-    resolve(@"");
+    resolve(SWWTranscriptResult(@"", nil));
     return;
   }
 
@@ -385,7 +402,8 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
   [self recognizeURL:recognitionURL
             onDevice:canRunOnDevice
                label:label
-          completion:^(NSString *text, NSError *error) {
+          completion:^(NSString *text, NSArray<NSDictionary *> *words,
+                       NSError *error) {
             BOOL emptyResult = (error != nil || text.length == 0);
             // On-device is tried first because it is free, offline and private,
             // but its acoustic model is the stricter of the two and it largely
@@ -397,28 +415,39 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
               SpeechWakeWord *strongSelf = weakSelf;
               if (strongSelf == nil) {
                 cleanup();
-                resolve(@"");
+                resolve(SWWTranscriptResult(@"", nil));
                 return;
               }
               [strongSelf recognizeURL:recognitionURL
                               onDevice:NO
                                  label:label
-                            completion:^(NSString *retryText, NSError *retryError) {
+                            completion:^(NSString *retryText,
+                                         NSArray<NSDictionary *> *retryWords,
+                                         NSError *retryError) {
                               cleanup();
-                              resolve(retryError != nil ? @"" : (retryText ?: @""));
+                              resolve(retryError != nil
+                                          ? SWWTranscriptResult(@"", nil)
+                                          : SWWTranscriptResult(retryText, retryWords));
                             }];
               return;
             }
             cleanup();
-            resolve(error != nil ? @"" : (text ?: @""));
+            resolve(error != nil ? SWWTranscriptResult(@"", nil)
+                                 : SWWTranscriptResult(text, words));
           }];
 }
 
 /// One recognition pass. Always calls `completion` exactly once.
+///
+/// `words` are the transcription's per-word segments, each `{text, end}` with
+/// `end` in seconds. They are measured on the boosted WAV, which is a
+/// same-duration copy of the segment, so they map 1:1 onto the original file.
 - (void)recognizeURL:(NSURL *)url
             onDevice:(BOOL)onDevice
                label:(NSString *)label
-          completion:(void (^)(NSString *text, NSError *error))completion
+          completion:(void (^)(NSString *text,
+                               NSArray<NSDictionary *> *words,
+                               NSError *error))completion
 {
   SFSpeechRecognizer *recognizer = self.recognizer;
   SFSpeechURLRecognitionRequest *request =
@@ -455,13 +484,24 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
                        SWWLog(@"no transcript for %@ (onDevice=%d) - %@ [%@ %ld]",
                               label, onDevice, error.localizedDescription,
                               error.domain, (long)error.code);
-                       completion(nil, error);
+                       completion(nil, nil, error);
                      } else if (result != nil && result.isFinal) {
                        settled = YES;
-                       NSString *text = result.bestTranscription.formattedString;
-                       SWWLog(@"transcript for %@ (onDevice=%d): \"%@\"", label,
-                              onDevice, text);
-                       completion(text, nil);
+                       SFTranscription *transcription = result.bestTranscription;
+                       NSString *text = transcription.formattedString;
+                       NSMutableArray<NSDictionary *> *words =
+                           [NSMutableArray arrayWithCapacity:
+                                               transcription.segments.count];
+                       for (SFTranscriptionSegment *word in transcription.segments) {
+                         [words addObject:@{
+                           @"text" : word.substring ?: @"",
+                           @"end" : @(word.timestamp + word.duration),
+                         }];
+                       }
+                       SWWLog(@"transcript for %@ (onDevice=%d): \"%@\" (%lu word "
+                              @"timings)",
+                              label, onDevice, text, (unsigned long)words.count);
+                       completion(text, words, nil);
                      } else {
                        return;
                      }
@@ -485,7 +525,8 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
       settled = YES;
       SWWLog(@"could not create recognition task for %@ (onDevice=%d)", label,
              onDevice);
-      completion(nil, [NSError errorWithDomain:@"SpeechWakeWord" code:-1 userInfo:nil]);
+      completion(nil, nil,
+                 [NSError errorWithDomain:@"SpeechWakeWord" code:-1 userInfo:nil]);
     }
   }
 }

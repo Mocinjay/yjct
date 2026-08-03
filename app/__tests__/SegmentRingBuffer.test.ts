@@ -120,6 +120,43 @@ describe('SegmentRingBuffer', () => {
     expect(buf.flushFromPin()).toHaveLength(13);
   });
 
+  it('flushEndingAt covers the window when the named segment is the newest', () => {
+    const buf = new SegmentRingBuffer(10, () => {});
+    for (let i = 0; i < 5; i++) {
+      buf.push(seg(i));
+    }
+
+    // The usual case: transcription finishes before the next segment does.
+    const flushed = buf.flushEndingAt('/tmp/seg_4.mp4');
+    expect(flushed.map(s => s.path)).toEqual(['/tmp/seg_3.mp4', '/tmp/seg_4.mp4']);
+    expect(buf.size).toBe(0);
+  });
+
+  it('flushEndingAt keeps segments recorded after the named one', () => {
+    const evicted: Segment[] = [];
+    const buf = new SegmentRingBuffer(10, s => evicted.push(s));
+    for (let i = 0; i < 5; i++) {
+      buf.push(seg(i));
+    }
+
+    // Slow transcription: seg_4 landed before the wake in seg_3 was reported.
+    const flushed = buf.flushEndingAt('/tmp/seg_3.mp4');
+    expect(flushed.map(s => s.path)).toEqual(['/tmp/seg_3.mp4']);
+    expect(evicted.map(s => s.path)).not.toContain('/tmp/seg_4.mp4');
+    // seg_4 stays behind as the next clip's look-back
+    expect(buf.size).toBe(1);
+    expect(buf.totalBufferedSeconds).toBe(5);
+  });
+
+  it('flushEndingAt returns nothing when the segment was already evicted', () => {
+    const buf = new SegmentRingBuffer(10, () => {});
+    buf.push(seg(0));
+    buf.push(seg(1));
+
+    expect(buf.flushEndingAt('/tmp/seg_99.mp4')).toEqual([]);
+    expect(buf.size).toBe(2);
+  });
+
   it('shrinking the window evicts immediately', () => {
     const evicted: Segment[] = [];
     const buf = new SegmentRingBuffer(90, s => evicted.push(s));
