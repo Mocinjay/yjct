@@ -220,6 +220,81 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
     NSAssert(compositionAudioTracks != 1 || audioTrack != nil,
              @"composition audio track present without a usable source");
 
+    // Every segment leaves MWDATSegmentWriter with identical encoder settings,
+    // so concatenating them needs no re-encode at all: passthrough copies the
+    // exact bits the segment writer produced. The previous path decoded every
+    // frame to BGRA and re-encoded it with no bitrate specified, spending a
+    // whole extra generation of quality on a pure concatenation.
+    //
+    // The one thing passthrough cannot do is join segments whose formats
+    // differ, which the SDK's ABR ladder can produce by stepping resolution
+    // down mid-session. That is what the transcode below is still here for.
+    [self exportPassthrough:composition
+                 outputPath:outputPath
+                 completion:^(BOOL ok, NSError *passthroughError) {
+      if (ok) {
+        JVSLog(@"passthrough export succeeded (no re-encode)");
+        [self finishWithOutputPath:outputPath resolver:resolve rejecter:reject];
+        return;
+      }
+      JVSLog(@"passthrough export unavailable (%@); falling back to transcode",
+             passthroughError.localizedDescription);
+      [self transcodeComposition:composition
+                      outputPath:outputPath
+                        resolver:resolve
+                        rejecter:reject];
+    }];
+  });
+}
+
+/**
+ * Copies the composition to `outputPath` without touching the encoded samples.
+ * Reports failure rather than rejecting, so the caller can fall back.
+ */
+- (void)exportPassthrough:(AVComposition *)composition
+               outputPath:(NSString *)outputPath
+               completion:(void (^)(BOOL ok, NSError *error))completion
+{
+  [[NSFileManager defaultManager] removeItemAtPath:outputPath error:nil];
+
+  AVAssetExportSession *export =
+      [[AVAssetExportSession alloc] initWithAsset:composition
+                                       presetName:AVAssetExportPresetPassthrough];
+  if (export == nil) {
+    completion(NO, [NSError errorWithDomain:@"ClipStitcher"
+                                       code:2
+                                   userInfo:@{
+                                     NSLocalizedDescriptionKey :
+                                         @"Could not create a passthrough export session."
+                                   }]);
+    return;
+  }
+  export.outputURL = [NSURL fileURLWithPath:outputPath];
+  export.outputFileType = AVFileTypeMPEG4;
+  export.shouldOptimizeForNetworkUse = YES;
+
+  [export exportAsynchronouslyWithCompletionHandler:^{
+    if (export.status == AVAssetExportSessionStatusCompleted) {
+      completion(YES, nil);
+      return;
+    }
+    // A half-written file would otherwise be handed to the caller as a
+    // finished clip, or mistaken for the fallback's output.
+    [[NSFileManager defaultManager] removeItemAtPath:outputPath error:nil];
+    completion(NO, export.error);
+  }];
+}
+
+/**
+ * Fallback for compositions passthrough cannot serve: decodes and re-encodes.
+ * Costs a generation of quality, so it must stay the exception.
+ */
+- (void)transcodeComposition:(AVComposition *)composition
+                  outputPath:(NSString *)outputPath
+                    resolver:(RCTPromiseResolveBlock)resolve
+                    rejecter:(RCTPromiseRejectBlock)reject
+{
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     NSError *readerLoadError = nil;
     AVAsset *readerAsset = composition;
     if (!JVSLoadAssetKeys(readerAsset, @[ @"tracks", @"duration" ], &readerLoadError)) {
@@ -297,12 +372,24 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
       videoWidth = 504;
       videoHeight = 896;
     }
+    // Match MWDATSegmentWriter's 0.3 bits/pixel/frame and High profile.
+    // Specifying nothing let AVFoundation pick its own conservative default,
+    // which threw away most of what the segment writer had preserved.
+    NSInteger bitRate = MAX(4000000, (NSInteger)(videoWidth * videoHeight * 30.0 * 0.3));
+    JVSLog(@"transcode fallback: %.0fx%.0f h264-high bitRate=%ld",
+           videoWidth, videoHeight, (long)bitRate);
     AVAssetWriterInput *videoWriterInput = [[AVAssetWriterInput alloc]
         initWithMediaType:AVMediaTypeVideo
            outputSettings:@{
              AVVideoCodecKey : AVVideoCodecTypeH264,
              AVVideoWidthKey : @(videoWidth),
              AVVideoHeightKey : @(videoHeight),
+             AVVideoCompressionPropertiesKey : @{
+               AVVideoAverageBitRateKey : @(bitRate),
+               AVVideoExpectedSourceFrameRateKey : @30,
+               AVVideoMaxKeyFrameIntervalKey : @30,
+               AVVideoProfileLevelKey : AVVideoProfileLevelH264HighAutoLevel,
+             },
            }];
     videoWriterInput.transform = readerVideoTrack.preferredTransform;
     if (![writer canAddInput:videoWriterInput]) {
@@ -477,32 +564,39 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
           return;
         }
 
-        NSString *thumbnailPath =
-            [[outputPath stringByDeletingPathExtension] stringByAppendingString:@".jpg"];
-        AVURLAsset *clipAsset =
-            [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:outputPath] options:nil];
-        AVAssetImageGenerator *generator =
-            [[AVAssetImageGenerator alloc] initWithAsset:clipAsset];
-        generator.appliesPreferredTrackTransform = YES;
-        generator.maximumSize = CGSizeMake(640, 640);
-
-        CGImageRef cgImage =
-            [generator copyCGImageAtTime:CMTimeMakeWithSeconds(0.0, 600)
-                              actualTime:NULL
-                                   error:NULL];
-        if (cgImage != NULL) {
-          UIImage *image = [UIImage imageWithCGImage:cgImage];
-          CGImageRelease(cgImage);
-          [UIImageJPEGRepresentation(image, 0.8) writeToFile:thumbnailPath atomically:YES];
-        }
-
-        resolve(@{
-          @"outputPath" : outputPath,
-          @"thumbnailPath" : thumbnailPath,
-          @"durationSec" : @(CMTimeGetSeconds(clipAsset.duration)),
-        });
+        [self finishWithOutputPath:outputPath resolver:resolve rejecter:reject];
       }];
     });
+  });
+}
+
+/// Generates the poster frame and resolves, whichever path wrote the clip.
+- (void)finishWithOutputPath:(NSString *)outputPath
+                    resolver:(RCTPromiseResolveBlock)resolve
+                    rejecter:(RCTPromiseRejectBlock)reject
+{
+  NSString *thumbnailPath =
+      [[outputPath stringByDeletingPathExtension] stringByAppendingString:@".jpg"];
+  AVURLAsset *clipAsset =
+      [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:outputPath] options:nil];
+  AVAssetImageGenerator *generator =
+      [[AVAssetImageGenerator alloc] initWithAsset:clipAsset];
+  generator.appliesPreferredTrackTransform = YES;
+  generator.maximumSize = CGSizeMake(640, 640);
+
+  CGImageRef cgImage = [generator copyCGImageAtTime:CMTimeMakeWithSeconds(0.0, 600)
+                                         actualTime:NULL
+                                              error:NULL];
+  if (cgImage != NULL) {
+    UIImage *image = [UIImage imageWithCGImage:cgImage];
+    CGImageRelease(cgImage);
+    [UIImageJPEGRepresentation(image, 0.8) writeToFile:thumbnailPath atomically:YES];
+  }
+
+  resolve(@{
+    @"outputPath" : outputPath,
+    @"thumbnailPath" : thumbnailPath,
+    @"durationSec" : @(CMTimeGetSeconds(clipAsset.duration)),
   });
 }
 
