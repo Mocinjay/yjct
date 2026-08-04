@@ -576,11 +576,18 @@ final class MWDATSegmentWriter {
       }
     }
 
-    // ~0.2 bits/pixel/frame at 30 fps keeps encode cheap enough that
-    // `isReadyForMoreMediaData` stays true under a live glasses feed.
-    // (Higher bitrates look sharper until the writer starts dropping frames,
-    // which is worse than mild compression for this product.)
-    let bitRate = max(1_500_000, width * height * 2)
+    // 0.3 bits/pixel/frame at 30 fps. The previous `width * height * 2` was
+    // 0.067 bpp (its "~0.2" comment was off by 3x) and only ever hit the
+    // 1.5 Mbit floor, which is what made clips look soft next to a native
+    // Meta recording. This is the LAST place the glasses' pixels are encoded
+    // at full fidelity — the stitcher passes these segments through untouched —
+    // so it is the one that has to be generous.
+    //
+    // Encode cost is not the constraint it was assumed to be: this is a
+    // hardware VideoToolbox encode, and 720x1280@30 is a small fraction of
+    // what the SoC sustains. Disk is not either — 30s at 8 Mbit is ~30 MB of
+    // temporary files that the ring buffer deletes as it evicts them.
+    let bitRate = max(4_000_000, Int(Double(width * height) * 30.0 * 0.3))
     let videoInput = AVAssetWriterInput(
       mediaType: .video,
       outputSettings: [
@@ -591,11 +598,14 @@ final class MWDATSegmentWriter {
           AVVideoAverageBitRateKey: bitRate,
           AVVideoExpectedSourceFrameRateKey: 30,
           AVVideoMaxKeyFrameIntervalKey: 30,
-          AVVideoProfileLevelKey: AVVideoProfileLevelH264BaselineAutoLevel,
+          // High profile buys CABAC and B-frames over Baseline — roughly 20%
+          // better quality at the same bitrate, at no cost on a HW encoder.
+          AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
         ],
       ]
     )
     videoInput.expectsMediaDataInRealTime = true
+    Self.log("video input: \(width)x\(height) h264-high bitRate=\(bitRate)")
 
     // Audio is optional: it is captured phone-side via AVAudioEngine and can be
     // absent entirely (engine never started, no route, permission). Adding an
