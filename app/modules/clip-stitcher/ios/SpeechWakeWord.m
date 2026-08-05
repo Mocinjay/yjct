@@ -6,7 +6,7 @@
 #import <math.h>
 #import <unistd.h>
 
-/// Mirror into Documents/clipso-diagnostics.log, the same file MWDATSegmentWriter
+/// Mirror into Documents/clypso-diagnostics.log, the same file MWDATSegmentWriter
 /// appends to. A capture run can then be pulled off the device with one
 /// `devicectl device copy from --domain-type appDataContainer`, and the video
 /// and speech halves of the wake-word path read as a single timeline. The live
@@ -23,8 +23,8 @@ static void SWWDiag(NSString *message)
   dispatch_once(&once, ^{
     path = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
                                                 NSUserDomainMask, YES).firstObject
-        stringByAppendingPathComponent:@"clipso-diagnostics.log"];
-    queue = dispatch_queue_create("com.mocinjay.clipso.swwdiag",
+        stringByAppendingPathComponent:@"clypso-diagnostics.log"];
+    queue = dispatch_queue_create("com.mocinjay.clypso.swwdiag",
                                   DISPATCH_QUEUE_SERIAL);
   });
   if (path == nil) {

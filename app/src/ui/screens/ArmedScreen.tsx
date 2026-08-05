@@ -1,82 +1,94 @@
 import { useIsFocused } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  Animated,
-  AppState,
-  Easing,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { Animated, Easing, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Camera, useCameraDevice } from 'react-native-vision-camera';
 import type { CaptureStatus } from '../../core/CaptureController';
-import { bump } from '../../debug/jsProbe';
-import { useGlassesLease } from '../../device/glassesLease';
 import type { CaptureSession } from '../../services/capture';
-import { buildCaptureSession } from '../../services/capture';
+import { useGlassesLease } from '../../device/glassesLease';
 import { LiveActivity } from '../../native/LiveActivity';
 import { GlassesPreview } from '../GlassesPreview';
 import { RecDot } from '../components';
+import { useCaptureSession } from '../hooks/useCaptureSession';
 import type { RootStackParamList } from '../navigation';
 import { formatDuration } from './LibraryScreen';
 import { colors, radius, spacing } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Armed'>;
 
-const MAX_RECOVERY_ATTEMPTS = 3;
-const RECOVERY_DELAY_MS = 4000;
+/**
+ * The live feed, isolated behind `React.memo`.
+ *
+ * The screen re-renders once a second to move its clocks. Text nodes are cheap
+ * to reconcile; a `<Camera>` and the preview surface are not, and re-rendering
+ * them on a 1 Hz timer meant the viewfinder was being reconciled 60 times a
+ * minute for readouts it has nothing to do with.
+ *
+ * The camera ref matters just as much: an inline `ref={r => ...}` is a new
+ * function identity every render, and React responds by calling the old one
+ * with null and the new one with the instance — detaching and reattaching the
+ * camera every single second.
+ */
+const Viewfinder = React.memo(function ViewfinderInner({
+  session,
+  onCameraReady,
+}: {
+  session: CaptureSession | null;
+  onCameraReady: () => void;
+}) {
+  const device = useCameraDevice('back');
+  const mockSource = session?.mockSource;
+  const attachCamera = useCallback(
+    (ref: Camera | null) => mockSource?.attachCamera(ref),
+    [mockSource],
+  );
+
+  if (mockSource && device) {
+    return (
+      <Camera
+        ref={attachCamera}
+        style={StyleSheet.absoluteFill}
+        device={device}
+        isActive
+        video
+        audio
+        // Arming before the phone camera has initialised fails, so the manager
+        // waits to be told rather than guessing.
+        onInitialized={onCameraReady}
+      />
+    );
+  }
+  if (session && !mockSource) {
+    return <GlassesPreview style={StyleSheet.absoluteFill} />;
+  }
+  return null;
+});
+Viewfinder.displayName = 'Viewfinder';
 
 /**
  * Always-on live view: the rolling buffer arms as soon as the session is
- * ready. Voice (“Clipso”) is the primary trigger; the on-screen
+ * ready. Voice (“Clypso”) is the primary trigger; the on-screen
  * controls are a quiet clip / extended affordance, not a camera shutter.
  */
 export function ArmedScreen({ navigation }: Props) {
-  bump('render.Armed');
-  const [session, setSession] = useState<CaptureSession | null>(null);
-  const [status, setStatus] = useState<CaptureStatus>({
-    state: 'idle',
-    bufferedSeconds: 0,
-    bufferedAsOf: Date.now(),
-  });
-  const [now, setNow] = useState(Date.now());
-  const armedRef = useRef(false);
-  /** Sticky, unlike `armedRef`: stays true across a disarm. */
-  const hasArmedOnce = useRef(false);
-  const recoveryAttempts = useRef(0);
   const isFocused = useIsFocused();
+  const {
+    status,
+    session,
+    recoveryExhausted,
+    clipNow,
+    startExtended,
+    stopExtended,
+    retry,
+    notifySourceReady,
+    lookBackSeconds,
+  } = useCaptureSession(isFocused);
+  const [now, setNow] = useState(Date.now());
   useGlassesLease(isFocused);
   const insets = useSafeAreaInsets();
-  const device = useCameraDevice('back');
   const toast = useRef(new Animated.Value(0)).current;
   const lastToastClip = useRef<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    buildCaptureSession().then(s => {
-      if (!cancelled) {
-        setSession(s);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!session) {
-      return;
-    }
-    const unsubscribe = session.controller.subscribe(setStatus);
-    return () => {
-      unsubscribe();
-      armedRef.current = false;
-      session.controller.disarm().catch(() => {});
-    };
-  }, [session]);
 
   useEffect(() => {
     if (!status.lastClip || status.lastClip.id === lastToastClip.current) {
@@ -114,7 +126,7 @@ export function ArmedScreen({ navigation }: Props) {
   }, [status.state]);
 
   // The Live Activity mirrors capture onto the Lock Screen and Dynamic Island,
-  // so leaving the app does not mean losing sight of whether Clipso is armed.
+  // so leaving the app does not mean losing sight of whether Clypso is armed.
   //
   // ActivityKit only allows a *start* from the foreground, which is exactly
   // when arming happens; updates and the end continue to work backgrounded.
@@ -155,120 +167,18 @@ export function ArmedScreen({ navigation }: Props) {
   ]);
 
   const goLibrary = () => {
-    // Blur tears capture down (see the focus effect below) and `useGlassesLease`
-    // closes the session, so this only has to navigate. Armed is reached two
-    // ways: pushed from Library, or replacing Connect on boot. In the second
-    // case it is the only screen on the stack, so goBack() has no target and
-    // React Navigation logs "The action 'GO_BACK' was not handled by any
-    // navigator". Closing belongs in the Library either way.
+    // Blurring is what releases capture — the manager reconciles on it, and
+    // `useGlassesLease` closes the glasses session — so this only has to
+    // navigate. Armed is reached two ways: pushed from Library, or replacing
+    // Connect on boot. In the second case it is the only screen on the stack,
+    // so goBack() has no target and React Navigation logs "The action
+    // 'GO_BACK' was not handled by any navigator". Closing belongs in the
+    // Library either way.
     if (navigation.canGoBack()) {
       navigation.goBack();
     } else {
       navigation.navigate('Library');
     }
-  };
-
-  const arm = useCallback(() => {
-    if (!session || armedRef.current) {
-      return;
-    }
-    armedRef.current = true;
-    hasArmedOnce.current = true;
-    session.controller.arm().catch(() => {
-      // Status listener already surfaces the error; clear the latch so
-      // refocusing can retry instead of sitting there permanently unarmed.
-      armedRef.current = false;
-    });
-  }, [session]);
-
-  // Capture follows FOCUS, not mount. React Navigation keeps this screen
-  // mounted underneath the Library and the clip player, so arming on mount left
-  // the glasses camera, the Bluetooth link, the H.264 writer, the mic and
-  // per-segment speech recognition all running the entire time the user was
-  // browsing or watching a clip. Nothing up there needs the wearer's feed.
-  //
-  // On blur: stop capturing. On return: arm again. `useGlassesLease` handles
-  // tearing the underlying glasses session down once no screen holds it.
-  useEffect(() => {
-    if (!session) {
-      return;
-    }
-    if (isFocused) {
-      // The mock path arms from the viewfinder's `onInitialized` instead, so on
-      // the FIRST visit leave it alone — arming before the camera is ready
-      // fails. On a return visit that callback has already fired and will not
-      // fire again, so re-arm here. `hasArmedOnce` is what distinguishes the
-      // two; `armedRef` cannot, since disarming resets it to false.
-      if (!session.mockSource || hasArmedOnce.current) {
-        arm();
-      }
-      return;
-    }
-    // Never interrupt a manual extended recording or an in-flight save — those
-    // own the writer and the user is deliberately capturing.
-    if (status.state === 'recording' || status.state === 'saving') {
-      return;
-    }
-    armedRef.current = false;
-    session.controller.disarm().catch(() => {});
-  }, [isFocused, session, arm, status.state]);
-
-  // A stalled or dropped glasses link leaves capture in `error`, and until now
-  // the only way out was the wearer noticing the banner and tapping Retry —
-  // which is exactly what they cannot do, because the phone is in a pocket and
-  // the whole point is that Clipso keeps listening. Re-arm on its own, but a
-  // bounded number of times: if the glasses are folded, flat or out of range,
-  // renegotiating forever means a stop/start chime every few seconds and a
-  // session that never settles. After the last attempt the banner stands and
-  // Retry is the wearer's call.
-  useEffect(() => {
-    if (status.state === 'armed') {
-      recoveryAttempts.current = 0;
-      return;
-    }
-    if (
-      status.state !== 'error' ||
-      !isFocused ||
-      !session ||
-      recoveryAttempts.current >= MAX_RECOVERY_ATTEMPTS
-    ) {
-      return;
-    }
-    recoveryAttempts.current += 1;
-    const timer = setTimeout(() => {
-      armedRef.current = false;
-      arm();
-    }, RECOVERY_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [status.state, isFocused, session, arm]);
-
-  // Coming back from the background: iOS may have torn the native session
-  // down while we were away, so re-arm. Focus still gates it — if the user
-  // backgrounded the app from the Library, nothing here should wake capture.
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', state => {
-      if (state !== 'active' || !isFocused || !session || session.mockSource) {
-        return;
-      }
-      if (
-        status.state === 'armed' ||
-        status.state === 'recording' ||
-        status.state === 'arming'
-      ) {
-        return;
-      }
-      armedRef.current = false;
-      arm();
-    });
-    return () => sub.remove();
-  }, [isFocused, session, status.state, arm]);
-
-  const clipNow = () => {
-    session?.controller.captureNow().catch(() => {});
-  };
-  const startExtended = () => session?.controller.startClip();
-  const stop = () => {
-    session?.controller.stopClip().catch(() => {});
   };
 
   const live = status.state === 'armed';
@@ -289,7 +199,7 @@ export function ArmedScreen({ navigation }: Props) {
   // one that is *meant* to plateau — it is how much a trigger would clip.
   const bufferedSecs = live
     ? Math.min(
-        session?.controller.lookBackSeconds ?? status.bufferedSeconds,
+        lookBackSeconds ?? status.bufferedSeconds,
         status.bufferedSeconds + (now - status.bufferedAsOf) / 1000,
       )
     : status.bufferedSeconds;
@@ -325,19 +235,7 @@ export function ArmedScreen({ navigation }: Props) {
           eye on the status/deck chrome rather than the footage. */}
       <View style={styles.stage}>
         <View style={[styles.viewfinder, recording && styles.viewfinderRec]}>
-          {session?.mockSource && device ? (
-            <Camera
-              ref={ref => session.mockSource?.attachCamera(ref)}
-              style={StyleSheet.absoluteFill}
-              device={device}
-              isActive
-              video
-              audio
-              onInitialized={arm}
-            />
-          ) : session && !session.mockSource ? (
-            <GlassesPreview style={StyleSheet.absoluteFill} />
-          ) : null}
+          <Viewfinder session={session} onCameraReady={notifySourceReady} />
 
           <Animated.View
             pointerEvents="none"
@@ -367,13 +265,15 @@ export function ArmedScreen({ navigation }: Props) {
 
       {status.lastError ? (
         <View style={styles.errorBanner}>
-          <Text style={styles.errorText}>{status.lastError}</Text>
-          <Pressable
-            onPress={() => {
-              armedRef.current = false;
-              arm();
-            }}
-            hitSlop={8}>
+          <Text style={styles.errorText}>
+            {recoveryExhausted
+              ? // Automatic recovery is over, so the banner has to stop implying
+                // something is still happening. Until now it showed the same
+                // text whether a retry was seconds away or never coming.
+                `${status.lastError} Capture is stopped.`
+              : status.lastError}
+          </Text>
+          <Pressable onPress={retry} hitSlop={8}>
             <Text style={styles.retryText}>Retry</Text>
           </Pressable>
         </View>
@@ -385,7 +285,7 @@ export function ArmedScreen({ navigation }: Props) {
             ? 'extended clip — tap Stop when you’re done'
             : session?.mockWakeWord
               ? 'mock mode — tap Clip to save the look-back'
-              : 'say “Clipso”'}
+              : 'say “Clypso”'}
         </Text>
 
         <View style={styles.actions}>
@@ -409,7 +309,7 @@ export function ArmedScreen({ navigation }: Props) {
           <Pressable
             onPress={
               recording
-                ? stop
+                ? stopExtended
                 : session?.mockWakeWord
                   ? () => session.mockWakeWord?.fire()
                   : clipNow

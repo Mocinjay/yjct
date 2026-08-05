@@ -1,7 +1,11 @@
 import { Camera } from 'react-native-vision-camera';
 import { SEGMENT_SECONDS } from '../config';
+import { createLogger } from '../core/Logger';
+import { ErrorCode } from '../core/errors';
 import type { Segment } from '../types';
 import type { DeviceVideoSource } from './DeviceVideoSource';
+
+const log = createLogger('mock-device');
 
 /**
  * Mock Device Kit: the phone's own camera stands in for the glasses feed so
@@ -64,8 +68,12 @@ export class MockDeviceSource implements DeviceVideoSource {
     if (this.recording) {
       try {
         await this.camera?.stopRecording();
-      } catch {
-        // session already torn down
+      } catch (err) {
+        log.expected(
+          'stopRecording failed — session already torn down',
+          err,
+          ErrorCode.CameraStartFailed,
+        );
       }
     }
     this.onSegment = null;

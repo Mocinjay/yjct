@@ -1,4 +1,4 @@
-// Base configuration for the Clipso target, Debug.
+// Base configuration for the Clypso target, Debug.
 //
 // CocoaPods normally owns `baseConfigurationReference`. This file takes it
 // over and #includes the generated Pods config instead — an arrangement
@@ -6,7 +6,7 @@
 // saying a custom base configuration is set; that is expected and harmless
 // as long as the #include below is kept.
 
-#include "../Pods/Target Support Files/Pods-Clipso/Pods-Clipso.debug.xcconfig"
+#include "../Pods/Target Support Files/Pods-Clypso/Pods-Clypso.debug.xcconfig"
 
 // Per-developer signing. Untracked — see Signing.xcconfig.example.
 // Optional include, so a missing file degrades to an Xcode signing error

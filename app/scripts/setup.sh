@@ -16,7 +16,7 @@ bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 fail() { printf '\033[31m%s\033[0m\n' "$1" >&2; exit 1; }
 ok()   { printf '  ok  %s\n' "$1"; }
 
-bold "Clipso setup"
+bold "Clypso setup"
 echo "in $APP_DIR"
 echo
 
@@ -64,7 +64,7 @@ if [ ! -f ios/Config/Signing.xcconfig ]; then
     DEVELOPMENT_TEAM           your 10-character Apple Developer Team ID
                                (Xcode > Settings > Accounts > your team;
                                the ID is in parentheses)
-    PRODUCT_BUNDLE_IDENTIFIER  must be unique to you, e.g. com.yourname.clipso
+    PRODUCT_BUNDLE_IDENTIFIER  must be unique to you, e.g. com.yourname.clypso
 
   Then run this script again.
 
@@ -72,32 +72,32 @@ EOF
   exit 1
 fi
 
-if grep -q "ABCDE12345\|com.yourname.clipso" ios/Config/Signing.xcconfig; then
+if grep -q "ABCDE12345\|com.yourname.clypso" ios/Config/Signing.xcconfig; then
   fail "ios/Config/Signing.xcconfig still has example placeholder values. Edit it, then re-run."
 fi
 ok "ios/Config/Signing.xcconfig configured"
 
-# The ClipsoWidgets extension derives its id as $(CLIPSO_BUNDLE_ID).ClipsoWidgets,
+# The ClypsoWidgets extension derives its id as $(CLYPSO_BUNDLE_ID).ClypsoWidgets,
 # because Apple requires an extension's bundle id to be prefixed by the app's.
 # A Signing.xcconfig written before that variable existed still builds the app,
-# but the widget gets ".ClipsoWidgets" and fails with a confusing profile error.
-if ! grep -q "^CLIPSO_BUNDLE_ID" ios/Config/Signing.xcconfig; then
-  fail "ios/Config/Signing.xcconfig predates the widget target: no CLIPSO_BUNDLE_ID.
+# but the widget gets ".ClypsoWidgets" and fails with a confusing profile error.
+if ! grep -q "^CLYPSO_BUNDLE_ID" ios/Config/Signing.xcconfig; then
+  fail "ios/Config/Signing.xcconfig predates the widget target: no CLYPSO_BUNDLE_ID.
 Replace the PRODUCT_BUNDLE_IDENTIFIER line with:
 
-    CLIPSO_BUNDLE_ID = <your existing bundle id>
-    PRODUCT_BUNDLE_IDENTIFIER = \$(CLIPSO_BUNDLE_ID)
+    CLYPSO_BUNDLE_ID = <your existing bundle id>
+    PRODUCT_BUNDLE_IDENTIFIER = \$(CLYPSO_BUNDLE_ID)
 
 See ios/Config/Signing.xcconfig.example."
 fi
-ok "CLIPSO_BUNDLE_ID set (the widget bundle id derives from it)"
+ok "CLYPSO_BUNDLE_ID set (the widget bundle id derives from it)"
 
 # Xcode writes DEVELOPMENT_TEAM / PRODUCT_BUNDLE_IDENTIFIER straight into the
 # pbxproj whenever you touch Signing & Capabilities in the UI. That commits one
 # developer's identity for everyone and silently overrides this xcconfig — the
 # exact regression this layout exists to prevent. Catch it before it ships.
-if grep -q "DEVELOPMENT_TEAM\|PRODUCT_BUNDLE_IDENTIFIER" ios/Clipso.xcodeproj/project.pbxproj; then
-  fail "Signing identity leaked into ios/Clipso.xcodeproj/project.pbxproj. Remove those lines; they belong only in ios/Config/Signing.xcconfig."
+if grep -q "DEVELOPMENT_TEAM\|PRODUCT_BUNDLE_IDENTIFIER" ios/Clypso.xcodeproj/project.pbxproj; then
+  fail "Signing identity leaked into ios/Clypso.xcodeproj/project.pbxproj. Remove those lines; they belong only in ios/Config/Signing.xcconfig."
 fi
 ok "no signing identity hardcoded in project.pbxproj"
 
@@ -137,7 +137,7 @@ cat <<'EOF'
 
   Open the WORKSPACE, never the project:
 
-      open ios/Clipso.xcworkspace
+      open ios/Clypso.xcworkspace
 
   Re-run this script after any pull that changes Podfile.lock or package-lock.json.
 EOF

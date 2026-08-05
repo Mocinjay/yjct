@@ -1,12 +1,12 @@
-import { captionStylePreset } from '../src/phase2/captionStyles';
-import type { TimedWord } from '../src/phase2/captionTimeline';
+import { captionStylePreset } from '../src/captions/captionStyles';
+import type { TimedWord } from '../src/captions/captionTimeline';
 import {
   TRANSITION_SECONDS,
   buildClimaxCaptionCues,
   mapWordsThroughEdit,
   outputDuration,
   planSegments,
-} from '../src/phase2/climaxEdit';
+} from '../src/editing/climaxEdit';
 
 const CLASSIC = captionStylePreset('classic').burn;
 

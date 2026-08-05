@@ -132,7 +132,7 @@ RCT_EXPORT_MODULE();
   static dispatch_queue_t queue;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
-    queue = dispatch_queue_create("com.clipso.climaxengine", DISPATCH_QUEUE_SERIAL);
+    queue = dispatch_queue_create("com.clypso.climaxengine", DISPATCH_QUEUE_SERIAL);
   });
   return queue;
 }

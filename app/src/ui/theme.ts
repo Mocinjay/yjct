@@ -1,5 +1,5 @@
 /**
- * Clipso design tokens — cinematic OLED dark, REC-red brand.
+ * Clypso design tokens — cinematic OLED dark, REC-red brand.
  * One system across every screen; no per-screen ad-hoc colors.
  */
 export const colors = {

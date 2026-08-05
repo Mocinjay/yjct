@@ -1,4 +1,4 @@
-import type { CaptionStyleKey } from './phase2/captionStyles';
+import type { CaptionStyleKey } from './captions/captionStyles';
 
 /**
  * Where a clip is in the auto-captioning pipeline.

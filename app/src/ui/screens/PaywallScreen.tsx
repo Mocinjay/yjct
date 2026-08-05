@@ -1,14 +1,16 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { entitlementStore } from '../../core/EntitlementStore';
 import { Button, Card } from '../components';
+import { useEntitlement } from '../hooks/useEntitlement';
 import type { RootStackParamList } from '../navigation';
 import { colors, radius, spacing, type } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Paywall'>;
 
 export function PaywallScreen({ navigation }: Props) {
+  const { unlock } = useEntitlement();
+
   const subscribe = () => {
     // TODO(billing): replace with StoreKit / Play Billing purchase +
     // receipt validation. Until then this is an explicit dev unlock so the
@@ -22,7 +24,7 @@ export function PaywallScreen({ navigation }: Props) {
         {
           text: 'Dev unlock',
           onPress: async () => {
-            await entitlementStore.devUnlock();
+            await unlock();
             navigation.goBack();
           },
         },
@@ -32,7 +34,7 @@ export function PaywallScreen({ navigation }: Props) {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-      <Text style={styles.kicker}>CLIPSO PRO</Text>
+      <Text style={styles.kicker}>CLYPSO PRO</Text>
       <Text style={styles.title}>Bigger moments.{'\n'}Zero busywork.</Text>
       <View style={styles.priceRow}>
         <Text style={styles.price}>$15</Text>

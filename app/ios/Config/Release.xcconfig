@@ -1,7 +1,7 @@
-// Base configuration for the Clipso target, Release.
+// Base configuration for the Clypso target, Release.
 // See Debug.xcconfig for why this file exists.
 
-#include "../Pods/Target Support Files/Pods-Clipso/Pods-Clipso.release.xcconfig"
+#include "../Pods/Target Support Files/Pods-Clypso/Pods-Clypso.release.xcconfig"
 
 // Per-developer signing. Untracked — see Signing.xcconfig.example.
 #include? "Signing.xcconfig"

@@ -1,6 +1,6 @@
 import { useIsFocused } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AppState,
   Pressable,
@@ -15,14 +15,14 @@ import {
   mwdatAvailable,
   mwdatEvents,
   mwdatIsSimulator,
-  type MWDATDiagnostics,
 } from '../../native/MWDATNative';
+import { GlassesPreview } from '../GlassesPreview';
+import { useGlassesDiagnostics } from '../hooks/useGlassesDiagnostics';
+import type { RootStackParamList } from '../navigation';
+import { colors, radius, spacing } from '../theme';
 
 /** Simulator dev builds run against MockDeviceKit glasses automatically. */
 const AUTO_MOCK = __DEV__ && mwdatIsSimulator();
-import { GlassesPreview } from '../GlassesPreview';
-import type { RootStackParamList } from '../navigation';
-import { colors, radius, spacing } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Connect'>;
 
@@ -33,8 +33,12 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Connect'>;
  * view before handing off to the Armed screen.
  */
 export function ConnectScreen({ navigation }: Props) {
-  const [diag, setDiag] = useState<MWDATDiagnostics | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    diagnostics: diag,
+    error,
+    setError,
+    refresh,
+  } = useGlassesDiagnostics();
   const [busy, setBusy] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const previewStarted = useRef(false);
@@ -65,31 +69,14 @@ export function ConnectScreen({ navigation }: Props) {
       .then(() => console.log('[connect] mock glasses paired'))
       .catch(e => setError(String(e?.message ?? e)))
       .finally(() => setMockReady(true));
-  }, []);
-
-  const refresh = useCallback(() => {
-    if (!mwdatAvailable()) {
-      setError('Meta glasses support is iOS-only for now.');
-      return;
-    }
-    MWDATNative.getDiagnostics()
-      .then(setDiag)
-      .catch(e => setError(String(e?.message ?? e)));
-  }, []);
+  }, [setError]);
 
   useEffect(() => {
-    refresh();
-    const timer = setInterval(refresh, 2000);
     if (!mwdatAvailable()) {
-      return () => clearInterval(timer);
+      return;
     }
     const emitter = mwdatEvents();
     const subs = [
-      emitter.addListener('MWDATRegistrationState', refresh),
-      emitter.addListener('MWDATDevices', refresh),
-      emitter.addListener('MWDATError', (e: { message: string }) =>
-        setError(e.message),
-      ),
       emitter.addListener(
         'MWDATStreamState',
         (e: { state: string; reason?: string }) => {
@@ -113,11 +100,8 @@ export function ConnectScreen({ navigation }: Props) {
         },
       ),
     ];
-    return () => {
-      clearInterval(timer);
-      subs.forEach(s => s.remove());
-    };
-  }, [refresh]);
+    return () => subs.forEach(s => s.remove());
+  }, [refresh, setError]);
 
   const registered = diag?.registration === 'registered';
   const device = diag?.devices[0] ?? null;
@@ -139,7 +123,7 @@ export function ConnectScreen({ navigation }: Props) {
       setPreviewEpoch(n => n + 1);
     });
     return () => sub.remove();
-  }, [registered, device, previewing]);
+  }, [registered, device, previewing, setError]);
 
   // As soon as we're registered with a device in sight, open the live view.
   useEffect(() => {
@@ -167,7 +151,7 @@ export function ConnectScreen({ navigation }: Props) {
         setBusy(null);
       }
     })();
-  }, [registered, device, mockReady, previewEpoch, isFocused]);
+  }, [registered, device, mockReady, previewEpoch, isFocused, setError]);
 
   // Once the glasses feed is live, go straight into the always-on live view.
   // Buffering starts there automatically — no separate "start recording" step.
@@ -219,7 +203,7 @@ export function ConnectScreen({ navigation }: Props) {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-      <Text style={styles.kicker}>● CLIPSO</Text>
+      <Text style={styles.kicker}>● CLYPSO</Text>
       <Text style={styles.title}>Link your{'\n'}Meta glasses.</Text>
 
       <View style={styles.previewBox}>
@@ -296,7 +280,7 @@ export function ConnectScreen({ navigation }: Props) {
 
       <Text style={styles.hint}>
         Glasses unfolded and on your head · paired in Meta AI · Developer Mode
-        on (Meta AI → Settings → App Info → tap App version 5×) · Clipso
+        on (Meta AI → Settings → App Info → tap App version 5×) · Clypso
         enabled under Meta AI → Settings → App connections.
         {streaming ? '\n\nOpening live view…' : ''}
       </Text>

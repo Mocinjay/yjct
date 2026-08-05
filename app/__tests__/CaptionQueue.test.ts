@@ -1,5 +1,5 @@
 import type { Clip } from '../src/types';
-import type { CaptioningProvider } from '../src/phase2/CaptioningProvider';
+import type { CaptioningProvider } from '../src/captioning/CaptioningProvider';
 
 const mockFiles = new Map<string, string>();
 
@@ -83,14 +83,16 @@ class FakeCaptioner implements CaptioningProvider {
 
 const mockCaptioner = new FakeCaptioner();
 
-jest.mock('../src/phase2/PublishService', () => ({
-  publishService: { getCaptioner: async () => mockCaptioner },
+// The queue asks captioning which provider to use. That used to mean importing
+// the publishing service, purely because the factory happened to live there.
+jest.mock('../src/captioning/resolveCaptioner', () => ({
+  resolveCaptioner: async () => mockCaptioner,
 }));
 
 import { clipStore, deliverablePath, isCaptioning } from '../src/core/ClipStore';
 import { entitlementStore } from '../src/core/EntitlementStore';
 import { settingsStore } from '../src/core/SettingsStore';
-import { captionQueue } from '../src/phase2/CaptionQueue';
+import { captionQueue } from '../src/captioning/CaptionQueue';
 
 const INDEX = '/docs/clips/index.json';
 

@@ -27,7 +27,7 @@ export class SettingsStore {
       } else {
         // One-time v1 → v2 migration: old defaults were the mock trigger
         // and the "fade away" phrase; the product default is now keyless
-        // speech recognition for "clipso". Explicit v2 choices stick.
+        // speech recognition for "clypso". Explicit v2 choices stick.
         const legacy = await AsyncStorage.getItem(LEGACY_KEY);
         const migrated: Settings = legacy
           ? { ...DEFAULT_SETTINGS, ...(JSON.parse(legacy) as Partial<Settings>) }

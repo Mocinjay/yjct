@@ -27,11 +27,11 @@ export function OnboardingScreen({ navigation }: Props) {
       ]}>
       <View style={styles.kickerRow}>
         <RecDot size={9} live={false} />
-        <Text style={styles.kicker}>CLIPSO</Text>
+        <Text style={styles.kicker}>CLYPSO</Text>
       </View>
-      <Text style={styles.hero}>Say{'\n'}Clipso.</Text>
+      <Text style={styles.hero}>Say{'\n'}Clypso.</Text>
       <Text style={styles.lede}>
-        The moment already happened — Clipso already has it. Say the word and
+        The moment already happened — Clypso already has it. Say the word and
         the last 30 seconds are saved. No buttons, no fumbling.
       </Text>
 
@@ -51,7 +51,7 @@ export function OnboardingScreen({ navigation }: Props) {
       </View>
 
       <Card>
-        <Text style={styles.cardTitle}>What Clipso will ask for</Text>
+        <Text style={styles.cardTitle}>What Clypso will ask for</Text>
         <Text style={styles.cardBody}>
           Camera and microphone — to fill the look-back buffer — and speech
           recognition, to hear the trigger phrase. You'll see the prompts the

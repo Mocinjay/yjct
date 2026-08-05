@@ -6,9 +6,12 @@ import { StatusBar } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { clipStore } from './src/core/ClipStore';
 import { entitlementStore } from './src/core/EntitlementStore';
-import { startJsProbe } from './src/debug/jsProbe';
-import { captionQueue } from './src/phase2/CaptionQueue';
-import { ClipsoSplash } from './src/ui/ClipsoSplash';
+import { createLogger } from './src/core/Logger';
+import { ErrorCode } from './src/core/errors';
+import { captionQueue } from './src/captioning/CaptionQueue';
+import { installNativeDiagnosticSink } from './src/native/diagnosticSink';
+import { ClypsoSplash } from './src/ui/ClypsoSplash';
+import { withErrorBoundary } from './src/ui/ErrorBoundary';
 import type { RootStackParamList } from './src/ui/navigation';
 import { ArmedScreen } from './src/ui/screens/ArmedScreen';
 import { ConnectScreen } from './src/ui/screens/ConnectScreen';
@@ -20,11 +23,27 @@ import { PublishScreen } from './src/ui/screens/PublishScreen';
 import { SettingsScreen } from './src/ui/screens/SettingsScreen';
 import { colors } from './src/ui/theme';
 
-// Temporary: see src/debug/jsProbe.ts. Started at module scope so it is running
-// before any screen mounts.
-startJsProbe();
+const log = createLogger('app');
+
+// Installed at module scope so a failure during the first render — before any
+// screen mounts — still reaches the on-device diagnostics file.
+installNativeDiagnosticSink();
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
+
+// Wrapped once at module scope, not inline in the navigator: a component
+// identity that changes every render would remount the screen — and remounting
+// Armed tears down capture.
+const Screens = {
+  Connect: withErrorBoundary('Connect', ConnectScreen),
+  Onboarding: withErrorBoundary('Onboarding', OnboardingScreen),
+  Library: withErrorBoundary('Library', LibraryScreen),
+  Armed: withErrorBoundary('Armed', ArmedScreen),
+  Player: withErrorBoundary('Player', PlayerScreen),
+  Settings: withErrorBoundary('Settings', SettingsScreen),
+  Paywall: withErrorBoundary('Paywall', PaywallScreen),
+  Publish: withErrorBoundary('Publish', PublishScreen),
+};
 
 const theme = {
   ...DarkTheme,
@@ -46,35 +65,51 @@ export default function App() {
   useEffect(() => {
     // Glasses-first boot: always land on Connect so the link to Meta AI is
     // established (or visibly broken) before anything else.
-    AsyncStorage.getItem(ONBOARDED_KEY).then(v =>
-      setInitialRoute(v ? 'Connect' : 'Onboarding'),
-    );
+    AsyncStorage.getItem(ONBOARDED_KEY)
+      .then(v => setInitialRoute(v ? 'Connect' : 'Onboarding'))
+      .catch(err => {
+        // Onboarding is recoverable; a null route is not. Leaving this
+        // unhandled meant a failed read hung the app on a blank screen
+        // forever, with no route ever set and nothing logged.
+        log.error('could not read onboarding flag', err, ErrorCode.StorageIndexUnreadable);
+        setInitialRoute('Onboarding');
+      });
   }, []);
 
   useEffect(() => {
     // Retention runs at launch as well as on Library focus, so expired clips
     // are reclaimed even if the user never opens the library this session.
-    clipStore.sweepExpired().catch(() => {});
+    clipStore
+      .sweepExpired()
+      .catch(err => log.error('expiry sweep failed', err, ErrorCode.StorageSweepFailed));
     // Captioning jobs cut short by the app being killed have no worker behind
     // them any more; without this they would show "Captioning…" forever.
-    captionQueue.resume().catch(() => {});
+    captionQueue
+      .resume()
+      .catch(err =>
+        log.error('could not resume captioning', err, ErrorCode.CaptionResumeFailed),
+      );
     // Upgrading rescues whatever was mid-countdown — Pro should never cost
     // someone a clip that was about to expire as they paid.
     return entitlementStore.subscribe(isPro => {
       if (isPro) {
-        clipStore.rescueExpiring().catch(() => {});
+        clipStore
+          .rescueExpiring()
+          .catch(err =>
+            log.error('could not rescue expiring clips', err, ErrorCode.StorageWriteFailed),
+          );
       }
     });
   }, []);
 
-  // Native launch storyboard → JS splash (paperclip → CLIPSO wordmark).
+  // Native launch storyboard → JS splash (paperclip → CLYPSO wordmark).
   // Unmount the splash only after it finishes so the animation never restarts
   // while AsyncStorage is still resolving the first route.
   if (!splashDone) {
     return (
       <SafeAreaProvider>
         <StatusBar barStyle="light-content" />
-        <ClipsoSplash onFinished={onSplashFinished} />
+        <ClypsoSplash onFinished={onSplashFinished} />
       </SafeAreaProvider>
     );
   }
@@ -103,42 +138,42 @@ export default function App() {
           }}>
           <Stack.Screen
             name="Connect"
-            component={ConnectScreen}
+            component={Screens.Connect}
             options={{ headerShown: false }}
           />
           <Stack.Screen
             name="Onboarding"
-            component={OnboardingScreen}
+            component={Screens.Onboarding}
             options={{ headerShown: false }}
           />
           <Stack.Screen
             name="Library"
-            component={LibraryScreen}
+            component={Screens.Library}
             options={{ headerShown: false }}
           />
           <Stack.Screen
             name="Armed"
-            component={ArmedScreen}
+            component={Screens.Armed}
             options={{ headerShown: false, gestureEnabled: false }}
           />
           <Stack.Screen
             name="Player"
-            component={PlayerScreen}
+            component={Screens.Player}
             options={{ title: '' }}
           />
           <Stack.Screen
             name="Settings"
-            component={SettingsScreen}
+            component={Screens.Settings}
             options={{ title: 'Settings' }}
           />
           <Stack.Screen
             name="Paywall"
-            component={PaywallScreen}
+            component={Screens.Paywall}
             options={{ presentation: 'modal', headerShown: false }}
           />
           <Stack.Screen
             name="Publish"
-            component={PublishScreen}
+            component={Screens.Publish}
             options={{ title: 'Publish' }}
           />
         </Stack.Navigator>

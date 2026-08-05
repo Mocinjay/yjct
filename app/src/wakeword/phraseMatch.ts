@@ -1,14 +1,22 @@
 /**
  * Wake-phrase matching over noisy speech-to-text output.
  *
- * Trigger word: "Clipso" (clip + so). Recognizers rarely know it, so they
- * split, soften, or substitute — "clip so", "clips oh", "clipse o", "calypso".
+ * Trigger word: "Clypso" (clip + so).
+ *
+ * **The spellings below are deliberately NOT the brand spelling.** They are
+ * what a recognizer *emits*, and a recognizer emits real-ish words: it has
+ * never seen "Clypso" and never will, so it produces "clipso", "clip so",
+ * "clips oh", "clipse o", "calypso". Matching on the brand's own spelling would
+ * match nothing. The same reasoning governs the `contextualStrings` hints in
+ * SpeechWakeWord.m — both were left on the phonetic family when the app was
+ * renamed, on purpose.
+ *
  * Match it alone or buried in a sentence.
  *
  * The brand is the ONLY trigger. "clip that / it / this / now" used to fire as
- * an alternate, which meant the retired "yo Jarvis, clip that" still worked and
- * — worse — that ordinary shop talk from the exact people this app is for
- * ("somebody clip that", "I want to clip that moment") silently burned a clip.
+ * an alternate, which meant a retired wake phrase still worked and — worse —
+ * that ordinary shop talk from the exact people this app is for ("somebody clip
+ * that", "I want to clip that moment") silently burned a clip.
  *
  * Deliberately does NOT fire on bare "clip" / "clips" (too common in video
  * talk) or on "eclipse" (contains "clipse" as a substring).

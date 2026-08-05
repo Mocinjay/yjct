@@ -1,4 +1,4 @@
-// Base configuration for the ClipsoWidgets extension, both configurations.
+// Base configuration for the ClypsoWidgets extension, both configurations.
 //
 // Deliberately does NOT include any Pods config: the widget extension links
 // only ActivityKit/SwiftUI/WidgetKit and must stay clear of React Native, or
@@ -8,10 +8,10 @@
 #include? "Signing.xcconfig"
 
 // Apple requires an extension's bundle id to be prefixed by the containing
-// app's. Derived from CLIPSO_BUNDLE_ID rather than PRODUCT_BUNDLE_IDENTIFIER
+// app's. Derived from CLYPSO_BUNDLE_ID rather than PRODUCT_BUNDLE_IDENTIFIER
 // because assigning that key in terms of itself is a recursive reference and
 // Xcode resolves it to empty.
-PRODUCT_BUNDLE_IDENTIFIER = $(CLIPSO_BUNDLE_ID).ClipsoWidgets
+PRODUCT_BUNDLE_IDENTIFIER = $(CLYPSO_BUNDLE_ID).ClypsoWidgets
 
 // An appex inherits NOTHING from its host app, so these must be set here or
 // the Info.plist substitutions resolve to empty strings and installd rejects

@@ -1,6 +1,6 @@
 import fixture from './fixtures/climax-parity.json';
-import type { TimedWord } from '../src/phase2/captionTimeline';
-import type { FeatureGrid, ScoringConfig } from '../src/phase2/climaxScoring';
+import type { TimedWord } from '../src/captions/captionTimeline';
+import type { FeatureGrid, ScoringConfig } from '../src/editing/climaxScoring';
 import {
   DEFAULT_SCORING,
   medianWordDuration,
@@ -13,7 +13,7 @@ import {
   weightsWithoutSpeech,
   windowMeans,
   wordsBetween,
-} from '../src/phase2/climaxScoring';
+} from '../src/editing/climaxScoring';
 
 /**
  * `climaxScoring.ts` is a port of server/climax/scoring_algorithm.py. The

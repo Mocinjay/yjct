@@ -1,6 +1,10 @@
 import RNFS from 'react-native-fs';
 import { FREE_RETENTION_HOURS } from '../config';
 import type { Clip } from '../types';
+import { createLogger } from './Logger';
+import { ErrorCode } from './errors';
+
+const log = createLogger('library');
 
 const CLIPS_DIR = `${RNFS.DocumentDirectoryPath}/clips`;
 const INDEX_PATH = `${CLIPS_DIR}/index.json`;
@@ -238,16 +242,41 @@ export function msUntilExpiry(clip: Clip, now = Date.now()): number | null {
 }
 
 async function readIndex(): Promise<Clip[]> {
+  // An index that is absent and an index that is unreadable produce the same
+  // empty library but mean opposite things: the first is every first launch,
+  // the second is data loss. Only the second is worth an error, so existence is
+  // checked rather than inferred from the read throwing.
+  let sawExistingFile = false;
+
   for (const path of [INDEX_PATH, BACKUP_PATH]) {
+    if (!(await RNFS.exists(path).catch(() => false))) {
+      continue;
+    }
+    sawExistingFile = true;
     try {
       const raw = await RNFS.readFile(path, 'utf8');
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         return parsed.map(normalizeClip);
       }
-    } catch {
-      // missing or corrupt — fall through to the backup, then to empty
+      throw new Error('index is not an array');
+    } catch (err) {
+      // Falling through to the backup silently is how a library could quietly
+      // halve itself, so the first failure is recorded even though it recovers.
+      log.error(
+        `clip index at ${path} exists but could not be read`,
+        err,
+        ErrorCode.StorageIndexUnreadable,
+      );
     }
+  }
+
+  if (sawExistingFile) {
+    log.error(
+      'clip index and backup both exist but neither could be read — library will render empty',
+      undefined,
+      ErrorCode.StorageIndexUnreadable,
+    );
   }
   return [];
 }
@@ -288,8 +317,8 @@ async function exists(path: string): Promise<boolean> {
 async function deleteIfExists(path: string): Promise<void> {
   try {
     await RNFS.unlink(path);
-  } catch {
-    // already gone
+  } catch (err) {
+    log.expected(`nothing to delete at ${path}`, err, ErrorCode.StorageDeleteFailed);
   }
 }
 

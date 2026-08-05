@@ -1,13 +1,13 @@
-import { CAPTION_STYLES, captionStylePreset } from '../src/phase2/captionStyles';
-import type { CaptionBurnStyle } from '../src/phase2/captionStyles';
-import type { CaptionCue, TimedWord } from '../src/phase2/captionTimeline';
+import { CAPTION_STYLES, captionStylePreset } from '../src/captions/captionStyles';
+import type { CaptionBurnStyle } from '../src/captions/captionStyles';
+import type { CaptionCue, TimedWord } from '../src/captions/captionTimeline';
 import {
   buildCaptionCues,
   chunkWords,
   layoutLines,
   splitPhrases,
   wordSpans,
-} from '../src/phase2/captionTimeline';
+} from '../src/captions/captionTimeline';
 
 /**
  * The on-device port of server/captioning/captions.py. These are the same

@@ -31,6 +31,7 @@ jest.mock('@react-native-async-storage/async-storage', () => {
 jest.mock('react-native-fs', () => ({
   DocumentDirectoryPath: '/docs',
   mkdir: jest.fn(async () => {}),
+  exists: jest.fn(async (p: string) => mockFiles.has(p)),
   readFile: jest.fn(async (p: string) => {
     const f = mockFiles.get(p);
     if (f === undefined) {
@@ -170,7 +171,7 @@ describe('CaptureController', () => {
     for (let i = 0; i < 4; i++) {
       source.emit();
     }
-    const wakeSegment = source.emit(); // "Clipso" lands 1.2s into this one
+    const wakeSegment = source.emit(); // "Clypso" lands 1.2s into this one
     source.emit(); // ...and another segment finishes while it transcribes
 
     wake.fire({ segmentPath: wakeSegment, endOffsetSec: 1.2 });

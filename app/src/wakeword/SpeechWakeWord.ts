@@ -1,11 +1,27 @@
 import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
+import { createLogger } from '../core/Logger';
+import { AppError, ErrorCode } from '../core/errors';
 import type { TranscriptWord } from '../native/SpeechWakeWordNative';
 import { SpeechWakeWordNative } from '../native/SpeechWakeWordNative';
 import { matchesWakePhrase } from './phraseMatch';
 import type { WakeDetection, WakeWordProvider } from './WakeWordProvider';
 
+const log = createLogger('wakeword');
+
 /** Ignore repeat detections for this long after one fires. */
 const DEBOUNCE_MS = 3500;
+
+/**
+ * Consecutive transcription failures before the recognizer is treated as
+ * broken rather than unlucky.
+ *
+ * A single failure is routine — the segment may have been evicted mid-request,
+ * or the audio may be silent. But every failure looks exactly like a quiet room
+ * from the outside, so without a counter a recognizer that rejects *every*
+ * segment presents as a wearer who simply never said the word. Three segments
+ * is ~15s of the trigger silently not working.
+ */
+const FAILURE_STREAK_ALARM = 3;
 
 /**
  * Seconds into the segment where the trigger phrase finishes, or null when the
@@ -30,7 +46,7 @@ function findPhraseEndSec(words: TranscriptWord[]): number | null {
 }
 
 /**
- * Keyless "Clipso" detection with the OS's own speech
+ * Keyless "Clypso" detection with the OS's own speech
  * recognition — no vendor, no API key, on-device where supported.
  *
  * iOS: rolling segment files are transcribed as they land (the audio is
@@ -46,17 +62,24 @@ export class SpeechWakeWord implements WakeWordProvider {
   private onDetected: ((detection?: WakeDetection) => void) | null = null;
   private lastFiredAt = 0;
   private subscription: { remove: () => void } | null = null;
+  private failureStreak = 0;
 
   async start(onDetected: (detection?: WakeDetection) => void): Promise<void> {
     const ok = await SpeechWakeWordNative.requestPermission();
-    console.log('[wakeword] start — speech permission granted:', ok);
+    log.info('starting', { permissionGranted: ok, platform: Platform.OS });
     if (!ok) {
-      throw new Error(
-        Platform.OS === 'ios'
-          ? 'Speech recognition permission denied — enable it in iOS Settings → Clipso.'
-          : 'Speech recognition is not available on this device.',
+      throw new AppError(
+        ErrorCode.WakeWordPermissionDenied,
+        'speech recognition permission denied',
+        {
+          userMessage:
+            Platform.OS === 'ios'
+              ? 'Speech recognition permission denied — enable it in iOS Settings → Clypso.'
+              : 'Speech recognition is not available on this device.',
+        },
       );
     }
+    this.failureStreak = 0;
     this.onDetected = onDetected;
     if (Platform.OS === 'android') {
       const emitter = new NativeEventEmitter(NativeModules.SpeechWakeWord);
@@ -73,7 +96,9 @@ export class SpeechWakeWord implements WakeWordProvider {
     if (Platform.OS === 'android') {
       this.subscription?.remove();
       this.subscription = null;
-      await SpeechWakeWordNative.stopListening().catch(() => {});
+      await SpeechWakeWordNative.stopListening().catch(err =>
+        log.expected('stopListening failed', err, ErrorCode.WakeWordStopFailed),
+      );
     }
   }
 
@@ -87,15 +112,30 @@ export class SpeechWakeWord implements WakeWordProvider {
     }
     SpeechWakeWordNative.transcribeFile(path)
       .then(({ transcript, words }) => {
+        this.failureStreak = 0;
         if (transcript) {
           this.handleTranscript(transcript, words, path);
         }
       })
       .catch(err => {
-        // Segment may have been evicted mid-transcription; quiet segments
-        // resolve empty. Not worth surfacing in the UI, but a recognizer that
-        // is rejecting every segment must not look like a quiet room.
-        console.log('[wakeword] transcribe failed:', String(err));
+        // One failure is routine: the segment may have been evicted
+        // mid-transcription, and quiet segments resolve empty. A streak is not
+        // — it means the trigger has silently stopped working, which from the
+        // outside is indistinguishable from nobody speaking.
+        this.failureStreak += 1;
+        if (this.failureStreak >= FAILURE_STREAK_ALARM) {
+          log.error(
+            `recognizer has rejected ${this.failureStreak} segments in a row — the wake word is not working`,
+            err,
+            ErrorCode.WakeWordTranscribeFailed,
+          );
+        } else {
+          log.expected(
+            'transcription failed for one segment',
+            err,
+            ErrorCode.WakeWordTranscribeFailed,
+          );
+        }
       });
   }
 
@@ -105,15 +145,13 @@ export class SpeechWakeWord implements WakeWordProvider {
     segmentPath?: string,
   ): void {
     const matched = matchesWakePhrase(transcript);
-    console.log(
-      `[wakeword] transcript "${transcript}" → ${matched ? 'HIT' : 'miss'}`,
-    );
+    log.debug(`transcript "${transcript}" → ${matched ? 'HIT' : 'miss'}`);
     if (!this.onDetected || !matched) {
       return;
     }
     const now = Date.now();
     if (now - this.lastFiredAt < DEBOUNCE_MS) {
-      console.log('[wakeword] HIT ignored — inside debounce window');
+      log.debug('HIT ignored — inside debounce window');
       return;
     }
     this.lastFiredAt = now;
@@ -126,7 +164,9 @@ export class SpeechWakeWord implements WakeWordProvider {
       this.onDetected();
       return;
     }
-    console.log(`[wakeword] phrase ends ${endOffsetSec.toFixed(2)}s into segment`);
+    log.info('wake phrase detected', {
+      endOffsetSec: Number(endOffsetSec.toFixed(2)),
+    });
     this.onDetected({ segmentPath, endOffsetSec });
   }
 }

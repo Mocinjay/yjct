@@ -1,4 +1,3 @@
-import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -15,17 +14,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Share from 'react-native-share';
 import { FREE_RETENTION_HOURS } from '../../config';
 import {
-  clipStore,
   deliverablePath,
   isCaptioning,
   isPending,
   msUntilExpiry,
 } from '../../core/ClipStore';
-import { entitlementStore } from '../../core/EntitlementStore';
-import { captionQueue } from '../../phase2/CaptionQueue';
 import type { Clip } from '../../types';
-import { bump } from '../../debug/jsProbe';
 import { ProBadge, RecDot, RecRings } from '../components';
+import { useClipActions } from '../hooks/useClipActions';
+import { useClips } from '../hooks/useClips';
+import { useEntitlement } from '../hooks/useEntitlement';
 import type { RootStackParamList } from '../navigation';
 import { colors, radius, spacing, type } from '../theme';
 
@@ -34,11 +32,16 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Library'>;
 type Tab = 'recent' | 'saved';
 
 export function LibraryScreen({ navigation }: Props) {
-  bump('render.Library');
-  const [clips, setClips] = useState<Clip[]>([]);
-  const [isPro, setIsPro] = useState(false);
+  // Expiry is evaluated here and at launch — iOS gives no dependable
+  // background execution, so a clip outlives its deadline until the user
+  // opens the app, and the sweep reports what it took rather than having
+  // clips disappear without explanation.
+  const { clips, expiredCount, dismissExpiredNotice } = useClips({
+    sweepOnFocus: true,
+  });
+  const { isPro, ready: entitlementReady } = useEntitlement();
+  const { save } = useClipActions();
   const [tab, setTab] = useState<Tab>('recent');
-  const [expiredCount, setExpiredCount] = useState(0);
   // Drives the countdown chips; the clips themselves do not change every tick.
   const [now, setNow] = useState(() => Date.now());
   /** Set once the user picks a tab, so the Pro default never overrides them. */
@@ -50,36 +53,16 @@ export function LibraryScreen({ navigation }: Props) {
     setTab(next);
   }, []);
 
-  const reload = useCallback(() => {
-    clipStore.list().then(setClips);
-  }, []);
-
-  // Expiry is evaluated here and at launch — iOS gives no dependable
-  // background execution, so a clip outlives its deadline until the user
-  // opens the app, and the sweep reports what it took rather than having
-  // clips disappear without explanation.
-  useFocusEffect(
-    useCallback(() => {
-      clipStore.sweepExpired().then(expired => {
-        if (expired.length > 0) {
-          setExpiredCount(expired.length);
-        }
-        reload();
-      });
-    }, [reload]),
-  );
-
-  useEffect(() => clipStore.subscribe(reload), [reload]);
+  // Pro clips are born saved, so Recent would always be empty for them. Gated
+  // on `ready` rather than on `isPro` alone: before the stored value resolves
+  // it reads false, and acting on that would land a Pro user on the one tab
+  // that is always empty for them.
   useEffect(() => {
-    entitlementStore.isPro().then(pro => {
-      setIsPro(pro);
-      // Pro clips are born saved, so Recent would always be empty for them.
-      if (pro && !tabChosen.current) {
-        setTab('saved');
-      }
-    });
-    return entitlementStore.subscribe(setIsPro);
-  }, []);
+    if (entitlementReady && isPro && !tabChosen.current) {
+      setTab('saved');
+    }
+  }, [entitlementReady, isPro]);
+
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(t);
@@ -95,7 +78,7 @@ export function LibraryScreen({ navigation }: Props) {
       <View style={styles.brandRow}>
         <View style={styles.brand}>
           <RecDot size={9} live={false} />
-          <Text style={styles.brandName}>Clipso</Text>
+          <Text style={styles.brandName}>Clypso</Text>
           {isPro ? (
             <ProBadge />
           ) : (
@@ -116,7 +99,7 @@ export function LibraryScreen({ navigation }: Props) {
         <Text style={styles.title}>Your clips</Text>
         <Text style={styles.subtitle}>
           {clips.length === 0
-            ? 'say “Clipso”'
+            ? 'say “Clypso”'
             : `${saved.length} saved · ${recent.length} temporary${
                 captioning > 0 ? ` · ${captioning} captioning` : ''
               }`}
@@ -137,7 +120,7 @@ export function LibraryScreen({ navigation }: Props) {
       </View>
 
       {expiredCount > 0 && (
-        <Pressable onPress={() => setExpiredCount(0)} style={styles.notice}>
+        <Pressable onPress={dismissExpiredNotice} style={styles.notice}>
           <Text style={styles.noticeText}>
             {expiredCount} unsaved {expiredCount === 1 ? 'clip' : 'clips'} expired
             and {expiredCount === 1 ? 'was' : 'were'} deleted. Tap to dismiss.
@@ -181,7 +164,7 @@ export function LibraryScreen({ navigation }: Props) {
               now={now}
               onOpen={() => navigation.navigate('Player', { clip: item })}
               onShare={() => shareClip(item)}
-              onSave={() => clipStore.save(item.id)}
+              onSave={() => save(item.id)}
             />
           )}
         />
@@ -196,7 +179,7 @@ export function LibraryScreen({ navigation }: Props) {
           <View style={styles.recordDot} />
           <View>
             <Text style={styles.recordLabel}>Go live</Text>
-            <Text style={styles.recordSub}>“Clipso”</Text>
+            <Text style={styles.recordSub}>“Clypso”</Text>
           </View>
         </Pressable>
       </View>
@@ -283,6 +266,7 @@ function ClipCard({
  * what they are looking at is not the finished cut yet.
  */
 function CaptionOverlay({ clip }: { clip: Clip }) {
+  const { recaption } = useClipActions();
   if (isCaptioning(clip)) {
     return (
       <View style={styles.captionScrim} pointerEvents="none">
@@ -296,7 +280,7 @@ function CaptionOverlay({ clip }: { clip: Clip }) {
   if (clip.captionState === 'failed') {
     return (
       <Pressable
-        onPress={() => captionQueue.retry(clip.id)}
+        onPress={() => recaption(clip.id)}
         hitSlop={6}
         style={styles.captionFailed}>
         <Text style={styles.captionFailedText}>Captions failed · retry</Text>

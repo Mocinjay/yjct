@@ -1,4 +1,4 @@
-import { DEFAULT_CAPTION_STYLE } from './phase2/captionStyles';
+import { DEFAULT_CAPTION_STYLE } from './captions/captionStyles';
 import type { Settings } from './types';
 
 export const BUFFER_SECONDS_MIN = 30;
@@ -30,7 +30,7 @@ export const FREE_RETENTION_HOURS = 24;
  * The product's trigger word, as shown to the wearer. Say it and the
  * look-back window is saved. Detection lives in wakeword/phraseMatch.ts.
  */
-export const WAKE_PHRASE = 'Clipso';
+export const WAKE_PHRASE = 'Clypso';
 
 /**
  * Padding kept after the trigger word finishes when ending a clip on it.
@@ -46,7 +46,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // but the product records exclusively from Meta glasses.
   deviceKind: 'mwdat',
   wakeWord: {
-    // Keyless OS speech recognition — say "Clipso" with zero setup, no
+    // Keyless OS speech recognition — say "Clypso" with zero setup, no
     // vendor key, no model download.
     provider: 'speech',
   },

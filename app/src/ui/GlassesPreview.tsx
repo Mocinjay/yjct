@@ -1,6 +1,8 @@
 import { useIsFocused } from '@react-navigation/native';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Image, StyleSheet, Text, View, type ViewStyle } from 'react-native';
+import { createLogger } from '../core/Logger';
+import { ErrorCode } from '../core/errors';
 import {
   MWDATNative,
   mwdatAvailable,
@@ -9,6 +11,8 @@ import {
   type MWDATStreamHealthEvent,
 } from '../native/MWDATNative';
 import { colors } from './theme';
+
+const log = createLogger('glasses-preview');
 
 /**
  * Live wearer's-eye view: renders the throttled JPEG preview frames the
@@ -35,6 +39,12 @@ const STALE_SECONDS = 2;
 export function GlassesPreview({ style }: { style?: ViewStyle }) {
   const [frameUri, setFrameUri] = useState<string | null>(null);
   const [stalledFor, setStalledFor] = useState(0);
+  /**
+   * Health events arrive once a second, so logging on every stalled one would
+   * be a line per second for as long as the link is down. Log the edges — went
+   * stale, came back — which is what actually reads as an incident.
+   */
+  const wasStalled = useRef(false);
   // Focus, NOT mount. React Navigation keeps every screen below the top of the
   // stack mounted so that going back restores its state, so ArmedScreen — and
   // its preview — is still mounted while the Library and the clip player sit on
@@ -52,7 +62,9 @@ export function GlassesPreview({ style }: { style?: ViewStyle }) {
     }
     previewViewers += 1;
     if (previewViewers === 1) {
-      MWDATNative.setPreviewEnabled(true).catch(() => {});
+      MWDATNative.setPreviewEnabled(true).catch(err =>
+        log.error('could not enable preview', err, ErrorCode.GlassesPreviewFailed),
+      );
     }
     const emitter = mwdatEvents();
     const sub = emitter.addListener(
@@ -67,9 +79,18 @@ export function GlassesPreview({ style }: { style?: ViewStyle }) {
     const healthSub = emitter.addListener(
       'MWDATStreamHealth',
       (event: MWDATStreamHealthEvent) => {
-        setStalledFor(
-          event.secondsSinceFrame >= STALE_SECONDS ? event.secondsSinceFrame : 0,
-        );
+        const stalled = event.secondsSinceFrame >= STALE_SECONDS;
+        if (stalled && !wasStalled.current) {
+          log.warn('glasses feed stalled — no frames arriving', {
+            secondsSinceFrame: event.secondsSinceFrame,
+            fps: event.fps,
+            recording: event.recording,
+          });
+        } else if (!stalled && wasStalled.current) {
+          log.info('glasses feed recovered', { fps: event.fps });
+        }
+        wasStalled.current = stalled;
+        setStalledFor(stalled ? event.secondsSinceFrame : 0);
       },
     );
     return () => {
@@ -82,7 +103,13 @@ export function GlassesPreview({ style }: { style?: ViewStyle }) {
         // left a frame where emission was off and the handoff looked dead.
         setTimeout(() => {
           if (previewViewers === 0) {
-            MWDATNative.setPreviewEnabled(false).catch(() => {});
+            MWDATNative.setPreviewEnabled(false).catch(err =>
+              log.expected(
+                'could not disable preview',
+                err,
+                ErrorCode.GlassesPreviewFailed,
+              ),
+            );
           }
         }, 0);
       }

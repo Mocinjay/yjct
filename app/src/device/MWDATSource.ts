@@ -1,5 +1,7 @@
 import type { EmitterSubscription } from 'react-native';
 import { SEGMENT_SECONDS } from '../config';
+import { createLogger } from '../core/Logger';
+import { ErrorCode } from '../core/errors';
 import type { Segment } from '../types';
 import {
   MWDATNative,
@@ -10,9 +12,11 @@ import {
 } from '../native/MWDATNative';
 import type { DeviceVideoSource } from './DeviceVideoSource';
 
+const log = createLogger('mwdat-source');
+
 /**
  * Meta Wearables Device Access Toolkit source — Ray-Ban / Oakley Meta glasses
- * camera session via the native MWDATBridge (ios/Clipso/MWDATBridge.swift).
+ * camera session via the native MWDATBridge (ios/Clypso/MWDATBridge.swift).
  *
  * The native side opens a wearables session, streams glasses video, muxes in
  * mic audio (glasses Bluetooth mic while connected), and reports fixed-length
@@ -80,8 +84,12 @@ export class MWDATSource implements DeviceVideoSource {
       // A full session teardown here is what made the glasses play their stop
       // chime and refuse to re-arm when Live remounted or React cleaned up.
       await MWDATNative.stopRecording();
-    } catch {
-      // native side already torn down
+    } catch (err) {
+      log.expected(
+        'stopRecording failed — native side already torn down',
+        err,
+        ErrorCode.GlassesTeardownFailed,
+      );
     }
   }
 

@@ -10,7 +10,11 @@ import type { Clip, Segment } from '../types';
 import type { WakeDetection, WakeWordProvider } from '../wakeword/WakeWordProvider';
 import { clipStore } from './ClipStore';
 import { entitlementStore } from './EntitlementStore';
+import { createLogger } from './Logger';
+import { AppError, ErrorCode } from './errors';
 import { SegmentRingBuffer } from './SegmentRingBuffer';
+
+const log = createLogger('capture');
 
 export type CaptureState =
   | 'idle'
@@ -47,7 +51,7 @@ export interface CaptureStatus {
   lastClip?: Clip;
   /**
    * How many clips have been saved since this armed session started, so the
-   * wearer can hear "Clipso" land and see *which* one it was — "Save #3" —
+   * wearer can hear "Clypso" land and see *which* one it was — "Save #3" —
    * without opening the library. Resets on every `arm()`.
    */
   sessionClipCount?: number;
@@ -57,7 +61,7 @@ export interface CaptureStatus {
  * The core loop:
  *
  *   armed      — rolling buffer keeps the last N seconds, evicting old files
- *   "clipso"   — the wake word AUTO-SAVES the look-back window as a clip
+ *   "clypso"   — the wake word AUTO-SAVES the look-back window as a clip
  *   extended   — the manual REC button instead pins the window and keeps
  *                recording until stopped (stop button / wake phrase /
  *                safety cap): [start − N seconds … stop]
@@ -88,7 +92,12 @@ export class CaptureController {
     private onClipSaved?: (clip: Clip) => void,
   ) {
     this.buffer = new SegmentRingBuffer(windowSeconds, seg => {
-      RNFS.unlink(seg.path).catch(() => {});
+      // Routine: the file is often already gone because a save took ownership
+      // of it. Worth a debug line only — but a storm of these means eviction is
+      // racing the stitcher, which is not routine at all.
+      RNFS.unlink(seg.path).catch(err =>
+        log.expected('could not delete evicted segment', err, ErrorCode.CaptureSegmentCleanupFailed),
+      );
     });
   }
 
@@ -105,33 +114,69 @@ export class CaptureController {
       await this.source.prepare();
       await this.source.start(
         seg => this.onSegment(seg),
-        err => this.setStatus({ ...this.status, state: 'error', lastError: err.message }),
+        // The source's own error channel: this is how a glasses link that drops
+        // mid-session reports itself, so it is the single most important log
+        // line in the app.
+        err => this.fail('glasses feed failed', err, ErrorCode.GlassesSessionFailed),
       );
       await this.wakeWord.start(detection => {
         this.onWakePhrase(detection).catch(err =>
-          this.setStatus({ ...this.status, state: 'error', lastError: String(err) }),
+          this.fail('wake phrase handling failed', err, ErrorCode.CaptureSaveFailed),
         );
       });
       this.armedSince = Date.now();
+      log.info('armed', {
+        source: this.source.kind,
+        wakeWord: this.wakeWord.name,
+        windowSeconds: this.windowSeconds,
+      });
       this.setStatus({ ...this.status, state: 'armed' });
     } catch (err) {
+      const wrapped = log.error('could not arm', err, ErrorCode.CaptureArmFailed);
       await this.disarm();
       this.setStatus({
         state: 'error',
         bufferedSeconds: 0,
-        lastError: err instanceof Error ? err.message : String(err),
+        lastError: wrapped.userMessage,
       });
-      throw err;
+      throw wrapped;
     }
   }
 
   async disarm(): Promise<void> {
     this.clearMaxRecordingTimer();
-    await this.wakeWord.stop().catch(() => {});
-    await this.source.stop().catch(() => {});
+    // Both teardowns are attempted even if the first fails: leaving the camera
+    // or the recognizer running because its sibling threw is how a "disarmed"
+    // session kept draining the battery.
+    await this.wakeWord
+      .stop()
+      .catch(err =>
+        log.expected('wake word did not stop cleanly', err, ErrorCode.WakeWordStopFailed),
+      );
+    await this.source
+      .stop()
+      .catch(err =>
+        log.expected('source did not stop cleanly', err, ErrorCode.GlassesTeardownFailed),
+      );
     this.buffer.clear();
     this.armedSince = null;
+    log.info('disarmed');
     this.setStatus({ state: 'idle', bufferedSeconds: 0 });
+  }
+
+  /**
+   * Push the controller into `error` and record it once, in one place. Every
+   * asynchronous failure path used to inline its own `setStatus`, and each
+   * inlined a slightly different shape — one used `err.message`, one
+   * `String(err)`, and neither logged.
+   */
+  private fail(message: string, cause: unknown, code: ErrorCode): void {
+    const wrapped = log.error(message, cause, code);
+    this.setStatus({
+      ...this.status,
+      state: 'error',
+      lastError: wrapped.userMessage,
+    });
   }
 
   /**
@@ -181,13 +226,23 @@ export class CaptureController {
         segments = this.buffer.flush();
       }
       if (segments.length === 0) {
-        throw new Error('Buffer is empty — nothing to clip yet.');
+        throw new AppError(
+          ErrorCode.CaptureBufferEmpty,
+          'buffer empty at trigger — nothing to clip yet',
+          { context: { triggeredBy: detection ? 'wake-word' : 'manual' } },
+        );
       }
       const clip = await this.stitch(segments, trimEndSec);
       await clipStore.add(clip);
       this.announceSaved(clip);
-      await Promise.all(segments.map(s => RNFS.unlink(s.path).catch(() => {})));
+      await this.releaseSegments(segments);
       this.sessionClipCount += 1;
+      log.info('clip saved', {
+        id: clip.id,
+        durationSec: clip.durationSec,
+        segments: segments.length,
+        endedOnWakeWord: trimEndSec > 0,
+      });
       this.setStatus({
         state: 'armed',
         // Segments recorded after the wake word are kept as the next clip's
@@ -198,10 +253,13 @@ export class CaptureController {
       });
       return clip;
     } catch (err) {
+      // Back to `armed`, not `error`: capture is still running and the next
+      // trigger will work. Only the save that just failed is lost.
+      const wrapped = log.error('could not save clip', err, ErrorCode.CaptureStitchFailed);
       this.setStatus({
         ...this.status,
         state: 'armed',
-        lastError: err instanceof Error ? err.message : String(err),
+        lastError: wrapped.userMessage,
       });
       return null;
     } finally {
@@ -243,13 +301,21 @@ export class CaptureController {
       await this.source.cut();
       const segments = this.buffer.flushFromPin();
       if (segments.length === 0) {
-        throw new Error('Nothing recorded — buffer was empty.');
+        throw new AppError(
+          ErrorCode.CaptureBufferEmpty,
+          'extended recording ended with an empty buffer',
+        );
       }
       const clip = await this.stitch(segments);
       await clipStore.add(clip);
       this.announceSaved(clip);
-      await Promise.all(segments.map(s => RNFS.unlink(s.path).catch(() => {})));
+      await this.releaseSegments(segments);
       this.sessionClipCount += 1;
+      log.info('extended clip saved', {
+        id: clip.id,
+        durationSec: clip.durationSec,
+        segments: segments.length,
+      });
       this.setStatus({
         state: 'armed',
         bufferedSeconds: 0,
@@ -258,16 +324,40 @@ export class CaptureController {
       });
       return clip;
     } catch (err) {
+      const wrapped = log.error(
+        'could not save extended clip',
+        err,
+        ErrorCode.CaptureStitchFailed,
+      );
       this.setStatus({
         ...this.status,
         state: 'armed',
         recordingSince: undefined,
-        lastError: err instanceof Error ? err.message : String(err),
+        lastError: wrapped.userMessage,
       });
       return null;
     } finally {
       this.saving = false;
     }
+  }
+
+  /**
+   * The clip owns these frames now, so the segment files are redundant. Failing
+   * to delete one wastes disk but breaks nothing, and it must never fail the
+   * save that already succeeded.
+   */
+  private async releaseSegments(segments: Segment[]): Promise<void> {
+    await Promise.all(
+      segments.map(s =>
+        RNFS.unlink(s.path).catch(err =>
+          log.expected(
+            'could not delete consumed segment',
+            err,
+            ErrorCode.CaptureSegmentCleanupFailed,
+          ),
+        ),
+      ),
+    );
   }
 
   private async stitch(segments: Segment[], trimEndSec = 0): Promise<Clip> {
@@ -312,7 +402,9 @@ export class CaptureController {
       return;
     }
     // Never awaited: the tone is confirmation, not part of saving the clip.
-    this.source.chime?.().catch(() => {});
+    this.source
+      .chime?.()
+      .catch(err => log.expected('chime failed', err, ErrorCode.GlassesSessionFailed));
   }
 
   private announceSaved(clip: Clip): void {
@@ -320,8 +412,10 @@ export class CaptureController {
     this.chime();
     try {
       this.onClipSaved?.(clip);
-    } catch {
-      // captioning is best-effort; the clip is already safe
+    } catch (err) {
+      // Captioning is best-effort and the clip is already safe — but a hook
+      // that throws every time is a broken pipeline, not a quirk.
+      log.error('post-capture hook failed', err, ErrorCode.CaptionJobFailed);
     }
   }
 

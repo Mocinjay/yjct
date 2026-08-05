@@ -1,5 +1,5 @@
 {
-  "name": "clipso",
+  "name": "clypso",
   "version": "0.0.1",
   "private": true,
   "scripts": {
@@ -11,7 +11,6 @@
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^3.1.1",
-    "@react-native/new-app-screen": "0.86.0",
     "@react-navigation/native": "^7.3.6",
     "@react-navigation/native-stack": "^7.17.8",
     "react": "19.2.3",

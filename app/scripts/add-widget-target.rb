@@ -1,4 +1,4 @@
-# Adds the ClipsoWidgets Live Activity extension target to Clipso.xcodeproj.
+# Adds the ClypsoWidgets Live Activity extension target to Clypso.xcodeproj.
 #
 # Uses the xcodeproj gem (the same library CocoaPods drives) rather than hand
 # editing project.pbxproj, so the object graph, UUIDs and build phases stay
@@ -11,11 +11,11 @@
 require 'xcodeproj'
 
 ROOT = File.expand_path('..', __dir__)
-PROJECT = File.join(ROOT, 'ios', 'Clipso.xcodeproj')
-TARGET_NAME = 'ClipsoWidgets'
+PROJECT = File.join(ROOT, 'ios', 'Clypso.xcodeproj')
+TARGET_NAME = 'ClypsoWidgets'
 
 project = Xcodeproj::Project.open(PROJECT)
-app = project.targets.find { |t| t.name == 'Clipso' } or abort 'Clipso target not found'
+app = project.targets.find { |t| t.name == 'Clypso' } or abort 'Clypso target not found'
 
 if project.targets.any? { |t| t.name == TARGET_NAME }
   puts "#{TARGET_NAME} already exists — nothing to do."
@@ -25,22 +25,22 @@ end
 # --- new app-target sources ------------------------------------------------
 # The Live Activity bridge and the shared attributes type are new files, so
 # they have to join the app target before anything can reference them.
-app_group = project.main_group.find_subpath('Clipso', true)
+app_group = project.main_group.find_subpath('Clypso', true)
 %w[
-  ClipsoActivityAttributes.swift
+  ClypsoActivityAttributes.swift
   LiveActivityBridge.swift
   LiveActivityBridge.m
 ].each do |name|
   next if app.source_build_phase.files.any? { |f| f.file_ref&.path&.end_with?(name) }
 
-  # The "Clipso" group carries no path of its own, so every child spells out
-  # the "Clipso/" prefix itself (see the existing MWDATBridge.swift ref).
+  # The "Clypso" group carries no path of its own, so every child spells out
+  # the "Clypso/" prefix itself (see the existing MWDATBridge.swift ref).
   # A bare filename resolves against SOURCE_ROOT — i.e. ios/ — and the build
   # fails with "Build input file cannot be found".
-  path = "Clipso/#{name}"
+  path = "Clypso/#{name}"
   file = app_group.files.find { |f| f.path == path } || app_group.new_file(path)
   app.add_file_references([file])
-  puts "  + Clipso: #{name}"
+  puts "  + Clypso: #{name}"
 end
 
 # --- the target ------------------------------------------------------------
@@ -62,7 +62,7 @@ widgets_config = project.new_file('Config/Widgets.xcconfig')
 widget.build_configurations.each do |config|
   config.base_configuration_reference = widgets_config
   config.build_settings.merge!(
-    'INFOPLIST_FILE' => 'ClipsoWidgets/Info.plist',
+    'INFOPLIST_FILE' => 'ClypsoWidgets/Info.plist',
     'PRODUCT_NAME' => '$(TARGET_NAME)',
     'SWIFT_VERSION' => '5.0',
     'TARGETED_DEVICE_FAMILY' => '1,2',
@@ -83,7 +83,7 @@ group = project.main_group.find_subpath(TARGET_NAME, true)
 group.set_source_tree('SOURCE_ROOT')
 group.set_path(TARGET_NAME)
 
-%w[ClipsoWidgetsBundle.swift ClipsoLiveActivity.swift].each do |name|
+%w[ClypsoWidgetsBundle.swift ClypsoLiveActivity.swift].each do |name|
   file = group.new_file(name)
   widget.add_file_references([file])
 end
@@ -92,9 +92,9 @@ end
 # into BOTH. ActivityKit matches app and extension by type name; two separate
 # declarations would drift and silently stop matching.
 attributes = app.source_build_phase.files.find do |f|
-  f.file_ref&.path&.end_with?('ClipsoActivityAttributes.swift')
+  f.file_ref&.path&.end_with?('ClypsoActivityAttributes.swift')
 end
-abort 'ClipsoActivityAttributes.swift is not in the Clipso target' unless attributes
+abort 'ClypsoActivityAttributes.swift is not in the Clypso target' unless attributes
 widget.add_file_references([attributes.file_ref])
 
 # Info.plist is referenced but never compiled.
@@ -116,4 +116,4 @@ embed.files.last.settings = { 'ATTRIBUTES' => ['RemoveHeadersOnCopy'] }
 app.add_dependency(widget)
 
 project.save
-puts "Added #{TARGET_NAME} and embedded it in Clipso."
+puts "Added #{TARGET_NAME} and embedded it in Clypso."

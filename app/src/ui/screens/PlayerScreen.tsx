@@ -1,6 +1,6 @@
 import { useIsFocused } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -11,13 +11,13 @@ import {
   View,
 } from 'react-native';
 import Video from 'react-native-video';
-import { clipStore, deliverablePath, isCaptioning } from '../../core/ClipStore';
-import { entitlementStore } from '../../core/EntitlementStore';
-import { bump } from '../../debug/jsProbe';
-import { captionQueue } from '../../phase2/CaptionQueue';
-import { captionStyleLabel } from '../../phase2/captionStyles';
+import { deliverablePath, isCaptioning } from '../../core/ClipStore';
+import { captionStyleLabel } from '../../captions/captionStyles';
 import type { Clip } from '../../types';
 import { Button, ProBadge } from '../components';
+import { useClipActions } from '../hooks/useClipActions';
+import { useClip } from '../hooks/useClips';
+import { useEntitlement } from '../hooks/useEntitlement';
 import type { RootStackParamList } from '../navigation';
 import { formatDuration, relativeDate, shareClip } from './LibraryScreen';
 import { colors, radius, spacing, type } from '../theme';
@@ -25,17 +25,21 @@ import { colors, radius, spacing, type } from '../theme';
 type Props = NativeStackScreenProps<RootStackParamList, 'Player'>;
 
 export function PlayerScreen({ route, navigation }: Props) {
-  bump('render.Player');
   const { clip: openedClip } = route.params;
   // The route param is a snapshot from the moment the card was tapped. The
   // captioning job for this clip may still be running, so the live copy is
   // read from the store instead — that is what makes the state below move
   // while the screen is open.
-  const [clip, setClip] = useState(openedClip);
+  //
+  // Falling back to the snapshot matters on the way out: deleting a clip
+  // removes it from the store a frame before the screen unwinds, and a null
+  // here would blank the player mid-navigation.
+  const clip = useClip(openedClip.id) ?? openedClip;
   const [name, setName] = useState(openedClip.name);
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(openedClip.name);
-  const [isPro, setIsPro] = useState(false);
+  const { isPro } = useEntitlement();
+  const { rename, remove, recaption: queueRecaption } = useClipActions();
 
   // Our own transport, because `controls` cannot be used — see the <Video>
   // below. `userPaused` is ONLY ever set by a tap. Nothing the player emits
@@ -60,23 +64,6 @@ export function PlayerScreen({ route, navigation }: Props) {
   // screen mounted underneath, so without this the video kept decoding in the
   // background.
   const isFocused = useIsFocused();
-
-  useEffect(() => {
-    entitlementStore.isPro().then(setIsPro);
-    return entitlementStore.subscribe(setIsPro);
-  }, []);
-
-  useEffect(() => {
-    const sync = () =>
-      clipStore.list().then(all => {
-        const live = all.find(c => c.id === openedClip.id);
-        if (live) {
-          setClip(live);
-        }
-      });
-    sync();
-    return clipStore.subscribe(sync);
-  }, [openedClip.id]);
 
   const togglePlayback = () => {
     if (atEnd) {
@@ -106,13 +93,13 @@ export function PlayerScreen({ route, navigation }: Props) {
       navigation.navigate('Paywall');
       return;
     }
-    await captionQueue.retry(clip.id);
+    await queueRecaption(clip.id);
   };
 
   const saveRename = async () => {
     const trimmed = draft.trim();
     if (trimmed) {
-      await clipStore.rename(clip.id, trimmed);
+      await rename(clip.id, trimmed);
       setName(trimmed);
     }
     setRenaming(false);
@@ -125,7 +112,7 @@ export function PlayerScreen({ route, navigation }: Props) {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
-          await clipStore.remove(clip.id);
+          await remove(clip.id);
           if (navigation.canGoBack()) {
             navigation.goBack();
           } else {
@@ -164,20 +151,14 @@ export function PlayerScreen({ route, navigation }: Props) {
           // this, so there is no cycle.
           paused={!isFocused || userPaused}
           onLoad={(d: { duration: number }) => {
-            bump('video.onLoad');
             setProgress({ current: 0, total: d.duration });
           }}
           onEnd={() => {
-            bump('video.onEnd');
             setAtEnd(true);
           }}
           onProgress={(d: { currentTime: number; seekableDuration: number }) => {
-            bump('video.onProgress');
             setProgress({ current: d.currentTime, total: d.seekableDuration });
           }}
-          onBuffer={() => bump('video.onBuffer')}
-          onError={() => bump('video.onError')}
-          onPlaybackStateChanged={() => bump('video.onPlaybackStateChanged')}
           resizeMode="contain"
           ignoreSilentSwitch="ignore"
           playInBackground={false}

@@ -4,7 +4,7 @@ import { NativeModules, Platform } from 'react-native';
  * Lock Screen / Dynamic Island "LIVE" activity.
  *
  * Exists so the wearer can leave the app — the normal case, phone pocketed —
- * and still see that Clipso is armed and how many clips have landed.
+ * and still see that Clypso is armed and how many clips have landed.
  *
  * Every call is best-effort: the activity is a convenience, and nothing about
  * capture should fail because the OS declined to show it (too old, disabled in

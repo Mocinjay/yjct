@@ -10,18 +10,17 @@ import {
 } from 'react-native';
 import { FREE_BUFFER_SECONDS_MAX, WAKE_PHRASE } from '../../config';
 import { MWDATNative, mwdatAvailable, mwdatEvents } from '../../native/MWDATNative';
-import { entitlementStore } from '../../core/EntitlementStore';
-import { settingsStore } from '../../core/SettingsStore';
-import type { ConnectorConfig } from '../../phase2/ConnectorConfig';
-import { connectorConfigStore } from '../../phase2/ConnectorConfig';
+import type { ConnectorConfig } from '../../core/ConnectorConfig';
+import { connectorConfigStore } from '../../core/ConnectorConfig';
 import type {
   CaptionPreview,
   CaptionStyleKey,
   CaptionStylePreset,
-} from '../../phase2/captionStyles';
-import { CAPTION_STYLES } from '../../phase2/captionStyles';
-import { runTestRender } from '../../phase2/testRender';
-import type { Settings } from '../../types';
+} from '../../captions/captionStyles';
+import { CAPTION_STYLES } from '../../captions/captionStyles';
+import { runTestRender } from '../../editing/testRender';
+import { useEntitlement } from '../hooks/useEntitlement';
+import { useSettings } from '../hooks/useSettings';
 import type { RootStackParamList } from '../navigation';
 import { colors, radius, spacing } from '../theme';
 
@@ -30,22 +29,13 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Settings'>;
 const BUFFER_CHOICES = [30, 60, 90];
 
 export function SettingsScreen({ navigation }: Props) {
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [isPro, setIsPro] = useState(false);
+  const { settings, update: updateSettings } = useSettings();
+  const { isPro, clear: clearEntitlement } = useEntitlement();
   const [connectors, setConnectors] = useState<ConnectorConfig>({});
 
   useEffect(() => {
-    settingsStore.get().then(setSettings);
-    entitlementStore.isPro().then(setIsPro);
     connectorConfigStore.get().then(setConnectors);
-    const unsubSettings = settingsStore.subscribe(setSettings);
-    const unsubPro = entitlementStore.subscribe(setIsPro);
-    const unsubConnectors = connectorConfigStore.subscribe(setConnectors);
-    return () => {
-      unsubSettings();
-      unsubPro();
-      unsubConnectors();
-    };
+    return connectorConfigStore.subscribe(setConnectors);
   }, []);
 
   if (!settings) {
@@ -57,7 +47,7 @@ export function SettingsScreen({ navigation }: Props) {
       navigation.navigate('Paywall');
       return;
     }
-    settingsStore.update({ bufferSeconds: secs });
+    updateSettings({ bufferSeconds: secs });
   };
 
   const pickCaptionStyle = (captionStyle: CaptionStyleKey) => {
@@ -65,7 +55,7 @@ export function SettingsScreen({ navigation }: Props) {
       navigation.navigate('Paywall');
       return;
     }
-    settingsStore.update({ captionStyle });
+    updateSettings({ captionStyle });
   };
 
   return (
@@ -119,12 +109,12 @@ export function SettingsScreen({ navigation }: Props) {
           <Choice
             label="Hook first"
             selected={settings.climaxEdit}
-            onPress={() => settingsStore.update({ climaxEdit: true })}
+            onPress={() => updateSettings({ climaxEdit: true })}
           />
           <Choice
             label="Chronological"
             selected={!settings.climaxEdit}
-            onPress={() => settingsStore.update({ climaxEdit: false })}
+            onPress={() => updateSettings({ climaxEdit: false })}
           />
         </View>
         <Text style={styles.hint}>
@@ -136,7 +126,7 @@ export function SettingsScreen({ navigation }: Props) {
 
       <Section title="Meta glasses">
         <Text style={styles.hint}>
-          Clipso records from your glasses' camera and microphone. Keep them
+          Clypso records from your glasses' camera and microphone. Keep them
           paired and connected in the Meta AI app.
         </Text>
         <GlassesConnection />
@@ -151,12 +141,12 @@ export function SettingsScreen({ navigation }: Props) {
           <Choice
             label="Tone on"
             selected={settings.glassesChime}
-            onPress={() => settingsStore.update({ glassesChime: true })}
+            onPress={() => updateSettings({ glassesChime: true })}
           />
           <Choice
             label="Silent"
             selected={!settings.glassesChime}
-            onPress={() => settingsStore.update({ glassesChime: false })}
+            onPress={() => updateSettings({ glassesChime: false })}
           />
         </View>
       </Section>
@@ -166,12 +156,12 @@ export function SettingsScreen({ navigation }: Props) {
           <Choice
             label="Voice"
             selected={settings.wakeWord.provider === 'speech'}
-            onPress={() => settingsStore.update({ wakeWord: { provider: 'speech' } })}
+            onPress={() => updateSettings({ wakeWord: { provider: 'speech' } })}
           />
           <Choice
             label="Manual button"
             selected={settings.wakeWord.provider === 'mock'}
-            onPress={() => settingsStore.update({ wakeWord: { provider: 'mock' } })}
+            onPress={() => updateSettings({ wakeWord: { provider: 'mock' } })}
           />
         </View>
         {settings.wakeWord.provider === 'speech' ? (
@@ -299,7 +289,7 @@ export function SettingsScreen({ navigation }: Props) {
         </Text>
       </Section>
 
-      <Section title="Clipso Pro">
+      <Section title="Clypso Pro">
         <View style={styles.rowBetween}>
           <Text style={styles.hint}>
             {isPro
@@ -314,7 +304,7 @@ export function SettingsScreen({ navigation }: Props) {
         </View>
         {isPro ? (
           <Pressable
-            onPress={() => entitlementStore.clear()}
+            onPress={() => clearEntitlement()}
             hitSlop={8}
             style={styles.devClear}>
             <Text style={styles.devClearText}>Dev: clear entitlement</Text>
@@ -323,7 +313,7 @@ export function SettingsScreen({ navigation }: Props) {
       </Section>
 
       <Text style={styles.footer}>
-        Clipso · say “Clipso” · clips stay on this phone until you
+        Clypso · say “Clypso” · clips stay on this phone until you
         share them
       </Text>
     </ScrollView>
@@ -332,7 +322,7 @@ export function SettingsScreen({ navigation }: Props) {
 
 /**
  * One-time pairing of the app with Meta AI (Wearables Device Access Toolkit).
- * Registration bounces through the Meta AI app and returns via jarvis://.
+ * Registration bounces through the Meta AI app and returns via clypso://.
  */
 function GlassesConnection() {
   const [regState, setRegState] = useState<string | null>(null);

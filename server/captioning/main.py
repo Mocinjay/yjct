@@ -1,4 +1,4 @@
-"""Clipso captioning service — the swappable infra behind the app's
+"""Clypso captioning service — the swappable infra behind the app's
 CaptioningProvider seam.
 
 GET  /styles                    -> [{key, label, description, ...}]
@@ -39,10 +39,10 @@ from captions import (
 )
 
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
-WORK_DIR = Path(os.getenv("WORK_DIR", tempfile.gettempdir())) / "clipso-captioning"
+WORK_DIR = Path(os.getenv("WORK_DIR", tempfile.gettempdir())) / "clypso-captioning"
 DEFAULT_FRAME = (1080, 1920)
 
-app = FastAPI(title="Clipso Captioning")
+app = FastAPI(title="Clypso Captioning")
 _model = None
 
 

@@ -1,5 +1,9 @@
 import { useEffect } from 'react';
+import { createLogger } from '../core/Logger';
+import { ErrorCode } from '../core/errors';
 import { MWDATNative, mwdatAvailable } from '../native/MWDATNative';
+
+const log = createLogger('glasses-lease');
 
 /**
  * Who currently needs the glasses camera running.
@@ -47,7 +51,14 @@ function release(): void {
     }
     // `stopPreview()` is deliberately a no-op while a writer is attached, so a
     // manual extended recording in progress can never be killed by navigation.
-    MWDATNative.stopPreview().catch(() => {});
+    log.debug('last holder released — closing glasses session');
+    MWDATNative.stopPreview().catch(err =>
+      log.error(
+        'could not close the glasses session',
+        err,
+        ErrorCode.GlassesTeardownFailed,
+      ),
+    );
   }, RELEASE_GRACE_MS);
 }
 

@@ -1,8 +1,8 @@
 import { NativeModules, Platform } from 'react-native';
-import type { CaptionBurnStyle } from '../phase2/captionStyles';
-import type { CaptionCue, TimedWord } from '../phase2/captionTimeline';
-import type { EditSegment } from '../phase2/climaxEdit';
-import type { FeatureGrid } from '../phase2/climaxScoring';
+import type { CaptionBurnStyle } from '../captions/captionStyles';
+import type { CaptionCue, TimedWord } from '../captions/captionTimeline';
+import type { EditSegment } from '../editing/climaxEdit';
+import type { FeatureGrid } from '../editing/climaxScoring';
 
 /**
  * Bridges to the on-device engines (both live in the clip-stitcher local
@@ -11,7 +11,7 @@ import type { FeatureGrid } from '../phase2/climaxScoring';
  * goes through the HTTP captioning service.
  *
  * `CaptionEngine` is deliberately separate from `SpeechWakeWord` even though
- * both transcribe. The wake word biases the recognizer toward "Clipso" via
+ * both transcribe. The wake word biases the recognizer toward "Clypso" via
  * contextualStrings and falls back to Apple's servers when on-device finds
  * nothing — both wrong here. Brand biasing corrupts ordinary speech, and
  * captioning that silently uploaded the wearer's audio would defeat the point

@@ -1,8 +1,8 @@
-# Clipso — *"Clipso."*
+# Clypso — *"Clypso."*
 
 Mobile companion app (iOS + Android) for Meta smart glasses (Ray-Ban Meta, Oakley Meta HSTN, Ray-Ban Display), built for clippers/streamers.
 
-**Core loop:** wearer says “Clipso” → the app flushes the last N seconds from a rolling video buffer → clip lands in a local library → share via the native OS share sheet (free tier). Auto-captioning + one-tap publishing are the paid tier and live behind Phase 2 gates.
+**Core loop:** wearer says “Clypso” → the app flushes the last N seconds from a rolling video buffer → clip lands in a local library → share via the native OS share sheet (free tier). Auto-captioning + one-tap publishing are the paid tier and live behind Phase 2 gates.
 
 ## Phase gating (non-negotiable build order)
 

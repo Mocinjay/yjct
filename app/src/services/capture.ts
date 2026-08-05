@@ -1,15 +1,19 @@
 import { FREE_BUFFER_SECONDS_MAX } from '../config';
 import { CaptureController } from '../core/CaptureController';
 import { entitlementStore } from '../core/EntitlementStore';
+import { createLogger } from '../core/Logger';
+import { ErrorCode } from '../core/errors';
 import { settingsStore } from '../core/SettingsStore';
 import type { DeviceVideoSource } from '../device/DeviceVideoSource';
 import { MockDeviceSource } from '../device/MockDeviceSource';
 import { MWDATSource } from '../device/MWDATSource';
-import { captionQueue } from '../phase2/CaptionQueue';
+import { captionQueue } from '../captioning/CaptionQueue';
 import type { Settings } from '../types';
 import { MockWakeWord } from '../wakeword/MockWakeWord';
 import { SpeechWakeWord } from '../wakeword/SpeechWakeWord';
 import type { WakeWordProvider } from '../wakeword/WakeWordProvider';
+
+const log = createLogger('capture-session');
 
 /**
  * Composition root for a capture session. A fresh controller is built per
@@ -43,7 +47,11 @@ export async function buildCaptureSession(): Promise<CaptureSession> {
       clip =>
         // Fire-and-forget: the clip is already saved, and captioning progress
         // is tracked on the clip itself, so nothing here needs awaiting.
-        void captionQueue.enqueue(clip.id).catch(() => {}),
+        void captionQueue
+          .enqueue(clip.id)
+          .catch(err =>
+            log.error('could not queue captioning', err, ErrorCode.CaptionJobFailed),
+          ),
     ),
     mockSource,
     mockWakeWord,

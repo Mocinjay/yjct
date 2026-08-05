@@ -17,8 +17,8 @@
 //   team, and the Meta Wearables app registration is keyed to the bundle id
 //   too, so sharing one means whoever does not own it gets signing failures
 //   and silent glasses-registration failures. One id per developer:
-//     com.mocinjay.clipso     — Allen Williams
-//     com.ajdinahmedi.clipso  — Ajdin Ahmedi
+//     com.mocinjay.clypso     — Allen Williams
+//     com.ajdinahmedi.clypso  — Ajdin Ahmedi
 //   Add your own line rather than borrowing either of these.
 //
 // Free "Personal Team" accounts get 7-day provisioning profiles. When the app
@@ -26,9 +26,9 @@
 
 DEVELOPMENT_TEAM = ABCDE12345
 
-// Set your id ONCE here. The app takes it as-is; the ClipsoWidgets extension
+// Set your id ONCE here. The app takes it as-is; the ClypsoWidgets extension
 // derives its own id underneath it, because Apple requires an extension's
 // bundle id to be prefixed by its containing app's. Never write the literal id
 // anywhere else or the two drift and the extension fails to install.
-CLIPSO_BUNDLE_ID = com.yourname.clipso
-PRODUCT_BUNDLE_IDENTIFIER = $(CLIPSO_BUNDLE_ID)
+CLYPSO_BUNDLE_ID = com.yourname.clypso
+PRODUCT_BUNDLE_IDENTIFIER = $(CLYPSO_BUNDLE_ID)

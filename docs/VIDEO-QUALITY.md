@@ -10,13 +10,13 @@ iOS 26.5.2), not estimated. Reproduction commands are at the bottom.
 
 ## 1. Project context
 
-**Clipso** (repo `yjct`, local folder `~/Desktop/jarvis`) is a React Native
+**Clypso** (repo `yjct`, local folder `~/Desktop/jarvis`) is a React Native
 companion app for Meta smart glasses — Ray-Ban Meta, Oakley Meta HSTN, Ray-Ban
 Display — aimed at clippers and streamers.
 
 The core loop:
 
-> wake word ("Clipso") → flush the last N seconds from a rolling video buffer →
+> wake word ("Clypso") → flush the last N seconds from a rolling video buffer →
 > clip lands in the local library → captions burn in → share via the native OS
 > share sheet
 
@@ -39,7 +39,7 @@ Two facts shape every decision about picture quality:
 | # | Stage | File | What it does to the pixels |
 |---|-------|------|---------------------------|
 | 1 | Glasses → phone | MWDAT SDK | Compressed over the link, decoded by the SDK. Hands us **raw `420v` CVPixelBuffers**. |
-| 2 | Segment encode | `ios/Clipso/MWDATSegmentWriter.swift` | Encodes rolling 5s MP4 segments. **This is the only place the glasses' pixels are encoded at full fidelity.** |
+| 2 | Segment encode | `ios/Clypso/MWDATSegmentWriter.swift` | Encodes rolling 5s MP4 segments. **This is the only place the glasses' pixels are encoded at full fidelity.** |
 | 3 | Ring buffer | `src/core/SegmentRingBuffer.ts` | Holds segments, evicts old ones. No transcode. |
 | 4 | Stitch | `modules/clip-stitcher/ios/ClipStitcher.m` | Concatenates the covering window. **Passthrough — no re-encode.** |
 | 5 | Caption burn | `modules/clip-stitcher/ios/CaptionEngine.m` | Composition + Core Animation caption overlay, then one `AVAssetExportSession`. **One encode generation.** |
@@ -85,7 +85,7 @@ Confirmed working: clips now arrive at 720x1280.
 
 ### 3.4 Verification that all three landed
 
-From `Documents/clipso-diagnostics.log`:
+From `Documents/clypso-diagnostics.log`:
 
 ```
 source video format: subtype='420v' 720x1280 compressed=false
@@ -281,15 +281,15 @@ directory, and `--username` is not a valid flag):
 
 ```bash
 xcrun devicectl device copy from --device <UDID> --domain-type appDataContainer \
-  --domain-identifier com.mocinjay.clipso \
-  --source Documents/clipso-diagnostics.log --destination /tmp/
+  --domain-identifier com.mocinjay.clypso \
+  --source Documents/clypso-diagnostics.log --destination /tmp/
 ```
 
 Pull the whole clip library:
 
 ```bash
 xcrun devicectl device copy from --device <UDID> --domain-type appDataContainer \
-  --domain-identifier com.mocinjay.clipso \
+  --domain-identifier com.mocinjay.clypso \
   --source Documents/clips --destination /tmp/clipsdir
 ```
 
@@ -324,9 +324,9 @@ Live console for the caption stage — `CELog` writes `[CaptionEngine]` lines to
 NSLog, alongside the `[MWDAT]` lines:
 
 ```bash
-xcrun devicectl device process launch --console --terminate-existing com.mocinjay.clipso
+xcrun devicectl device process launch --console --terminate-existing com.mocinjay.clypso
 ```
 
 > The console connection reliably drops during long *capture* runs, which is why
-> `MWDATSegmentWriter` also mirrors to `clipso-diagnostics.log`. A caption export
+> `MWDATSegmentWriter` also mirrors to `clypso-diagnostics.log`. A caption export
 > is short enough that the live console is fine.
