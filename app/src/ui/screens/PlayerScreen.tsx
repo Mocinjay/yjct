@@ -10,12 +10,13 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import RNFS from 'react-native-fs';
 import Video from 'react-native-video';
-import { clipStore } from '../../core/ClipStore';
+import { clipStore, deliverablePath, isCaptioning } from '../../core/ClipStore';
 import { entitlementStore } from '../../core/EntitlementStore';
 import { bump } from '../../debug/jsProbe';
-import { publishService } from '../../phase2/PublishService';
+import { captionQueue } from '../../phase2/CaptionQueue';
+import { captionStyleLabel } from '../../phase2/captionStyles';
+import type { Clip } from '../../types';
 import { Button, ProBadge } from '../components';
 import type { RootStackParamList } from '../navigation';
 import { formatDuration, relativeDate, shareClip } from './LibraryScreen';
@@ -25,12 +26,16 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Player'>;
 
 export function PlayerScreen({ route, navigation }: Props) {
   bump('render.Player');
-  const { clip } = route.params;
-  const [name, setName] = useState(clip.name);
+  const { clip: openedClip } = route.params;
+  // The route param is a snapshot from the moment the card was tapped. The
+  // captioning job for this clip may still be running, so the live copy is
+  // read from the store instead — that is what makes the state below move
+  // while the screen is open.
+  const [clip, setClip] = useState(openedClip);
+  const [name, setName] = useState(openedClip.name);
   const [renaming, setRenaming] = useState(false);
-  const [draft, setDraft] = useState(clip.name);
+  const [draft, setDraft] = useState(openedClip.name);
   const [isPro, setIsPro] = useState(false);
-  const [captioning, setCaptioning] = useState(false);
 
   // Our own transport, because `controls` cannot be used — see the <Video>
   // below. `userPaused` is ONLY ever set by a tap. Nothing the player emits
@@ -45,10 +50,11 @@ export function PlayerScreen({ route, navigation }: Props) {
   // rename, the entitlement check and the captioning flag, so the player was
   // being rebuilt repeatedly and the old AVPlayers were what pushed the app
   // into "Terminated due to memory issue".
-  const source = useMemo(
-    () => ({ uri: `file://${clip.filePath}` }),
-    [clip.filePath],
-  );
+  //
+  // Keying on the path means the one time it *does* rebuild is when captions
+  // land and the captioned cut replaces the raw one.
+  const playbackPath = deliverablePath(clip);
+  const source = useMemo(() => ({ uri: `file://${playbackPath}` }), [playbackPath]);
 
   // Leaving the screen (Publish, Paywall, or back to the Library) leaves this
   // screen mounted underneath, so without this the video kept decoding in the
@@ -59,6 +65,18 @@ export function PlayerScreen({ route, navigation }: Props) {
     entitlementStore.isPro().then(setIsPro);
     return entitlementStore.subscribe(setIsPro);
   }, []);
+
+  useEffect(() => {
+    const sync = () =>
+      clipStore.list().then(all => {
+        const live = all.find(c => c.id === openedClip.id);
+        if (live) {
+          setClip(live);
+        }
+      });
+    sync();
+    return clipStore.subscribe(sync);
+  }, [openedClip.id]);
 
   const togglePlayback = () => {
     if (atEnd) {
@@ -79,38 +97,16 @@ export function PlayerScreen({ route, navigation }: Props) {
     }
   };
 
-  const captionClip = async () => {
+  // Captions are burned automatically on capture; this re-runs the job in
+  // place, which is how you apply a style you have since changed in Settings.
+  // It deliberately replaces the clip's captioned cut rather than adding a
+  // second library entry — auto-captioning would otherwise breed duplicates.
+  const recaption = async () => {
     if (!isPro) {
       navigation.navigate('Paywall');
       return;
     }
-    setCaptioning(true);
-    try {
-      const captioner = await publishService.getCaptioner();
-      const { captionedFilePath } = await captioner.caption(clip.filePath);
-      // The captioned version becomes its own library entry.
-      const id = `clip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const thumbnailPath = captionedFilePath.replace(/\.mp4$/, '.jpg');
-      await RNFS.copyFile(clip.thumbnailPath, thumbnailPath);
-      await clipStore.add({
-        ...clip,
-        id,
-        name: `${name} · captioned`,
-        filePath: captionedFilePath,
-        thumbnailPath,
-        capturedAt: Date.now(),
-      });
-      Alert.alert('Captioned', 'The captioned clip was added to your library.');
-      if (navigation.canGoBack()) {
-        navigation.goBack();
-      } else {
-        navigation.reset({ index: 0, routes: [{ name: 'Library' }] });
-      }
-    } catch (e) {
-      Alert.alert('Captioning failed', e instanceof Error ? e.message : String(e));
-    } finally {
-      setCaptioning(false);
-    }
+    await captionQueue.retry(clip.id);
   };
 
   const saveRename = async () => {
@@ -229,6 +225,7 @@ export function PlayerScreen({ route, navigation }: Props) {
           {formatDuration(clip.durationSec)} · {relativeDate(clip.capturedAt)} ·{' '}
           {clip.sourceKind === 'mock' ? 'phone camera' : 'glasses'}
         </Text>
+        <CaptionStatus clip={clip} />
       </View>
 
       <View style={styles.actions}>
@@ -236,10 +233,10 @@ export function PlayerScreen({ route, navigation }: Props) {
           <Button label="Share" tone="accent" onPress={() => shareClip(clip)} style={styles.grow} />
           <ProAction label="Publish" isPro={isPro} onPress={publish} />
           <ProAction
-            label="Caption"
+            label={clip.captionState === 'ready' ? 'Restyle' : 'Caption'}
             isPro={isPro}
-            busy={captioning}
-            onPress={captionClip}
+            busy={isCaptioning(clip)}
+            onPress={recaption}
           />
         </View>
         <View style={styles.primaryRow}>
@@ -269,6 +266,40 @@ export function PlayerScreen({ route, navigation }: Props) {
       </Modal>
     </View>
   );
+}
+
+/** What is (or isn't) burned into the clip playing above. */
+function CaptionStatus({ clip }: { clip: Clip }) {
+  if (isCaptioning(clip)) {
+    return (
+      <Text style={styles.captionPending}>
+        {clip.captionState === 'queued'
+          ? 'Captions queued — playing the raw cut'
+          : 'Captioning — playing the raw cut'}
+      </Text>
+    );
+  }
+  if (clip.captionState === 'failed') {
+    return (
+      <Text style={styles.captionFailed} numberOfLines={2}>
+        Captions failed: {clip.captionError ?? 'unknown error'}
+      </Text>
+    );
+  }
+  if (clip.captionState === 'ready') {
+    return clip.captionProvider === 'mock' ? (
+      // The mock captioner returns the clip untouched. Saying "captioned"
+      // here would be describing something that isn't on the screen.
+      <Text style={styles.captionPending}>
+        Mock captioner — nothing burned in. Set a captioning URL in Settings.
+      </Text>
+    ) : (
+      <Text style={styles.captionReady}>
+        Captions · {captionStyleLabel(clip.captionStyle)}
+      </Text>
+    );
+  }
+  return null;
 }
 
 function ProAction({
@@ -328,6 +359,9 @@ const styles = StyleSheet.create({
   meta: { paddingHorizontal: spacing.m, gap: 2 },
   name: { ...type.heading, color: colors.text },
   sub: { ...type.caption, color: colors.textFaint },
+  captionReady: { ...type.caption, color: colors.gold, fontWeight: '700' },
+  captionPending: { ...type.caption, color: colors.textDim },
+  captionFailed: { ...type.caption, color: colors.accent },
   actions: { padding: spacing.m, paddingBottom: spacing.xl, gap: spacing.s },
   primaryRow: { flexDirection: 'row', gap: spacing.s },
   proAction: {

@@ -1,3 +1,14 @@
+import type { CaptionStyleKey } from './phase2/captionStyles';
+
+/**
+ * Where a clip is in the auto-captioning pipeline.
+ *
+ * 'none' covers both "not started" and "not applicable" (free tier —
+ * captioning is Pro). The library shows progress from this rather than
+ * hiding the clip, so a clip is never missing while its captions cook.
+ */
+export type CaptionState = 'none' | 'queued' | 'processing' | 'ready' | 'failed';
+
 export interface Clip {
   id: string;
   name: string;
@@ -21,6 +32,20 @@ export interface Clip {
   expiresAt: number | null;
   /** Platforms this clip has been published to, e.g. ['youtube']. */
   publishedTo?: string[];
+
+  /** Captioning progress. Absent on clips captured before auto-captioning. */
+  captionState?: CaptionState;
+  /** The burned-in copy, once `captionState` is 'ready'. */
+  captionedFilePath?: string | null;
+  /** Which style the ready file was burned with. */
+  captionStyle?: CaptionStyleKey;
+  /**
+   * Which provider produced it. The mock captioner copies the clip untouched,
+   * so the UI must not show those as really captioned.
+   */
+  captionProvider?: string;
+  /** Why the last attempt failed — surfaced, never swallowed. */
+  captionError?: string | null;
 }
 
 export type DeviceKind = 'mock' | 'mwdat';
@@ -38,6 +63,20 @@ export interface Settings {
   bufferSeconds: number;
   deviceKind: DeviceKind;
   wakeWord: WakeWordConfig;
+  /** Look applied to auto-captions. Applies to clips captured from now on. */
+  captionStyle: CaptionStyleKey;
+  /**
+   * Rebuild each clip hook-first: the strongest 3-7s moment, a beat of black,
+   * then the complete original. iOS only for now.
+   */
+  climaxEdit: boolean;
+  /**
+   * Sound the glasses when a trigger lands and again when the clip is saved.
+   * Behind a flag because the only sound MWDAT can make the glasses play is
+   * their still-capture tone, and whether firing it disturbs the live video
+   * stream is not yet confirmed on hardware.
+   */
+  glassesChime: boolean;
 }
 
 export interface WakeWordConfig {

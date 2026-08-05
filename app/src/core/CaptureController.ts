@@ -35,6 +35,14 @@ export interface CaptureStatus {
   bufferedAsOf: number;
   /** Epoch ms of the trigger, set while state === 'recording'. */
   recordingSince?: number;
+  /**
+   * Epoch ms of the last successful `arm()` — how long this session has been
+   * listening. Deliberately NOT capped at the look-back window: the window
+   * bounds what a trigger clips, not how long the wearer has been live, and
+   * showing the capped number as the session clock made it look like capture
+   * stopped at 30s.
+   */
+  armedSince?: number;
   lastError?: string;
   lastClip?: Clip;
   /**
@@ -64,12 +72,20 @@ export class CaptureController {
   private listeners = new Set<(s: CaptureStatus) => void>();
   private saving = false;
   private sessionClipCount = 0;
+  private armedSince: number | null = null;
   private maxRecordingTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * `onClipSaved` fires once a clip is in the library. Post-capture work
+   * (auto-captioning) hangs off this rather than being called from here, so
+   * the capture loop keeps no dependency on Phase 2 — see services/capture.ts.
+   */
   constructor(
     private source: DeviceVideoSource,
     private wakeWord: WakeWordProvider,
     private windowSeconds: number,
+    private chimeEnabled: boolean,
+    private onClipSaved?: (clip: Clip) => void,
   ) {
     this.buffer = new SegmentRingBuffer(windowSeconds, seg => {
       RNFS.unlink(seg.path).catch(() => {});
@@ -96,6 +112,7 @@ export class CaptureController {
           this.setStatus({ ...this.status, state: 'error', lastError: String(err) }),
         );
       });
+      this.armedSince = Date.now();
       this.setStatus({ ...this.status, state: 'armed' });
     } catch (err) {
       await this.disarm();
@@ -113,6 +130,7 @@ export class CaptureController {
     await this.wakeWord.stop().catch(() => {});
     await this.source.stop().catch(() => {});
     this.buffer.clear();
+    this.armedSince = null;
     this.setStatus({ state: 'idle', bufferedSeconds: 0 });
   }
 
@@ -143,6 +161,7 @@ export class CaptureController {
       return null;
     }
     this.saving = true;
+    this.chime();
     this.setStatus({ ...this.status, state: 'saving' });
     try {
       let segments: Segment[] = [];
@@ -166,6 +185,7 @@ export class CaptureController {
       }
       const clip = await this.stitch(segments, trimEndSec);
       await clipStore.add(clip);
+      this.announceSaved(clip);
       await Promise.all(segments.map(s => RNFS.unlink(s.path).catch(() => {})));
       this.sessionClipCount += 1;
       this.setStatus({
@@ -216,6 +236,7 @@ export class CaptureController {
       return null;
     }
     this.saving = true;
+    this.chime();
     this.clearMaxRecordingTimer();
     this.setStatus({ ...this.status, state: 'saving' });
     try {
@@ -226,6 +247,7 @@ export class CaptureController {
       }
       const clip = await this.stitch(segments);
       await clipStore.add(clip);
+      this.announceSaved(clip);
       await Promise.all(segments.map(s => RNFS.unlink(s.path).catch(() => {})));
       this.sessionClipCount += 1;
       this.setStatus({
@@ -274,6 +296,35 @@ export class CaptureController {
     };
   }
 
+  /**
+   * Post-capture work is never allowed to fail a capture that already
+   * succeeded — the clip is on disk and in the library either way.
+   */
+  /**
+   * Sound the glasses so the wearer knows a trigger landed without looking at
+   * the phone. Fired twice per clip: once the instant the trigger registers,
+   * and again once the clip is in the library. The gap between them is a
+   * transcription plus a stitch — long enough that a single tone at either end
+   * leaves the wearer unsure whether anything happened.
+   */
+  private chime(): void {
+    if (!this.chimeEnabled) {
+      return;
+    }
+    // Never awaited: the tone is confirmation, not part of saving the clip.
+    this.source.chime?.().catch(() => {});
+  }
+
+  private announceSaved(clip: Clip): void {
+    // Second tone: the clip is on disk and in the library, not merely heard.
+    this.chime();
+    try {
+      this.onClipSaved?.(clip);
+    } catch {
+      // captioning is best-effort; the clip is already safe
+    }
+  }
+
   private onSegment(segment: Segment): void {
     this.buffer.push(segment);
     // Segment-based wake detection (built-in speech recognition) listens to
@@ -305,7 +356,14 @@ export class CaptureController {
       status.bufferedSeconds !== this.status.bufferedSeconds
         ? Date.now()
         : this.status.bufferedAsOf;
-    this.status = { ...status, bufferedAsOf: measured };
+    // Stamped from the field rather than carried by callers: every state
+    // transition rebuilds the status object, and one that forgot to copy it
+    // would silently reset the session clock.
+    this.status = {
+      ...status,
+      bufferedAsOf: measured,
+      armedSince: this.armedSince ?? undefined,
+    };
     this.listeners.forEach(l => l(this.status));
   }
 }

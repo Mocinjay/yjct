@@ -66,6 +66,13 @@ interface MWDATBridgeModule {
   setPreviewEnabled(enabled: boolean): Promise<void>;
   start(segmentSeconds: number): Promise<void>;
   cut(): Promise<void>;
+  /**
+   * Sound the glasses' own capture tone as capture feedback. Resolves false
+   * when there was no live stream to play it on. See MWDATBridge.swift — the
+   * SDK has no audio-output API, so this is a still capture used purely for
+   * the firmware sound it makes.
+   */
+  chime(): Promise<boolean>;
   /** Stop the segment writer only — keeps the glasses camera stream alive. */
   stopRecording(): Promise<void>;
   /** Tear down the whole glasses session (stream + writer). */
@@ -106,6 +113,7 @@ export const MWDATNative = {
     requireNative().setPreviewEnabled(enabled),
   start: (segmentSeconds: number) => requireNative().start(segmentSeconds),
   cut: () => requireNative().cut(),
+  chime: () => requireNative().chime(),
   stopRecording: () => requireNative().stopRecording(),
   stop: () => requireNative().stop(),
 };

@@ -5,6 +5,7 @@ import { settingsStore } from '../core/SettingsStore';
 import type { DeviceVideoSource } from '../device/DeviceVideoSource';
 import { MockDeviceSource } from '../device/MockDeviceSource';
 import { MWDATSource } from '../device/MWDATSource';
+import { captionQueue } from '../phase2/CaptionQueue';
 import type { Settings } from '../types';
 import { MockWakeWord } from '../wakeword/MockWakeWord';
 import { SpeechWakeWord } from '../wakeword/SpeechWakeWord';
@@ -34,7 +35,16 @@ export async function buildCaptureSession(): Promise<CaptureSession> {
   const { source, mockSource } = buildSource(settings);
   const { wakeWord, mockWakeWord } = buildWakeWord(settings);
   return {
-    controller: new CaptureController(source, wakeWord, windowSeconds),
+    controller: new CaptureController(
+      source,
+      wakeWord,
+      windowSeconds,
+      settings.glassesChime,
+      clip =>
+        // Fire-and-forget: the clip is already saved, and captioning progress
+        // is tracked on the clip itself, so nothing here needs awaiting.
+        void captionQueue.enqueue(clip.id).catch(() => {}),
+    ),
     mockSource,
     mockWakeWord,
   };

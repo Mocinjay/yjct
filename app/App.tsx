@@ -7,6 +7,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { clipStore } from './src/core/ClipStore';
 import { entitlementStore } from './src/core/EntitlementStore';
 import { startJsProbe } from './src/debug/jsProbe';
+import { captionQueue } from './src/phase2/CaptionQueue';
 import { ClipsoSplash } from './src/ui/ClipsoSplash';
 import type { RootStackParamList } from './src/ui/navigation';
 import { ArmedScreen } from './src/ui/screens/ArmedScreen';
@@ -54,6 +55,9 @@ export default function App() {
     // Retention runs at launch as well as on Library focus, so expired clips
     // are reclaimed even if the user never opens the library this session.
     clipStore.sweepExpired().catch(() => {});
+    // Captioning jobs cut short by the app being killed have no worker behind
+    // them any more; without this they would show "Captioning…" forever.
+    captionQueue.resume().catch(() => {});
     // Upgrading rescues whatever was mid-countdown — Pro should never cost
     // someone a clip that was about to expire as they paid.
     return entitlementStore.subscribe(isPro => {

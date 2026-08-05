@@ -27,4 +27,12 @@ export interface DeviceVideoSource {
 
   /** Stop the loop and close the session. In-flight segment is discarded. */
   stop(): Promise<void>;
+
+  /**
+   * Sound a confirmation on the device the wearer is actually wearing, so a
+   * trigger is felt without looking at the phone. Optional: only the glasses
+   * can do this. Best-effort — a source that cannot chime simply omits it,
+   * and capture never waits on or fails because of one.
+   */
+  chime?(): Promise<void>;
 }

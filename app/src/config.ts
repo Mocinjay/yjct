@@ -1,3 +1,4 @@
+import { DEFAULT_CAPTION_STYLE } from './phase2/captionStyles';
 import type { Settings } from './types';
 
 export const BUFFER_SECONDS_MIN = 30;
@@ -49,4 +50,10 @@ export const DEFAULT_SETTINGS: Settings = {
     // vendor key, no model download.
     provider: 'speech',
   },
+  captionStyle: DEFAULT_CAPTION_STYLE,
+  // Off by default: the product is clip + caption. The hook-first re-cut is a
+  // second, opinionated transformation on top of that, so it is opt-in rather
+  // than something every clip silently gets.
+  climaxEdit: false,
+  glassesChime: true,
 };

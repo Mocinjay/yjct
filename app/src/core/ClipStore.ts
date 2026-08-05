@@ -91,6 +91,21 @@ export class ClipStore {
   }
 
   /**
+   * Updates a clip's captioning progress. Kept in the index rather than in
+   * memory so a job interrupted by the app being killed is still visible as
+   * unfinished on the next launch, and CaptionQueue can pick it back up.
+   */
+  async setCaptionState(id: string, patch: CaptionPatch): Promise<void> {
+    const clips = await this.list();
+    if (!clips.some(c => c.id === id)) {
+      // The clip was deleted or swept while its job was running.
+      return;
+    }
+    this.clips = clips.map(c => (c.id === id ? { ...c, ...patch } : c));
+    await this.persist();
+  }
+
+  /**
    * Records a successful publish. Publishing is an implicit save — a clip the
    * user put on YouTube must not evaporate 24h later.
    */
@@ -149,8 +164,7 @@ export class ClipStore {
     this.clips = clips.filter(c => !expiredIds.has(c.id));
     await this.persist();
     for (const clip of expired) {
-      await deleteIfExists(clip.filePath);
-      await deleteIfExists(clip.thumbnailPath);
+      await deleteClipFiles(clip);
     }
     return expired;
   }
@@ -161,8 +175,7 @@ export class ClipStore {
     this.clips = clips.filter(c => c.id !== id);
     await this.persist();
     if (clip) {
-      await deleteIfExists(clip.filePath);
-      await deleteIfExists(clip.thumbnailPath);
+      await deleteClipFiles(clip);
     }
   }
 
@@ -186,9 +199,37 @@ export class ClipStore {
   }
 }
 
+/** The caption fields, which are the only thing setCaptionState may touch. */
+export type CaptionPatch = Partial<
+  Pick<
+    Clip,
+    | 'captionState'
+    | 'captionedFilePath'
+    | 'captionStyle'
+    | 'captionProvider'
+    | 'captionError'
+  >
+>;
+
 /** True while a clip is still temporary and counting down. */
 export function isPending(clip: Clip): boolean {
   return clip.expiresAt !== null;
+}
+
+/**
+ * The file to play, share, and publish: the captioned cut once it exists,
+ * the raw capture until then. Everything user-facing goes through this so a
+ * clip is never shared uncaptioned just because one screen forgot.
+ */
+export function deliverablePath(clip: Clip): string {
+  return clip.captionState === 'ready' && clip.captionedFilePath
+    ? clip.captionedFilePath
+    : clip.filePath;
+}
+
+/** True while the clip is waiting on, or inside, the captioning pipeline. */
+export function isCaptioning(clip: Clip): boolean {
+  return clip.captionState === 'queued' || clip.captionState === 'processing';
 }
 
 /** Milliseconds until wipe, or null if the clip is kept forever. */
@@ -222,7 +263,18 @@ function normalizeClip(raw: Clip): Clip {
     ...raw,
     savedAt: legacy ? raw.capturedAt : raw.savedAt ?? null,
     expiresAt: legacy ? null : raw.expiresAt ?? null,
+    // Clips captured before auto-captioning existed are not retroactively
+    // queued — they show as uncaptioned until the wearer asks.
+    captionState: raw.captionState ?? 'none',
   };
+}
+
+async function deleteClipFiles(clip: Clip): Promise<void> {
+  await deleteIfExists(clip.filePath);
+  await deleteIfExists(clip.thumbnailPath);
+  if (clip.captionedFilePath) {
+    await deleteIfExists(clip.captionedFilePath);
+  }
 }
 
 async function exists(path: string): Promise<boolean> {

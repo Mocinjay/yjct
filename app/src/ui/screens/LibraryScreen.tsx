@@ -2,6 +2,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   FlatList,
   Image,
@@ -13,8 +14,15 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Share from 'react-native-share';
 import { FREE_RETENTION_HOURS } from '../../config';
-import { clipStore, isPending, msUntilExpiry } from '../../core/ClipStore';
+import {
+  clipStore,
+  deliverablePath,
+  isCaptioning,
+  isPending,
+  msUntilExpiry,
+} from '../../core/ClipStore';
 import { entitlementStore } from '../../core/EntitlementStore';
+import { captionQueue } from '../../phase2/CaptionQueue';
 import type { Clip } from '../../types';
 import { bump } from '../../debug/jsProbe';
 import { ProBadge, RecDot, RecRings } from '../components';
@@ -80,6 +88,7 @@ export function LibraryScreen({ navigation }: Props) {
   const recent = useMemo(() => clips.filter(isPending), [clips]);
   const saved = useMemo(() => clips.filter(c => !isPending(c)), [clips]);
   const shown = tab === 'recent' ? recent : saved;
+  const captioning = useMemo(() => clips.filter(isCaptioning).length, [clips]);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + spacing.s }]}>
@@ -108,7 +117,9 @@ export function LibraryScreen({ navigation }: Props) {
         <Text style={styles.subtitle}>
           {clips.length === 0
             ? 'say “Clipso”'
-            : `${saved.length} saved · ${recent.length} temporary`}
+            : `${saved.length} saved · ${recent.length} temporary${
+                captioning > 0 ? ` · ${captioning} captioning` : ''
+              }`}
         </Text>
       </View>
 
@@ -237,6 +248,7 @@ function ClipCard({
         source={{ uri: `file://${clip.thumbnailPath}` }}
         style={styles.thumb}
       />
+      <CaptionOverlay clip={clip} />
       <View style={styles.durationChip}>
         <Text style={styles.durationText}>{formatDuration(clip.durationSec)}</Text>
       </View>
@@ -261,6 +273,53 @@ function ClipCard({
       </Pressable>
     </Pressable>
   );
+}
+
+/**
+ * Captioning progress, drawn over the poster frame.
+ *
+ * A clip appears in the library the moment it is captured — it is never
+ * withheld while its captions cook — so this is what tells the wearer that
+ * what they are looking at is not the finished cut yet.
+ */
+function CaptionOverlay({ clip }: { clip: Clip }) {
+  if (isCaptioning(clip)) {
+    return (
+      <View style={styles.captionScrim} pointerEvents="none">
+        <ActivityIndicator color={colors.text} />
+        <Text style={styles.captionScrimText}>
+          {clip.captionState === 'queued' ? 'Queued' : 'Captioning…'}
+        </Text>
+      </View>
+    );
+  }
+  if (clip.captionState === 'failed') {
+    return (
+      <Pressable
+        onPress={() => captionQueue.retry(clip.id)}
+        hitSlop={6}
+        style={styles.captionFailed}>
+        <Text style={styles.captionFailedText}>Captions failed · retry</Text>
+      </Pressable>
+    );
+  }
+  // The mock captioner hands the clip back untouched, so a "CC" badge on one
+  // of its results would be a lie about what is in the pixels.
+  if (clip.captionState === 'ready' && clip.captionProvider !== 'mock') {
+    return (
+      <View style={styles.captionBadge} pointerEvents="none">
+        <Text style={styles.captionBadgeText}>CC</Text>
+      </View>
+    );
+  }
+  if (clip.captionState === 'ready') {
+    return (
+      <View style={styles.captionBadgeMuted} pointerEvents="none">
+        <Text style={styles.captionBadgeMutedText}>mock CC</Text>
+      </View>
+    );
+  }
+  return null;
 }
 
 /** "23h left" / "42m left" / "expiring" once the clock has run out. */
@@ -298,9 +357,10 @@ export function relativeDate(epochMs: number): string {
 export async function shareClip(clip: Clip): Promise<void> {
   try {
     // Free tier: raw footage via the native OS share sheet. Not an API
-    // integration — same mechanism as sharing a Camera Roll video.
+    // integration — same mechanism as sharing a Camera Roll video. Once
+    // captions are burned in, that is the cut the wearer meant to send.
     await Share.open({
-      url: `file://${clip.filePath}`,
+      url: `file://${deliverablePath(clip)}`,
       type: 'video/mp4',
       failOnCancel: false,
     });
@@ -382,6 +442,56 @@ const styles = StyleSheet.create({
   },
   cardPressed: { transform: [{ scale: 0.98 }], opacity: 0.92 },
   thumb: { width: '100%', aspectRatio: 9 / 16, backgroundColor: colors.surfaceHigh },
+  captionScrim: {
+    // Matches the thumbnail's own aspect ratio rather than guessing at the
+    // height of the meta row below it.
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    aspectRatio: 9 / 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.s,
+    backgroundColor: colors.scrim,
+  },
+  captionScrimText: { color: colors.text, fontSize: 12, fontWeight: '700' },
+  captionFailed: {
+    position: 'absolute',
+    left: spacing.s,
+    right: spacing.s,
+    top: spacing.s,
+    backgroundColor: colors.accent,
+    borderRadius: radius.s,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  captionFailedText: {
+    color: colors.text,
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  captionBadge: {
+    position: 'absolute',
+    left: spacing.s,
+    top: spacing.s,
+    backgroundColor: colors.gold,
+    borderRadius: radius.s,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  captionBadgeText: { color: '#101014', fontSize: 11, fontWeight: '800' },
+  captionBadgeMuted: {
+    position: 'absolute',
+    left: spacing.s,
+    top: spacing.s,
+    backgroundColor: colors.scrim,
+    borderRadius: radius.s,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  captionBadgeMutedText: { color: colors.textDim, fontSize: 11, fontWeight: '700' },
   durationChip: {
     position: 'absolute',
     left: spacing.s,

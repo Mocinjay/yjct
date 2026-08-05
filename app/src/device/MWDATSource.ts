@@ -64,6 +64,15 @@ export class MWDATSource implements DeviceVideoSource {
     await MWDATNative.cut();
   }
 
+  async chime(): Promise<void> {
+    if (!mwdatAvailable()) {
+      return;
+    }
+    // Swallowed on purpose: the wearer losing the confirmation tone is a far
+    // smaller failure than a capture that aborts because a sound did not play.
+    await MWDATNative.chime().catch(() => false);
+  }
+
   async stop(): Promise<void> {
     this.clearSubscriptions();
     try {

@@ -724,6 +724,39 @@ final class MWDATBridge: RCTEventEmitter {
     resolve(nil)
   }
 
+  /// Make the glasses themselves sound a confirmation.
+  ///
+  /// MWDAT exposes no audio-output API — `MWDATCore`, `MWDATCamera` and
+  /// `MWDATDisplay` have no speaker, tone or notification surface — and the
+  /// glasses' speaker is not addressable as a route we can safely play into:
+  /// selecting it renegotiates the same Bluetooth link that carries video down
+  /// to narrowband HFP and starves the stream (see MWDATSegmentWriter). The
+  /// connect/disconnect chime the wearer already knows is emitted by the
+  /// glasses' firmware on session start/stop, so reproducing *that* one would
+  /// mean tearing the session down and losing capture.
+  ///
+  /// A still capture is the one sound left: the firmware plays its capture
+  /// tone, and it runs on the stream that is **already open**, so the link is
+  /// never renegotiated. The photo is not collected — nothing subscribes to
+  /// `photoDataPublisher` — because we are only here for the sound.
+  ///
+  /// Resolves whether the capture was actually issued, so JS can tell "the
+  /// glasses chimed" from "there was no live stream to chime on".
+  @objc(chime:reject:)
+  func chime(
+    _ resolve: @escaping RCTPromiseResolveBlock,
+    reject _: @escaping RCTPromiseRejectBlock
+  ) {
+    guard let stream, stream.state == .streaming else {
+      Self.log("chime() — no streaming session, skipped")
+      resolve(false)
+      return
+    }
+    let issued = stream.capturePhoto(format: .jpeg)
+    Self.log("chime() — capturePhoto \(issued ? "issued" : "refused by SDK")")
+    resolve(issued)
+  }
+
   @objc(stop:reject:)
   func stop(
     _ resolve: @escaping RCTPromiseResolveBlock,
@@ -906,11 +939,16 @@ final class MWDATBridge: RCTEventEmitter {
     // applies an automatic quality ladder (resolution first, then frame rate,
     // never below 15 fps) to fit the Bluetooth link, so raw is safe to request.
     //
-    // 30 fps is the glasses' top supported rate. Medium (504×896) balances
-    // detail against Bluetooth bandwidth — requesting `.high` at 30 often
-    // forces the SDK's ladder to drop frames, which reads as lag in the clip.
-    let config = StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: 30)
-    Self.log("addStream(codec: raw, resolution: medium, fps: 30)…")
+    // 30 fps is the glasses' top supported rate. Ask for `.high`: the SDK's
+    // ABR ladder only ever steps DOWN from the requested rung, so `.medium`
+    // was a hard ceiling of 504×896 even when the link could carry more.
+    // MWDATCamera's own diagnostics say high "requires ... high (WiFi)
+    // bandwidth link", so over Bluetooth Classic the ladder will still land on
+    // medium — that is the floor we used to pin ourselves to, not a regression.
+    // The delivered size per segment is logged by MWDATSegmentWriter
+    // ("source video format: …"), which is where to check what we actually get.
+    let config = StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: 30)
+    Self.log("addStream(codec: raw, resolution: high, fps: 30)…")
     guard let newStream = try session.addStream(config: config) else {
       throw NSError(
         domain: "MWDATBridge", code: 11,

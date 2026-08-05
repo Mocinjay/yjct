@@ -65,6 +65,7 @@ jest.mock('../src/native/ClipStitcher', () => ({
 
 import { CaptureController } from '../src/core/CaptureController';
 import { clipStore } from '../src/core/ClipStore';
+import { entitlementStore } from '../src/core/EntitlementStore';
 
 class FakeSource implements DeviceVideoSource {
   readonly kind = 'mock' as const;
@@ -110,16 +111,20 @@ async function settle() {
 }
 
 describe('CaptureController', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     mockFiles.clear();
     mockStitch.mockClear();
     clipStore.resetCache();
+    // Debug builds are Pro by default and jest defines __DEV__, so the free
+    // tier has to be asked for explicitly — otherwise the retention
+    // expectation below silently exercises the Pro path instead.
+    await entitlementStore.clear();
   });
 
   it('gives a free-tier clip a 24h retention clock', async () => {
     const source = new FakeSource();
     const wake = new FakeWakeWord();
-    const controller = new CaptureController(source, wake, 10);
+    const controller = new CaptureController(source, wake, 10, false);
 
     await controller.arm();
     for (let i = 0; i < 6; i++) {
@@ -137,7 +142,7 @@ describe('CaptureController', () => {
   it('wake word auto-saves the look-back window as a clip', async () => {
     const source = new FakeSource();
     const wake = new FakeWakeWord();
-    const controller = new CaptureController(source, wake, 10);
+    const controller = new CaptureController(source, wake, 10, false);
 
     await controller.arm();
     for (let i = 0; i < 6; i++) {
@@ -159,7 +164,7 @@ describe('CaptureController', () => {
   it('a timed detection ends the clip on the wake word without cutting', async () => {
     const source = new FakeSource();
     const wake = new FakeWakeWord();
-    const controller = new CaptureController(source, wake, 10);
+    const controller = new CaptureController(source, wake, 10, false);
 
     await controller.arm();
     for (let i = 0; i < 4; i++) {
@@ -184,7 +189,7 @@ describe('CaptureController', () => {
   it('falls back to cut + flush when the wake segment is already gone', async () => {
     const source = new FakeSource();
     const wake = new FakeWakeWord();
-    const controller = new CaptureController(source, wake, 10);
+    const controller = new CaptureController(source, wake, 10, false);
 
     await controller.arm();
     for (let i = 0; i < 6; i++) {
@@ -202,7 +207,7 @@ describe('CaptureController', () => {
   it('extended clip records past the window until stopClip', async () => {
     const source = new FakeSource();
     const wake = new FakeWakeWord();
-    const controller = new CaptureController(source, wake, 10);
+    const controller = new CaptureController(source, wake, 10, false);
 
     await controller.arm();
     source.emit();
@@ -222,7 +227,7 @@ describe('CaptureController', () => {
   it('wake word during an extended recording stops and saves it', async () => {
     const source = new FakeSource();
     const wake = new FakeWakeWord();
-    const controller = new CaptureController(source, wake, 10);
+    const controller = new CaptureController(source, wake, 10, false);
 
     await controller.arm();
     source.emit();

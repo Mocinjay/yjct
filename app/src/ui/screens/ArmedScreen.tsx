@@ -277,8 +277,16 @@ export function ArmedScreen({ navigation }: Props) {
   const recordingSecs = status.recordingSince
     ? Math.max(0, Math.round((now - status.recordingSince) / 1000))
     : 0;
+  // How long this session has been listening. Free-running: it is a clock, not
+  // a gauge, so it must NOT be capped at the look-back window the way
+  // `bufferedSecs` is. Showing the capped number here made capture look like it
+  // stopped after 30s when it was in fact still running.
+  const armedSecs = status.armedSince
+    ? Math.max(0, Math.round((now - status.armedSince) / 1000))
+    : 0;
   // What is really in the look-back window right now: the last measurement plus
-  // the time since, capped at the window the buffer actually keeps.
+  // the time since, capped at the window the buffer actually keeps. This is the
+  // one that is *meant* to plateau — it is how much a trigger would clip.
   const bufferedSecs = live
     ? Math.min(
         session?.controller.lookBackSeconds ?? status.bufferedSeconds,
@@ -300,7 +308,7 @@ export function ArmedScreen({ navigation }: Props) {
         <View style={[styles.statusPill, recording && styles.statusPillRec]}>
           <RecDot size={8} live={live || recording} />
           <Text style={styles.statusText}>
-            {statusLabel(status, recordingSecs, bufferedSecs)}
+            {statusLabel(status, recordingSecs, armedSecs)}
           </Text>
         </View>
 
@@ -423,7 +431,7 @@ export function ArmedScreen({ navigation }: Props) {
           {recording
             ? 'look-back plus everything since you started'
             : live
-              ? `listening · ${Math.floor(bufferedSecs)}s buffered${
+              ? `listening · last ${Math.floor(bufferedSecs)}s ready to clip${
                   status.sessionClipCount
                     ? ` · ${status.sessionClipCount} saved this session`
                     : ''
@@ -438,14 +446,14 @@ export function ArmedScreen({ navigation }: Props) {
 function statusLabel(
   status: CaptureStatus,
   recordingSecs: number,
-  bufferedSecs: number,
+  armedSecs: number,
 ): string {
   switch (status.state) {
     case 'idle':
     case 'arming':
       return 'Starting…';
     case 'armed':
-      return `LIVE · ${Math.floor(bufferedSecs)}s`;
+      return `LIVE · ${formatDuration(armedSecs)}`;
     case 'recording':
       return `REC ${formatDuration(recordingSecs)}`;
     case 'saving':

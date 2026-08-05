@@ -18,7 +18,12 @@ export class EntitlementStore {
     if (this.cached !== null) {
       return this.cached;
     }
-    this.cached = (await AsyncStorage.getItem(KEY)) === 'pro';
+    // Debug builds are Pro. Auto-captioning is Pro-gated at the queue, so a
+    // dev build with no entitlement drops every clip on the floor before a
+    // job is ever created — which reads as "captions are broken" rather than
+    // "captions are paywalled". `clear()` still forces the free path when
+    // that is what you want to exercise.
+    this.cached = __DEV__ || (await AsyncStorage.getItem(KEY)) === 'pro';
     return this.cached;
   }
 

@@ -1,22 +1,29 @@
 import RNFS from 'react-native-fs';
 import type { CaptioningProvider } from './CaptioningProvider';
+import type { CaptionStyleKey } from './captionStyles';
+import { DEFAULT_CAPTION_STYLE } from './captionStyles';
 
 /**
  * Talks to the self-hosted captioning service (server/captioning) — or any
  * vendor implementing the same two-endpoint contract:
  *
- *   POST {baseUrl}/caption               multipart "file" → {id}
+ *   POST {baseUrl}/caption               multipart "file" + "style" → {id}
  *   GET  {baseUrl}/caption/{id}/download → captioned MP4
  *
  * The app never knows what's behind the URL; captioning stays swappable.
  */
 export class HttpCaptioningProvider implements CaptioningProvider {
   readonly name = 'http';
+  readonly burnsCaptions = true;
 
   constructor(private baseUrl: string) {}
 
-  async caption(clipFilePath: string): Promise<{ captionedFilePath: string }> {
+  async caption(
+    clipFilePath: string,
+    options?: { style?: CaptionStyleKey },
+  ): Promise<{ captionedFilePath: string }> {
     const base = this.baseUrl.replace(/\/+$/, '');
+    const style = options?.style ?? DEFAULT_CAPTION_STYLE;
 
     const upload = await RNFS.uploadFiles({
       toUrl: `${base}/caption`,
@@ -28,6 +35,7 @@ export class HttpCaptioningProvider implements CaptioningProvider {
           filetype: 'video/mp4',
         },
       ],
+      fields: { style },
       method: 'POST',
     }).promise;
     if (upload.statusCode < 200 || upload.statusCode >= 300) {
@@ -35,7 +43,13 @@ export class HttpCaptioningProvider implements CaptioningProvider {
     }
     const { id } = JSON.parse(upload.body) as { id: string };
 
-    const captionedFilePath = clipFilePath.replace(/\.mp4$/, '.captioned.mp4');
+    // The style is part of the filename so re-captioning in a different style
+    // writes a new file. Overwriting one path would leave the player showing
+    // the old, already-decoded video.
+    const captionedFilePath = clipFilePath.replace(
+      /\.mp4$/,
+      `.captioned.${style}.mp4`,
+    );
     const download = await RNFS.downloadFile({
       fromUrl: `${base}/caption/${id}/download`,
       toFile: captionedFilePath,

@@ -18,11 +18,21 @@ import type {
   PublishStatus,
   PublishTarget,
 } from '../../phase2/PublishTarget';
+import type { Clip } from '../../types';
 import { Button, SectionLabel } from '../components';
 import type { RootStackParamList } from '../navigation';
 import { colors, radius, spacing, type } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Publish'>;
+
+/** True when a captioned cut already exists on disk for this clip. */
+function captionsAlreadyBurned(clip: Clip): boolean {
+  return (
+    clip.captionState === 'ready' &&
+    Boolean(clip.captionedFilePath) &&
+    clip.captionProvider !== 'mock'
+  );
+}
 
 type Phase =
   | { step: 'compose' }
@@ -32,7 +42,11 @@ type Phase =
 const PRIVACY_CHOICES: PublishPrivacy[] = ['public', 'unlisted', 'private'];
 
 export function PublishScreen({ route }: Props) {
-  const { clip } = route.params;
+  const { clip: openedClip } = route.params;
+  // Live copy, not the route snapshot: if this clip's captioning job finishes
+  // while the screen is open, publishing must pick up the burned-in cut
+  // instead of transcribing and re-encoding the whole thing a second time.
+  const [clip, setClip] = useState(openedClip);
   const [targets, setTargets] = useState<Array<{ target: PublishTarget; ready: boolean }>>([]);
   const [selected, setSelected] = useState<PublishTarget | null>(null);
   const [caption, setCaption] = useState('');
@@ -40,6 +54,18 @@ export function PublishScreen({ route }: Props) {
   const [withCaptions, setWithCaptions] = useState(true);
   const [phase, setPhase] = useState<Phase>({ step: 'compose' });
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    const sync = () =>
+      clipStore.list().then(all => {
+        const live = all.find(c => c.id === openedClip.id);
+        if (live) {
+          setClip(live);
+        }
+      });
+    sync();
+    return clipStore.subscribe(sync);
+  }, [openedClip.id]);
 
   useEffect(() => {
     publishService
@@ -193,7 +219,16 @@ export function PublishScreen({ route }: Props) {
         ]}
         onPress={() => setWithCaptions(v => !v)}>
         <Text style={[styles.choiceText, withCaptions && styles.choiceTextSelected]}>
-          {withCaptions ? '✓ Auto-captions' : 'Auto-captions off'}
+          {/* Captions are burned on capture now, so for an already-captioned
+              clip this chooses between that cut and the raw one — it is not
+              deciding whether captioning happens. */}
+          {captionsAlreadyBurned(clip)
+            ? withCaptions
+              ? '✓ Captioned cut'
+              : 'Raw cut, no captions'
+            : withCaptions
+            ? '✓ Auto-captions'
+            : 'Auto-captions off'}
         </Text>
       </Pressable>
 

@@ -24,6 +24,7 @@
 		B0BE19483E8FF5A24A62AE69 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
 		D99AAD48CD4A3815E9E94497 /* ClipsoWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EA39FB0659413DABE7CAA3B /* ClipsoWidgetsBundle.swift */; };
 		E5345EA5EACE870665C5A7E8 /* MockFeed.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 0BB5AC80AAC50026E2888293 /* MockFeed.mp4 */; };
+		C1A70F3E4B2D81096ED4A5F1 /* Montserrat-ExtraBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = C1A70F3D4B2D81096ED4A5F0 /* Montserrat-ExtraBold.ttf */; };
 		EA94358F51861B263003D326 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AC343EE77DB7B8EF74C58C97 /* Foundation.framework */; };
 		F1124EF2E68B52680BC22CE3 /* MWDATBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B032E5A05050FA7ACD489623 /* MWDATBridge.swift */; };
 		FE3DD1566E52E214CC1B9FE1 /* ClipsoLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCA08829635EF83E8E0E079A /* ClipsoLiveActivity.swift */; };
@@ -55,6 +56,7 @@
 
 /* Begin PBXFileReference section */
 		0BB5AC80AAC50026E2888293 /* MockFeed.mp4 */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = file; name = MockFeed.mp4; path = Clipso/MockFeed.mp4; sourceTree = "<group>"; };
+		C1A70F3D4B2D81096ED4A5F0 /* Montserrat-ExtraBold.ttf */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = file; name = "Montserrat-ExtraBold.ttf"; path = "Clipso/Montserrat-ExtraBold.ttf"; sourceTree = "<group>"; };
 		0F86CA723E8264BC7FDABC50 /* ClipsoWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ClipsoWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07F961A680F5B00A75B9A /* Clipso.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Clipso.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = Clipso/Images.xcassets; sourceTree = "<group>"; };
@@ -116,6 +118,7 @@
 				8439CF4812DD97E1C56847EC /* MWDATSegmentWriter.swift */,
 				B50CD06736D50709609B0DF7 /* MWDATBridge.m */,
 				0BB5AC80AAC50026E2888293 /* MockFeed.mp4 */,
+				C1A70F3D4B2D81096ED4A5F0 /* Montserrat-ExtraBold.ttf */,
 				A66F714E2955F9AA8DA525E7 /* ClipsoActivityAttributes.swift */,
 				41DCE301BA184309E6B71F59 /* LiveActivityBridge.swift */,
 				8C2ED39333D84E1CFE37525B /* LiveActivityBridge.m */,
@@ -297,6 +300,7 @@
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				B0BE19483E8FF5A24A62AE69 /* PrivacyInfo.xcprivacy in Resources */,
 				E5345EA5EACE870665C5A7E8 /* MockFeed.mp4 in Resources */,
+				C1A70F3E4B2D81096ED4A5F1 /* Montserrat-ExtraBold.ttf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

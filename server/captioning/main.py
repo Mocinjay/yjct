@@ -1,35 +1,48 @@
-"""Fade Away captioning service — the swappable infra behind the app's
+"""Clipso captioning service — the swappable infra behind the app's
 CaptioningProvider seam.
 
-POST /caption (multipart: file) -> {"id": ...}
+GET  /styles                    -> [{key, label, description, ...}]
+POST /caption (file, style)     -> {"id": ..., "captions": N, "style": ...}
 GET  /caption/{id}/download     -> captioned MP4
 
-Pipeline (technique informed by studying SamurAIGPT's shorts generator,
-implemented clean-room):
+Pipeline:
   1. faster-whisper transcription with word timestamps + VAD filter
      (int8 on CPU, float16 on CUDA)
-  2. words grouped into short pop-in caption chunks (Shorts style)
+  2. words grouped into captions and timed per word (captions.py)
   3. ffmpeg burns an ASS subtitle track onto the clip (libx264 + copy audio)
 
+This module is transport only. Everything about how a caption looks and when
+each word lights up lives in captions.py, which has no dependencies and is
+covered by test_captions.py.
+
 Run:
-  pip install -r requirements.txt   # needs ffmpeg on PATH
+  pip install -r requirements.txt   # needs ffmpeg (and ffprobe) on PATH
   uvicorn main:app --host 0.0.0.0 --port 8787
 """
+import json
 import os
 import subprocess
 import tempfile
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
-WORK_DIR = Path(os.getenv("WORK_DIR", tempfile.gettempdir())) / "fadeaway-captioning"
-MAX_WORDS_PER_CAPTION = 3
-MAX_CAPTION_SECONDS = 1.6
+from captions import (
+    CAPTION_STYLES,
+    DEFAULT_STYLE_KEY,
+    build_ass,
+    chunk_words,
+    describe_styles,
+    get_style,
+)
 
-app = FastAPI(title="Fade Away Captioning")
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
+WORK_DIR = Path(os.getenv("WORK_DIR", tempfile.gettempdir())) / "clipso-captioning"
+DEFAULT_FRAME = (1080, 1920)
+
+app = FastAPI(title="Clipso Captioning")
 _model = None
 
 
@@ -51,8 +64,22 @@ def get_model():
     return _model
 
 
+@app.get("/styles")
+def styles():
+    return {"default": DEFAULT_STYLE_KEY, "styles": describe_styles()}
+
+
 @app.post("/caption")
-async def caption(file: UploadFile):
+async def caption(file: UploadFile, style: str = Form(DEFAULT_STYLE_KEY)):
+    try:
+        caption_style = get_style(style)
+    except KeyError:
+        # Refuse rather than fall back: the app shows the user a style name,
+        # and burning in a different one would make that label a lie.
+        raise HTTPException(
+            400, f"unknown style {style!r}; known: {sorted(CAPTION_STYLES)}"
+        )
+
     job_id = uuid.uuid4().hex
     job_dir = WORK_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -64,17 +91,24 @@ async def caption(file: UploadFile):
     if not words:
         # No speech: return the clip unchanged rather than failing.
         out.write_bytes(src.read_bytes())
-        return {"id": job_id, "captions": 0}
+        return {"id": job_id, "captions": 0, "style": caption_style.key}
 
+    width, height = probe_frame_size(str(src))
+    chunks = chunk_words(words, caption_style)
     ass_path = job_dir / "subs.ass"
-    chunks = chunk_words(words)
-    ass_path.write_text(build_ass(chunks), encoding="utf-8")
+    ass_path.write_text(
+        build_ass(chunks, caption_style, width, height), encoding="utf-8"
+    )
     burn(str(src), str(ass_path), str(out))
-    return {"id": job_id, "captions": len(chunks)}
+    return {"id": job_id, "captions": len(chunks), "style": caption_style.key}
 
 
 @app.get("/caption/{job_id}/download")
 def download(job_id: str):
+    # job_id comes off the wire; without this check it is a path traversal
+    # into the rest of the filesystem.
+    if not job_id.isalnum():
+        raise HTTPException(400, "bad job id")
     out = WORK_DIR / job_id / "out.mp4"
     if not out.exists():
         raise HTTPException(404, "unknown job id")
@@ -98,63 +132,27 @@ def transcribe_words(path: str) -> list[dict]:
     return words
 
 
-def chunk_words(words: list[dict]) -> list[dict]:
-    """Group words into short, punchy captions (Shorts style)."""
-    chunks: list[dict] = []
-    current: list[dict] = []
-    for w in words:
-        if current and (
-            len(current) >= MAX_WORDS_PER_CAPTION
-            or w["end"] - current[0]["start"] > MAX_CAPTION_SECONDS
-        ):
-            chunks.append(flush(current))
-            current = []
-        current.append(w)
-    if current:
-        chunks.append(flush(current))
-    return chunks
-
-
-def flush(words: list[dict]) -> dict:
-    return {
-        "start": words[0]["start"],
-        "end": words[-1]["end"],
-        "text": " ".join(w["text"] for w in words).upper(),
-    }
-
-
-ASS_HEADER = """[Script Info]
-ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
-WrapStyle: 0
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Pop,Arial,110,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,8,0,2,60,60,340,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-
-
-def build_ass(chunks: list[dict]) -> str:
-    lines = [ASS_HEADER]
-    for c in chunks:
-        text = c["text"].replace("\\", "").replace("{", "").replace("}", "")
-        lines.append(
-            f"Dialogue: 0,{ass_ts(c['start'])},{ass_ts(c['end'])},Pop,,0,0,0,,"
-            f"{{\\fad(60,40)}}{text}\n"
+def probe_frame_size(path: str) -> tuple[int, int]:
+    """Actual frame size, so caption sizing matches the clip instead of
+    assuming a 1080x1920 export. Falls back to that on any probe failure."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "json",
+                path,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
         )
-    return "".join(lines)
-
-
-def ass_ts(seconds: float) -> str:
-    cs = max(0, int(round(seconds * 100)))
-    h, rem = divmod(cs, 360000)
-    m, rem = divmod(rem, 6000)
-    s, cs = divmod(rem, 100)
-    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+        stream = json.loads(result.stdout)["streams"][0]
+        width, height = int(stream["width"]), int(stream["height"])
+        return (width, height) if width > 0 and height > 0 else DEFAULT_FRAME
+    except (subprocess.CalledProcessError, OSError, ValueError, KeyError, IndexError):
+        return DEFAULT_FRAME
 
 
 def burn(src: str, ass_path: str, out: str) -> None:

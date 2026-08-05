@@ -1,3 +1,6 @@
+import { settingsStore } from '../core/SettingsStore';
+import { captionEngineUsable } from '../native/CaptionEngineNative';
+import { OnDeviceCaptioningProvider } from './OnDeviceCaptioningProvider';
 import type { Clip } from '../types';
 import type { CaptioningProvider } from './CaptioningProvider';
 import type { ClipHosting } from './ClipHosting';
@@ -35,7 +38,19 @@ export class PublishService {
   // The mock target keeps state (fake job ids), so it persists across builds.
   private mockTarget = new MockPublishTarget();
 
+  /**
+   * Captioning runs on the phone when it can. Order matters:
+   *
+   *  1. on-device (iOS) — no server, no key, audio never leaves the device
+   *  2. the self-hosted HTTP service — Android, or iOS where on-device
+   *     recognition is unavailable for the locale
+   *  3. the mock — dev only, and it labels itself as such
+   */
   async getCaptioner(): Promise<CaptioningProvider> {
+    if (await captionEngineUsable()) {
+      const { climaxEdit } = await settingsStore.get();
+      return new OnDeviceCaptioningProvider(climaxEdit);
+    }
     const cfg = await connectorConfigStore.get();
     return cfg.captioningUrl
       ? new HttpCaptioningProvider(cfg.captioningUrl)
@@ -79,9 +94,18 @@ export class PublishService {
 
     let filePath = clip.filePath;
     if (options.withCaptions) {
-      const captioner = await this.getCaptioner();
-      const captioned = await captioner.caption(filePath);
-      filePath = captioned.captionedFilePath;
+      if (clip.captionState === 'ready' && clip.captionedFilePath) {
+        // Auto-captioning already burned this clip. Re-running would
+        // re-transcribe and re-encode it for an identical result.
+        filePath = clip.captionedFilePath;
+      } else {
+        const { captionStyle } = await settingsStore.get();
+        const captioner = await this.getCaptioner();
+        const captioned = await captioner.caption(filePath, {
+          style: captionStyle,
+        });
+        filePath = captioned.captionedFilePath;
+      }
     }
 
     let hostedUrl: string | undefined;
