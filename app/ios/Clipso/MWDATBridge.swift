@@ -109,6 +109,21 @@ final class MWDATBridge: RCTEventEmitter {
   private var frameCountAtLastHealth = 0
   private var lastHealthAt: TimeInterval = 0
   private var stallReported = false
+  /// Set once the watchdog has declared the feed stalled, cleared the moment
+  /// frames come back. While it is set, `stream.state` is known to be lying —
+  /// the SDK keeps reporting `.streaming` on a link that has delivered nothing
+  /// for a minute — so `performOpenPipeline()` must not take it at its word.
+  private var pipelineStalled = false
+  /// The segment length the user armed with, so a stall recovery can restore
+  /// the writer instead of coming back with a live preview and no capture.
+  private var activeSegmentSeconds: Double?
+  /// Single-flight stall recovery, bounded. Glasses that are folded, flat, or
+  /// out of range will not come back however often we ask, and each attempt
+  /// renegotiates the link — so this gives up and tells the wearer instead of
+  /// cycling the glasses for as long as the app is armed.
+  private var recoveryTask: Task<Void, Never>?
+  private var recoveryAttempts = 0
+  private static let maxRecoveryAttempts = 3
   private var healthTimer: DispatchSourceTimer?
   private let healthQueue = DispatchQueue(label: "com.mocinjay.clipso.mwdat.health")
   /// Creating a CIContext allocates a GPU context and is documented as
@@ -686,6 +701,10 @@ final class MWDATBridge: RCTEventEmitter {
         && stream != nil
       do {
         try ensureConfigured()
+        // Arming by hand is a fresh start: give recovery its full budget back,
+        // otherwise one bad session leaves the app unable to self-heal until
+        // it is relaunched.
+        recoveryAttempts = 0
         try await openPipelineIfNeeded()
         try attachWriter(segmentSeconds: segmentSeconds.doubleValue)
         resolve(nil)
@@ -721,6 +740,9 @@ final class MWDATBridge: RCTEventEmitter {
       writer?.stopAndDiscard()
       writer = nil
     }
+    // Recording is off by intent now: a later stall recovery must bring the
+    // preview back without silently resuming capture.
+    activeSegmentSeconds = nil
     resolve(nil)
   }
 
@@ -762,6 +784,11 @@ final class MWDATBridge: RCTEventEmitter {
     _ resolve: @escaping RCTPromiseResolveBlock,
     reject _: @escaping RCTPromiseRejectBlock
   ) {
+    // An in-flight rebuild would otherwise reopen the pipeline moments after
+    // the wearer asked for it to be down.
+    recoveryTask?.cancel()
+    recoveryTask = nil
+    recoveryAttempts = 0
     stopping = true
     teardown()
     stopping = false
@@ -803,17 +830,26 @@ final class MWDATBridge: RCTEventEmitter {
 
   @MainActor
   private func performOpenPipeline() async throws {
-    // Reuse a live stream even if we only asked for preview earlier. Tearing
-    // it down here is what made the glasses "shut off" on the way into Live.
-    if let stream, stream.state == .streaming || stream.state == .starting {
-      Self.log(
-        "pipeline already open (stream \(stream.state), session=\(deviceSession.map { String(describing: $0.state) } ?? "nil"))"
-      )
-      return
-    }
-    if let session = deviceSession, session.state == .started, stream != nil {
-      Self.log("pipeline already open (session started, stream present)")
-      return
+    // A stalled feed invalidates both reuse checks below. The SDK goes on
+    // reporting `.streaming` with a `.started` session on a link that has
+    // delivered no frame in a minute, so honouring that here left the app
+    // wedged: re-arming logged "pipeline already open" and changed nothing,
+    // and only a force-quit brought the feed back.
+    if pipelineStalled {
+      Self.log("pipeline claims open but the feed stalled — rebuilding it")
+    } else {
+      // Reuse a live stream even if we only asked for preview earlier. Tearing
+      // it down here is what made the glasses "shut off" on the way into Live.
+      if let stream, stream.state == .streaming || stream.state == .starting {
+        Self.log(
+          "pipeline already open (stream \(stream.state), session=\(deviceSession.map { String(describing: $0.state) } ?? "nil"))"
+        )
+        return
+      }
+      if let session = deviceSession, session.state == .started, stream != nil {
+        Self.log("pipeline already open (session started, stream present)")
+        return
+      }
     }
     // Our own teardown, not a device-initiated drop — suppress the error event.
     stopping = true
@@ -1058,6 +1094,7 @@ final class MWDATBridge: RCTEventEmitter {
     lastHealthAt = lastFrameAt
     frameCountAtLastHealth = frameCount
     stallReported = false
+    pipelineStalled = false
 
     let timer = DispatchSource.makeTimerSource(queue: healthQueue)
     timer.schedule(deadline: .now() + 1, repeating: 1)
@@ -1083,6 +1120,8 @@ final class MWDATBridge: RCTEventEmitter {
       guard sinceFrame > Self.stallSeconds else {
         if self.stallReported {
           self.stallReported = false
+          self.pipelineStalled = false
+          self.recoveryAttempts = 0
           Self.log("frames RESUMED after stall")
           self.sendEvent(
             withName: Event.streamState,
@@ -1095,6 +1134,9 @@ final class MWDATBridge: RCTEventEmitter {
       // the wearer is not buried under a repeating error.
       guard !self.stallReported, !self.stopping else { return }
       self.stallReported = true
+      // Latched separately from `stallReported` so it survives for the reopen:
+      // the next open must rebuild the pipeline instead of trusting the SDK.
+      self.pipelineStalled = true
       Self.log(String(format: "STALL — no glasses frame for %.1fs", sinceFrame))
       self.sendEvent(
         withName: Event.error,
@@ -1103,12 +1145,86 @@ final class MWDATBridge: RCTEventEmitter {
             + "\(Int(sinceFrame))s. Check they are unfolded, being worn and in range.",
         ]
       )
+      // Nothing else will ever kick this: the SDK reports no error and leaves
+      // `stream.state` at `.streaming`, so without a rebuild from here the feed
+      // stays dead until the app is force-quit.
+      Task { @MainActor [weak self] in await self?.attemptStallRecovery() }
     }
     timer.resume()
     healthTimer = timer
   }
 
+  /// Rebuild the pipeline after the watchdog declares the feed stalled.
+  ///
+  /// Runs at most `maxRecoveryAttempts` times with a widening backoff, and only
+  /// while the app still wants frames. A failed rebuild leaves the stream torn
+  /// down rather than half-open, so the next attempt starts from a known state
+  /// and the reuse guards in `performOpenPipeline()` cannot short-circuit it.
+  @MainActor
+  private func attemptStallRecovery() async {
+    guard recoveryTask == nil, !stopping else { return }
+    guard recoveryAttempts < Self.maxRecoveryAttempts else {
+      Self.log("stall recovery exhausted — leaving the pipeline down for the wearer to retry")
+      return
+    }
+
+    let task = Task { @MainActor in
+      // Read once, before the first teardown() clears it: recovery has to
+      // restore the writer, or the feed comes back live with nothing being
+      // recorded — and a failed attempt must not lose the recording intent.
+      let segmentSeconds = activeSegmentSeconds
+
+      // Looped rather than one attempt per call, because a failed rebuild
+      // leaves no health timer running — nothing would be left to fire the
+      // next attempt, and the wearer would never hear why it went quiet.
+      while recoveryAttempts < Self.maxRecoveryAttempts {
+        recoveryAttempts += 1
+        let attempt = recoveryAttempts
+        let backoffSeconds = attempt * 2
+        Self.log(
+          "stall recovery \(attempt)/\(Self.maxRecoveryAttempts) in \(backoffSeconds)s "
+            + "(recording=\(segmentSeconds != nil))"
+        )
+        try? await Task.sleep(nanoseconds: UInt64(backoffSeconds) * 1_000_000_000)
+        // A stop() during the backoff means the wearer no longer wants frames;
+        // rebuilding here would restart the glasses behind their back.
+        guard !Task.isCancelled, !stopping else { return }
+
+        // Our own teardown, not a device-initiated drop — suppress the error event.
+        stopping = true
+        teardown()
+        stopping = false
+        do {
+          try await openPipelineIfNeeded()
+          if let segmentSeconds {
+            try attachWriter(segmentSeconds: segmentSeconds)
+          }
+          // Open is not the same as live. The rebuilt pipeline gets a fresh
+          // health timer, so if frames still never arrive it stalls again and
+          // calls back in here with the attempt budget already spent down.
+          Self.log("stall recovery \(attempt): pipeline rebuilt — waiting for frames")
+          return
+        } catch {
+          Self.log("stall recovery \(attempt) FAILED: \(error.localizedDescription)")
+        }
+      }
+
+      sendEvent(
+        withName: Event.error,
+        body: [
+          "message": "The glasses feed stopped and could not be restarted after "
+            + "\(Self.maxRecoveryAttempts) attempts. Check they are unfolded, charged, "
+            + "being worn and in range, then arm again.",
+        ]
+      )
+    }
+    recoveryTask = task
+    await task.value
+    recoveryTask = nil
+  }
+
   private func attachWriter(segmentSeconds: Double) throws {
+    activeSegmentSeconds = segmentSeconds
     guard writer == nil else { return }
     let newWriter = MWDATSegmentWriter(
       segmentSeconds: segmentSeconds,
@@ -1156,6 +1272,10 @@ final class MWDATBridge: RCTEventEmitter {
     frameCountAtLastHealth = 0
     lastFrameAt = 0
     stallReported = false
+    pipelineStalled = false
+    // Deliberately NOT resetting recoveryAttempts: teardown runs inside the
+    // recovery itself, and clearing the count there would retry forever.
+    activeSegmentSeconds = nil
     previewEmitCount = 0
     previewFailLogged = false
     streamHasLeftStopped = false
