@@ -12,11 +12,16 @@ const KEY = 'clypso.markers.v1';
  *
  * Markers routinely outlive the moment by a long way: the wearer says the word,
  * and the recording it belongs to does not reach the phone until Meta AI next
- * syncs — which may be after a walk home, or overnight on a charger. A marker
- * discarded before its footage arrives is a moment lost with no trace, so this
- * errs heavily toward keeping them.
+ * syncs — which may be after a walk home, overnight on a charger, or not until
+ * the glasses are next opened after a trip. A marker discarded before its
+ * footage arrives is a moment lost with no trace.
+ *
+ * Deliberately far longer than the free tier's 24-hour clip expiry, and not
+ * derived from it. That number is about storage — clips are megabytes. A marker
+ * is an id and a timestamp, so keeping a month of them costs nothing, and the
+ * sync it is waiting on is not something this app controls.
  */
-const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Trigger words the phone heard, waiting for footage to appear.

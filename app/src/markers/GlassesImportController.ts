@@ -47,6 +47,11 @@ export class GlassesImportController {
     private readonly options: {
       /** Seconds of footage to keep before the trigger word. */
       lookbackSec: number;
+      /**
+       * Longest single clip to cut, when two triggers merge into one window.
+       * Undefined leaves the union uncapped.
+       */
+      maxWindowSec?: number;
       /** Called once per imported clip, for captioning and the hook-first edit. */
       onClipImported?: (clip: Clip) => void;
     },
@@ -224,6 +229,7 @@ export class GlassesImportController {
     };
     const cuts = clipRangesForVideo(markers, video, {
       lookbackSec: this.options.lookbackSec,
+      maxWindowSec: this.options.maxWindowSec,
     });
     if (cuts.length === 0) {
       return [];
@@ -246,7 +252,7 @@ export class GlassesImportController {
         const clip = await this.cutClip(original.path, cut.range, video);
         await clipStore.add(clip);
         clips.push(clip);
-        consumed.push(cut.marker.id);
+        consumed.push(...cut.markers.map(marker => marker.id));
         try {
           this.options.onClipImported?.(clip);
         } catch (err) {

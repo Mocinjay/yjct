@@ -21,6 +21,10 @@ const mockSync = jest.fn(async () => []);
 const mockAppStateListeners: ((state: string) => void)[] = [];
 
 jest.mock('react-native', () => ({
+  Platform: {
+    OS: 'ios',
+    select: (choices: Record<string, unknown>) => choices.ios ?? choices.default,
+  },
   AppState: {
     addEventListener: (_event: string, listener: (state: string) => void) => {
       mockAppStateListeners.push(listener);
@@ -46,6 +50,9 @@ jest.mock('../src/markers/GlassesImportController', () => ({
 }));
 
 jest.mock('../src/markers/MarkerStore', () => ({ MarkerStore: class {} }));
+jest.mock('../src/core/EntitlementStore', () => ({
+  entitlementStore: { isPro: jest.fn(async () => false) },
+}));
 jest.mock('../src/wakeword/SpeechWakeWord', () => ({ SpeechWakeWord: class {} }));
 jest.mock('../src/captioning/CaptionQueue', () => ({
   captionQueue: { enqueue: jest.fn(async () => {}) },

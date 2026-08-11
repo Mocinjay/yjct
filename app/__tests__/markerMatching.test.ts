@@ -1,7 +1,6 @@
 import {
   clipRangeForMarker,
   clipRangesForVideo,
-  coalesceMarkers,
   markerOffsetSec,
   markersWithin,
 } from '../src/markers/markerMatching';
@@ -76,23 +75,6 @@ describe('markersWithin', () => {
   });
 });
 
-describe('coalesceMarkers', () => {
-  it('drops a second marker whose look-back would repeat the first', () => {
-    const kept = coalesceMarkers([markerAt(4), markerAt(9)], 30);
-    expect(kept.map(m => m.id)).toEqual(['m4']);
-  });
-
-  it('keeps markers far enough apart to be different moments', () => {
-    const kept = coalesceMarkers([markerAt(0), markerAt(40)], 30);
-    expect(kept.map(m => m.id)).toEqual(['m0', 'm40']);
-  });
-
-  it('keeps the earlier of a pair — the reaction, not the afterthought', () => {
-    const kept = coalesceMarkers([markerAt(12), markerAt(14)], 30);
-    expect(kept.map(m => m.id)).toEqual(['m12']);
-  });
-});
-
 describe('clipRangeForMarker', () => {
   it('ends the clip on the trigger word and looks back from there', () => {
     const range = clipRangeForMarker(markerAt(15), video(), { lookbackSec: 10 });
@@ -135,12 +117,70 @@ describe('clipRangesForVideo', () => {
 
     const cuts = clipRangesForVideo(markers, long, { lookbackSec: 30 });
 
-    // m25 is inside m20's look-back, so it collapses into it.
-    expect(cuts.map(c => c.marker.id)).toEqual(['m20', 'm100', 'm160']);
+    // m25 is inside m20's look-back, so the two become one window.
+    expect(cuts.map(c => c.markers.map(m => m.id))).toEqual([
+      ['m20', 'm25'],
+      ['m100'],
+      ['m160'],
+    ]);
     expect(cuts[0].range.startSec).toBe(0);
-    expect(cuts[0].range.endSec).toBeCloseTo(20);
     expect(cuts[1].range.startSec).toBeCloseTo(70);
     expect(cuts[2].range.endSec).toBeCloseTo(160);
+  });
+
+  it('merges two markers inside a look-back into one window, not one clip each', () => {
+    const long = video({ durationSec: 180 });
+
+    const cuts = clipRangesForVideo([markerAt(50), markerAt(60)], long, {
+      lookbackSec: 20,
+    });
+
+    expect(cuts).toHaveLength(1);
+    // The union: back a look-back from the first, forward to the second.
+    expect(cuts[0].range.startSec).toBeCloseTo(30);
+    expect(cuts[0].range.endSec).toBeCloseTo(60);
+    // Both are spent, so neither can produce a near-duplicate on a later pass.
+    expect(cuts[0].markers.map(m => m.id)).toEqual(['m50', 'm60']);
+  });
+
+  it('keeps two markers further apart than the look-back as separate clips', () => {
+    const long = video({ durationSec: 180 });
+
+    const cuts = clipRangesForVideo([markerAt(50), markerAt(90)], long, {
+      lookbackSec: 20,
+    });
+
+    expect(cuts.map(c => [c.range.startSec, c.range.endSec])).toEqual([
+      [30, 50],
+      [70, 90],
+    ]);
+  });
+
+  it('caps the union at 30s on free, trimming the front and keeping the moment', () => {
+    const long = video({ durationSec: 180 });
+    // Exactly a look-back apart is the widest a union can get: 40s.
+    const markers = [markerAt(50), markerAt(70)];
+
+    const cuts = clipRangesForVideo(markers, long, {
+      lookbackSec: 20,
+      maxWindowSec: 30,
+    });
+
+    expect(cuts).toHaveLength(1);
+    expect(cuts[0].range.endSec).toBeCloseTo(70);
+    expect(cuts[0].range.startSec).toBeCloseTo(40);
+  });
+
+  it('leaves the same union alone on Pro, which has room for it', () => {
+    const long = video({ durationSec: 180 });
+
+    const cuts = clipRangesForVideo([markerAt(50), markerAt(70)], long, {
+      lookbackSec: 20,
+      maxWindowSec: 90,
+    });
+
+    expect(cuts[0].range.startSec).toBeCloseTo(30);
+    expect(cuts[0].range.endSec).toBeCloseTo(70);
   });
 
   it('yields nothing for a recording nobody marked', () => {
@@ -150,6 +190,6 @@ describe('clipRangesForVideo', () => {
   it('ignores markers from a neighbouring recording', () => {
     const markers = [markerAt(5), markerAt(600)];
     const cuts = clipRangesForVideo(markers, video(), { lookbackSec: 30 });
-    expect(cuts.map(c => c.marker.id)).toEqual(['m5']);
+    expect(cuts.map(c => c.markers[0].id)).toEqual(['m5']);
   });
 });

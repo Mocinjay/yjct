@@ -66,6 +66,15 @@ export interface ClipRangeOptions {
    * glasses.
    */
   leadOutSec?: number;
+  /**
+   * Longest single clip this tier allows.
+   *
+   * Only ever bites on a merged window, which can reach twice the look-back
+   * when two triggers sit exactly a look-back apart. Trimming comes off the
+   * front: the clip is a look-back, so the end is the moment and the start is
+   * the negotiable part.
+   */
+  maxWindowSec?: number;
 }
 
 /** Seconds from the start of `video` at which `marker` was spoken. */
@@ -94,32 +103,6 @@ export function markersWithin(
   return markers
     .filter(marker => marker.atMs >= startMs && marker.atMs <= endMs)
     .sort((a, b) => a.atMs - b.atMs);
-}
-
-/**
- * Drop markers that land on top of one another.
- *
- * Detection already debounces repeats within a few seconds, but that only
- * suppresses one utterance being recognized twice. Someone saying the word
- * again ten seconds later is a real second marker whose look-back window
- * almost entirely overlaps the first — two near-identical clips out of one
- * moment. Keeping the earlier of the pair keeps the clip that ends on the
- * first reaction rather than the afterthought.
- */
-export function coalesceMarkers(
-  markers: readonly WakeMarker[],
-  minGapSec: number,
-): WakeMarker[] {
-  const sorted = [...markers].sort((a, b) => a.atMs - b.atMs);
-  const kept: WakeMarker[] = [];
-  for (const marker of sorted) {
-    const previous = kept[kept.length - 1];
-    if (previous && (marker.atMs - previous.atMs) / 1000 < minGapSec) {
-      continue;
-    }
-    kept.push(marker);
-  }
-  return kept;
 }
 
 /** A cut to make in a recording, in seconds from its start. */
@@ -155,26 +138,62 @@ export function clipRangeForMarker(
   return { startSec, endSec };
 }
 
+/** A cut, and every marker that asked for it. */
+export interface Cut {
+  /** Oldest first. All of them are spent when the cut is made. */
+  markers: WakeMarker[];
+  range: ClipRange;
+}
+
 /**
  * Every cut to make in one recording.
  *
- * Coalescing uses the look-back window as the gap, because two markers closer
- * together than that produce clips that are mostly the same footage.
+ * Two triggers close together do not mean two clips. Their look-back windows
+ * overlap almost entirely, so cutting both produces a pair of near-identical
+ * videos out of one moment. What they actually describe is one longer moment —
+ * the wearer reacted, and then reacted again — so overlapping windows are
+ * merged into their union rather than one of them being thrown away. Discarding
+ * the later marker, which is what this used to do, silently cut the second
+ * reaction out of the clip that was supposed to contain it.
+ *
+ * The union has a bound: two markers exactly a look-back apart give twice the
+ * look-back, and no more, because any further apart and the windows no longer
+ * touch. `maxWindowSec` is what keeps that inside a tier's limit.
  */
 export function clipRangesForVideo(
   markers: readonly WakeMarker[],
   video: GlassesVideo,
   options: ClipRangeOptions & MatchOptions,
-): { marker: WakeMarker; range: ClipRange }[] {
-  const mine = coalesceMarkers(
-    markersWithin(markers, video, options),
-    options.lookbackSec,
-  );
-  const cuts: { marker: WakeMarker; range: ClipRange }[] = [];
-  for (const marker of mine) {
+): Cut[] {
+  // Sorted by marker time, and both ends of a range move with it, so ranges
+  // arrive in order and a single forward pass is enough to merge them.
+  const cuts: Cut[] = [];
+  for (const marker of markersWithin(markers, video, options)) {
     const range = clipRangeForMarker(marker, video, options);
-    if (range !== null) {
-      cuts.push({ marker, range });
+    if (range === null) {
+      continue;
+    }
+    const previous = cuts[cuts.length - 1];
+    if (previous && range.startSec <= previous.range.endSec) {
+      previous.range = {
+        startSec: previous.range.startSec,
+        endSec: Math.max(previous.range.endSec, range.endSec),
+      };
+      previous.markers.push(marker);
+    } else {
+      cuts.push({ markers: [marker], range });
+    }
+  }
+
+  const { maxWindowSec } = options;
+  if (maxWindowSec !== undefined) {
+    for (const cut of cuts) {
+      if (cut.range.endSec - cut.range.startSec > maxWindowSec) {
+        cut.range = {
+          startSec: cut.range.endSec - maxWindowSec,
+          endSec: cut.range.endSec,
+        };
+      }
     }
   }
   return cuts;

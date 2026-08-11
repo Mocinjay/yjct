@@ -1,6 +1,8 @@
 import { AppState } from 'react-native';
 import type { NativeEventSubscription } from 'react-native';
 import { captionQueue } from '../captioning/CaptionQueue';
+import { BUFFER_SECONDS_MAX, FREE_BUFFER_SECONDS_MAX } from '../config';
+import { entitlementStore } from '../core/EntitlementStore';
 import { createLogger } from '../core/Logger';
 import { ErrorCode } from '../core/errors';
 import { settingsStore } from '../core/SettingsStore';
@@ -124,6 +126,12 @@ class GlassesImportService {
       new SpeechWakeWord({ ownMicrophone: true }),
       {
         lookbackSec: LOOKBACK_SECONDS,
+        // Only reached when two triggers merge into one window, which tops out
+        // at twice the look-back. That fits Pro; on free it gets trimmed to the
+        // same ceiling the rolling buffer has.
+        maxWindowSec: (await entitlementStore.isPro())
+          ? BUFFER_SECONDS_MAX
+          : FREE_BUFFER_SECONDS_MAX,
         onClipImported: clip =>
           captionQueue
             .enqueue(clip.id)
