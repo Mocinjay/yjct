@@ -4,6 +4,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <React/RCTBridgeModule.h>
+#import <React/RCTLog.h>
 #import <Speech/Speech.h>
 #import <UIKit/UIKit.h>
 
@@ -58,6 +59,28 @@ static CGFloat const CECanvasPromotionMaxWidth = 720.0;
 static CGFloat const CECanvasPromotionMaxHeight = 1280.0;
 
 /**
+ * How far a source's aspect ratio may drift from 9:16 and still be promoted.
+ *
+ * 1% admits 720x1280 exactly and rejects anything genuinely differently
+ * shaped. Promotion scales; it never crops. A source that does not match the
+ * canvas has no non-destructive promotion available, so it gets none.
+ */
+static CGFloat const CECanvasPromotionAspectTolerance = 0.01;
+
+/**
+ * Drift worth complaining about even though it is refused.
+ *
+ * The failure this is aimed at is silent. If a firmware update starts handing
+ * us a cropped sensor mode — 718x1280, 700x1280 — every guard behaves
+ * correctly and promotion simply stops happening, forever, with no symptom
+ * anyone would notice. Between the strict tolerance and this bound, the shape
+ * is close enough that the drift is far likelier to be a changed sensor mode
+ * than a genuinely different aspect ratio, which is exactly the case that
+ * deserves a warning rather than silence.
+ */
+static CGFloat const CECanvasPromotionNearMiss = 0.05;
+
+/**
  * The promoted render size for a source, or the source's own size unchanged.
  *
  * Four things have to hold before a frame is resampled, and all four are
@@ -68,9 +91,6 @@ static CGFloat const CECanvasPromotionMaxHeight = 1280.0;
  */
 static CGSize CEPromotedRenderSize(CGSize source)
 {
-  if (!CECanvasPromotionEnabled) {
-    return source;
-  }
   if (source.width < 1 || source.height < 1) {
     return source;
   }
@@ -86,11 +106,34 @@ static CGSize CEPromotedRenderSize(CGSize source)
   }
   // 3. Only a uniform scale. Promoting a source whose aspect ratio differs
   //    from the canvas would mean cropping or pillarboxing, and neither is
-  //    worth a bitrate experiment. 1% covers 720x1280 vs 1080x1920 exactly
-  //    while rejecting anything genuinely differently shaped.
+  //    worth a bitrate experiment.
   CGFloat const sourceAspect = source.width / source.height;
   CGFloat const canvasAspect = CECanvasPromotionWidth / CECanvasPromotionHeight;
-  if (fabs(sourceAspect - canvasAspect) > canvasAspect * 0.01) {
+  CGFloat const drift = fabs(sourceAspect - canvasAspect) / canvasAspect;
+  if (drift > CECanvasPromotionAspectTolerance) {
+    if (drift <= CECanvasPromotionNearMiss) {
+      // Refused, and said out loud. Everything above this line is a shape the
+      // guard was written to exclude; this is a proxy-sized 9:16-ish source
+      // that has drifted, which is what a changed sensor mode looks like.
+      CELog(@"canvas promotion NEAR MISS: %.0fx%.0f is %.1f%% off 9:16 "
+            @"(tolerance %.0f%%) - promotion skipped",
+            source.width, source.height, drift * 100.0,
+            CECanvasPromotionAspectTolerance * 100.0);
+      RCTLogWarn(@"[CaptionEngine] Proxy %.0fx%.0f is %.1f%% off 9:16 — canvas "
+                 @"promotion silently skipped. If MWDAT changed sensor mode, "
+                 @"CECanvasPromotionAspectTolerance needs revisiting.",
+                 source.width, source.height, drift * 100.0);
+    }
+    return source;
+  }
+
+  // Checked last on purpose. Every guard above is a fact about the footage and
+  // is worth evaluating whether or not promotion is switched on — the whole
+  // point of the near-miss warning is to accrue evidence in the field now,
+  // while the flag is still NO. Returning early on the flag would have made
+  // that telemetry dead code until the day we flipped it, which is the day it
+  // would have been too late to learn anything from.
+  if (!CECanvasPromotionEnabled) {
     return source;
   }
   return CGSizeMake(CECanvasPromotionWidth, CECanvasPromotionHeight);
