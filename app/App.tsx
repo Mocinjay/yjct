@@ -10,6 +10,8 @@ import { createLogger } from './src/core/Logger';
 import { ErrorCode } from './src/core/errors';
 import { captionQueue } from './src/captioning/CaptionQueue';
 import { installNativeDiagnosticSink } from './src/native/diagnosticSink';
+import { glassesImport } from './src/services/glassesImport';
+import { settingsStore } from './src/core/SettingsStore';
 import { ClypsoSplash } from './src/ui/ClypsoSplash';
 import { withErrorBoundary } from './src/ui/ErrorBoundary';
 import type { RootStackParamList } from './src/ui/navigation';
@@ -89,9 +91,24 @@ export default function App() {
       .catch(err =>
         log.error('could not resume captioning', err, ErrorCode.CaptionResumeFailed),
       );
+    // Always-on listening lives outside the capture session: the wearer records
+    // on the glasses themselves, so there is nothing to arm and no screen to be
+    // on. It has to come up at launch or the trigger word goes unheard.
+    glassesImport
+      .syncWithSettings()
+      .catch(err =>
+        log.error('could not start glasses import', err, ErrorCode.WakeWordPermissionDenied),
+      );
+    const unsubscribeSettings = settingsStore.subscribe(() => {
+      glassesImport
+        .syncWithSettings()
+        .catch(err =>
+          log.error('could not apply glasses import setting', err, ErrorCode.WakeWordPermissionDenied),
+        );
+    });
     // Upgrading rescues whatever was mid-countdown — Pro should never cost
     // someone a clip that was about to expire as they paid.
-    return entitlementStore.subscribe(isPro => {
+    const unsubscribeEntitlement = entitlementStore.subscribe(isPro => {
       if (isPro) {
         clipStore
           .rescueExpiring()
@@ -100,6 +117,10 @@ export default function App() {
           );
       }
     });
+    return () => {
+      unsubscribeSettings();
+      unsubscribeEntitlement();
+    };
   }, []);
 
   // Native launch storyboard → JS splash (paperclip → CLYPSO wordmark).

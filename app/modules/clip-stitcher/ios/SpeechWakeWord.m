@@ -1,6 +1,9 @@
+#import "MicSegmentRecorder.h"
+
 #import <AVFoundation/AVFoundation.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <React/RCTBridgeModule.h>
+#import <React/RCTEventEmitter.h>
 #import <Speech/Speech.h>
 #import <fcntl.h>
 #import <math.h>
@@ -264,9 +267,22 @@ static NSDictionary *SWWTranscriptResult(NSString *text, NSArray *words)
   return @{ @"transcript" : text ?: @"", @"words" : words ?: @[] };
 }
 
-@interface SpeechWakeWord : NSObject <RCTBridgeModule>
+/// Emitted for each closed microphone segment while `startListening` is active.
+static NSString *const SWWSegmentEvent = @"SpeechWakeWordSegment";
+/// Emitted when listening stops for a reason the wearer did not ask for.
+static NSString *const SWWErrorEvent = @"SpeechWakeWordError";
+
+/**
+ * RCTEventEmitter, not a bare bridge module, because iOS now pushes segments
+ * as they close instead of waiting to be handed them. Android has always
+ * emitted (`SpeechWakeWordTranscript`); this makes the two platforms the same
+ * shape rather than leaving iOS the odd one out.
+ */
+@interface SpeechWakeWord : RCTEventEmitter <RCTBridgeModule>
 @property (nonatomic, strong) SFSpeechRecognizer *recognizer;
 @property (nonatomic, strong) NSMutableSet<SFSpeechRecognitionTask *> *tasks;
+@property (nonatomic, strong, nullable) MicSegmentRecorder *recorder;
+@property (nonatomic, assign) BOOL hasListeners;
 - (void)recognizeURL:(NSURL *)url
             onDevice:(BOOL)onDevice
                label:(NSString *)label
@@ -282,6 +298,21 @@ RCT_EXPORT_MODULE();
 + (BOOL)requiresMainQueueSetup
 {
   return NO;
+}
+
+- (NSArray<NSString *> *)supportedEvents
+{
+  return @[ SWWSegmentEvent, SWWErrorEvent ];
+}
+
+- (void)startObserving
+{
+  self.hasListeners = YES;
+}
+
+- (void)stopObserving
+{
+  self.hasListeners = NO;
 }
 
 - (SFSpeechRecognizer *)recognizer
@@ -313,6 +344,112 @@ RCT_EXPORT_METHOD(requestPermission:(RCTPromiseResolveBlock)resolve
                recognizer.supportsOnDeviceRecognition);
         resolve(@(authorized));
       }];
+}
+
+/// Microphone access, which is a separate grant from speech recognition:
+/// the recognizer can be fully authorized while the microphone is not, and
+/// that combination listens to nothing without reporting a problem.
+static void SWWRequestRecordPermission(void (^completion)(BOOL granted))
+{
+  if (@available(iOS 17.0, *)) {
+    switch ([AVAudioApplication sharedInstance].recordPermission) {
+      case AVAudioApplicationRecordPermissionGranted:
+        completion(YES);
+        return;
+      case AVAudioApplicationRecordPermissionDenied:
+        completion(NO);
+        return;
+      default:
+        [AVAudioApplication requestRecordPermissionWithCompletionHandler:completion];
+        return;
+    }
+  }
+  AVAudioSession *session = [AVAudioSession sharedInstance];
+  switch (session.recordPermission) {
+    case AVAudioSessionRecordPermissionGranted:
+      completion(YES);
+      return;
+    case AVAudioSessionRecordPermissionDenied:
+      completion(NO);
+      return;
+    default:
+      [session requestRecordPermission:completion];
+      return;
+  }
+}
+
+/**
+ * Start always-on listening.
+ *
+ * This is what makes the trigger word independent of the glasses stream. The
+ * wearer records with Meta's own app — which never involves the phone — while
+ * this holds a microphone of its own and turns the room into a rolling series
+ * of short files. Each one is emitted as `SpeechWakeWordSegment` carrying the
+ * wall-clock time of its first sample, which is the only thing that later lets
+ * a detection be placed inside a video the phone had no part in recording.
+ *
+ * JS decides what to transcribe: the recorder deliberately knows nothing about
+ * speech, and the recognizer nothing about microphones.
+ */
+RCT_EXPORT_METHOD(startListening:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  if (self.recorder != nil && self.recorder.isRunning) {
+    resolve(@YES);
+    return;
+  }
+  SWWRequestRecordPermission(^(BOOL granted) {
+    if (!granted) {
+      SWWLog(@"microphone permission NOT granted - cannot listen");
+      reject(@"mic_denied",
+             @"Microphone access is off, so the trigger word cannot be heard.",
+             nil);
+      return;
+    }
+    MicSegmentRecorder *recorder =
+        [[MicSegmentRecorder alloc] initWithSegmentSeconds:5.0
+                                          retentionSeconds:900.0];
+    __weak SpeechWakeWord *weakSelf = self;
+    recorder.onSegment = ^(NSString *path, double startedAtMs, double durationSec,
+                           float peak) {
+      SpeechWakeWord *strongSelf = weakSelf;
+      if (strongSelf == nil || !strongSelf.hasListeners) {
+        return;
+      }
+      [strongSelf sendEventWithName:SWWSegmentEvent
+                               body:@{
+                                 @"path" : path,
+                                 @"startedAtMs" : @(startedAtMs),
+                                 @"durationSec" : @(durationSec),
+                                 @"peak" : @(peak),
+                               }];
+    };
+    recorder.onError = ^(NSString *message) {
+      SpeechWakeWord *strongSelf = weakSelf;
+      if (strongSelf == nil || !strongSelf.hasListeners) {
+        return;
+      }
+      [strongSelf sendEventWithName:SWWErrorEvent body:@{ @"message" : message }];
+    };
+    self.recorder = recorder;
+    BOOL const started = [recorder start];
+    SWWLog(@"startListening -> %d", started);
+    if (!started) {
+      self.recorder = nil;
+      reject(@"mic_unavailable", @"Could not start listening.", nil);
+      return;
+    }
+    resolve(@YES);
+  });
+}
+
+RCT_EXPORT_METHOD(stopListening:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  [self.recorder stop];
+  self.recorder = nil;
+  SWWLog(@"stopListening");
+  resolve(@YES);
 }
 
 /**

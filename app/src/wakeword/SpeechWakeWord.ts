@@ -1,8 +1,16 @@
 import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
 import { createLogger } from '../core/Logger';
 import { AppError, ErrorCode } from '../core/errors';
-import type { TranscriptWord } from '../native/SpeechWakeWordNative';
-import { SpeechWakeWordNative } from '../native/SpeechWakeWordNative';
+import type {
+  TranscriptWord,
+  WakeSegmentEvent,
+} from '../native/SpeechWakeWordNative';
+import {
+  SpeechWakeWordNative,
+  WAKE_ERROR_EVENT,
+  WAKE_SEGMENT_EVENT,
+  WAKE_TRANSCRIPT_EVENT,
+} from '../native/SpeechWakeWordNative';
 import { matchesWakePhrase } from './phraseMatch';
 import type { WakeDetection, WakeWordProvider } from './WakeWordProvider';
 
@@ -56,17 +64,45 @@ function findPhraseEndSec(words: TranscriptWord[]): number | null {
  *
  * Android: continuous mic recognition with transcript events.
  */
+/** How the provider gets audio to listen to. */
+export interface SpeechWakeWordOptions {
+  /**
+   * Own a microphone instead of waiting to be fed segments.
+   *
+   * The fed path (the default) exists because the glasses stream already had
+   * the phone recording, so taking a second microphone would have been a
+   * conflict for no gain. It has one consequence that is easy to miss: with no
+   * stream there are no segments, and with no segments the trigger word is
+   * never heard.
+   *
+   * Set this when the wearer is recording on the glasses themselves — Meta's
+   * own capture never involves the phone, which leaves the microphone free and
+   * makes this the only way to hear anything at all. Detections then carry an
+   * absolute `atMs`, because a rolling buffer is no longer the thing being cut.
+   */
+  ownMicrophone?: boolean;
+}
+
 export class SpeechWakeWord implements WakeWordProvider {
   readonly name = 'speech';
 
   private onDetected: ((detection?: WakeDetection) => void) | null = null;
   private lastFiredAt = 0;
-  private subscription: { remove: () => void } | null = null;
+  private subscriptions: { remove: () => void }[] = [];
   private failureStreak = 0;
+  private readonly ownMicrophone: boolean;
+
+  constructor(options: SpeechWakeWordOptions = {}) {
+    this.ownMicrophone = options.ownMicrophone ?? false;
+  }
 
   async start(onDetected: (detection?: WakeDetection) => void): Promise<void> {
     const ok = await SpeechWakeWordNative.requestPermission();
-    log.info('starting', { permissionGranted: ok, platform: Platform.OS });
+    log.info('starting', {
+      permissionGranted: ok,
+      platform: Platform.OS,
+      ownMicrophone: this.ownMicrophone,
+    });
     if (!ok) {
       throw new AppError(
         ErrorCode.WakeWordPermissionDenied,
@@ -81,25 +117,72 @@ export class SpeechWakeWord implements WakeWordProvider {
     }
     this.failureStreak = 0;
     this.onDetected = onDetected;
+
+    const emitter = new NativeEventEmitter(NativeModules.SpeechWakeWord);
+
     if (Platform.OS === 'android') {
-      const emitter = new NativeEventEmitter(NativeModules.SpeechWakeWord);
-      this.subscription = emitter.addListener(
-        'SpeechWakeWordTranscript',
-        (transcript: string) => this.handleTranscript(transcript),
+      this.subscriptions.push(
+        emitter.addListener(WAKE_TRANSCRIPT_EVENT, (transcript: string) =>
+          this.handleTranscript(transcript),
+        ),
       );
       await SpeechWakeWordNative.startListening();
+      return;
     }
+
+    if (!this.ownMicrophone) {
+      return;
+    }
+
+    this.subscriptions.push(
+      emitter.addListener(WAKE_SEGMENT_EVENT, (event: WakeSegmentEvent) =>
+        this.handleSegment(event),
+      ),
+      // A recorder that stopped is indistinguishable from a silent room, so
+      // the failure has to announce itself or the trigger just quietly ends.
+      emitter.addListener(WAKE_ERROR_EVENT, ({ message }: { message: string }) =>
+        log.error(
+          `listening stopped: ${message}`,
+          new Error(message),
+          ErrorCode.WakeWordTranscribeFailed,
+        ),
+      ),
+    );
+    await SpeechWakeWordNative.startListening();
   }
 
   async stop(): Promise<void> {
     this.onDetected = null;
-    if (Platform.OS === 'android') {
-      this.subscription?.remove();
-      this.subscription = null;
+    for (const subscription of this.subscriptions) {
+      subscription.remove();
+    }
+    this.subscriptions = [];
+    if (Platform.OS === 'android' || this.ownMicrophone) {
       await SpeechWakeWordNative.stopListening().catch(err =>
         log.expected('stopListening failed', err, ErrorCode.WakeWordStopFailed),
       );
     }
+  }
+
+  /**
+   * iOS self-listening path: a segment the recorder just closed.
+   *
+   * Same transcription as the fed path — the only difference is that the
+   * segment arrived with a wall-clock stamp, so a hit can be reported as a
+   * moment in time rather than an offset into a buffer.
+   */
+  private handleSegment(event: WakeSegmentEvent): void {
+    if (!this.onDetected) {
+      return;
+    }
+    SpeechWakeWordNative.transcribeFile(event.path)
+      .then(({ transcript, words }) => {
+        this.failureStreak = 0;
+        if (transcript) {
+          this.handleTranscript(transcript, words, event.path, event.startedAtMs);
+        }
+      })
+      .catch(err => this.noteTranscribeFailure(err));
   }
 
   /**
@@ -117,32 +200,37 @@ export class SpeechWakeWord implements WakeWordProvider {
           this.handleTranscript(transcript, words, path);
         }
       })
-      .catch(err => {
-        // One failure is routine: the segment may have been evicted
-        // mid-transcription, and quiet segments resolve empty. A streak is not
-        // — it means the trigger has silently stopped working, which from the
-        // outside is indistinguishable from nobody speaking.
-        this.failureStreak += 1;
-        if (this.failureStreak >= FAILURE_STREAK_ALARM) {
-          log.error(
-            `recognizer has rejected ${this.failureStreak} segments in a row — the wake word is not working`,
-            err,
-            ErrorCode.WakeWordTranscribeFailed,
-          );
-        } else {
-          log.expected(
-            'transcription failed for one segment',
-            err,
-            ErrorCode.WakeWordTranscribeFailed,
-          );
-        }
-      });
+      .catch(err => this.noteTranscribeFailure(err));
+  }
+
+  /**
+   * One failure is routine: the segment may have been evicted
+   * mid-transcription, and quiet segments resolve empty. A streak is not — it
+   * means the trigger has silently stopped working, which from the outside is
+   * indistinguishable from nobody speaking.
+   */
+  private noteTranscribeFailure(err: unknown): void {
+    this.failureStreak += 1;
+    if (this.failureStreak >= FAILURE_STREAK_ALARM) {
+      log.error(
+        `recognizer has rejected ${this.failureStreak} segments in a row — the wake word is not working`,
+        err,
+        ErrorCode.WakeWordTranscribeFailed,
+      );
+    } else {
+      log.expected(
+        'transcription failed for one segment',
+        err,
+        ErrorCode.WakeWordTranscribeFailed,
+      );
+    }
   }
 
   private handleTranscript(
     transcript: string,
     words?: TranscriptWord[],
     segmentPath?: string,
+    segmentStartedAtMs?: number,
   ): void {
     const matched = matchesWakePhrase(transcript);
     log.debug(`transcript "${transcript}" → ${matched ? 'HIT' : 'miss'}`);
@@ -164,9 +252,17 @@ export class SpeechWakeWord implements WakeWordProvider {
       this.onDetected();
       return;
     }
+    // Where the phrase landed on the wall clock, for consumers that have to
+    // find it in footage recorded somewhere other than this phone. Undefined
+    // on the fed path, where the segment's own start time is not ours to know.
+    const atMs =
+      segmentStartedAtMs === undefined
+        ? undefined
+        : segmentStartedAtMs + endOffsetSec * 1000;
     log.info('wake phrase detected', {
       endOffsetSec: Number(endOffsetSec.toFixed(2)),
+      atMs,
     });
-    this.onDetected({ segmentPath, endOffsetSec });
+    this.onDetected({ segmentPath, endOffsetSec, atMs });
   }
 }

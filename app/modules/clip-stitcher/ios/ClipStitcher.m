@@ -248,6 +248,120 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
 }
 
 /**
+ * Cuts `startSec`...`endSec` out of a single recording, without re-encoding.
+ *
+ * This is the counterpart to `stitch` for footage the phone did not record.
+ * A recording the glasses made themselves arrives whole — minutes of HEVC at
+ * 1520x2032 in HLG colour — and the moment worth keeping is a window inside
+ * it. Passthrough is not an optimisation here but the entire point: decoding
+ * and re-encoding would tone-map the HDR down to SDR and spend a generation of
+ * quality, landing on a file no better than the Bluetooth stream this whole
+ * path exists to avoid.
+ *
+ * The transcode fallback is kept for parity with `stitch`, but it should never
+ * run for a single-source cut — there is no format change to defeat
+ * passthrough. If it ever does, the log line below is the thing to notice,
+ * because the clip that comes out of it will have lost its colour.
+ */
+RCT_EXPORT_METHOD(extractRange:(NSString *)sourcePath
+                  startSec:(double)startSec
+                  endSec:(double)endSec
+                  outputPath:(NSString *)outputPath
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    if (![[NSFileManager defaultManager] fileExistsAtPath:sourcePath]) {
+      reject(@"source_missing", @"That recording is no longer on disk.", nil);
+      return;
+    }
+
+    AVURLAsset *asset =
+        [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:sourcePath] options:nil];
+    NSError *loadError = nil;
+    if (!JVSLoadAssetKeys(asset, @[ @"tracks", @"duration" ], &loadError)) {
+      reject(@"source_load", loadError.localizedDescription, loadError);
+      return;
+    }
+
+    double const sourceSec = CMTimeGetSeconds(asset.duration);
+    double const clampedStart = MAX(0.0, MIN(startSec, sourceSec));
+    double const clampedEnd = MAX(clampedStart, MIN(endSec, sourceSec));
+    if (clampedEnd - clampedStart <= 0.0) {
+      reject(@"empty_range",
+             [NSString stringWithFormat:
+                 @"Nothing to cut: %.2f-%.2f in a %.2fs recording.",
+                 startSec, endSec, sourceSec],
+             nil);
+      return;
+    }
+
+    CMTimeRange const range = CMTimeRangeMake(
+        CMTimeMakeWithSeconds(clampedStart, 600),
+        CMTimeMakeWithSeconds(clampedEnd - clampedStart, 600));
+
+    AVMutableComposition *composition = [AVMutableComposition composition];
+    AVAssetTrack *srcVideo =
+        [asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
+    if (!JVSTrackHasContent(srcVideo)) {
+      reject(@"no_video", @"That recording has no video track.", nil);
+      return;
+    }
+
+    AVMutableCompositionTrack *videoTrack =
+        [composition addMutableTrackWithMediaType:AVMediaTypeVideo
+                                 preferredTrackID:kCMPersistentTrackID_Invalid];
+    NSError *insertError = nil;
+    if (![videoTrack insertTimeRange:range
+                             ofTrack:srcVideo
+                              atTime:kCMTimeZero
+                               error:&insertError]) {
+      reject(@"insert_failed", insertError.localizedDescription, insertError);
+      return;
+    }
+    // Carried over rather than assumed upright: the glasses write 1520x2032
+    // with an identity transform, but nothing guarantees every model does.
+    videoTrack.preferredTransform = srcVideo.preferredTransform;
+
+    AVAssetTrack *srcAudio =
+        [asset tracksWithMediaType:AVMediaTypeAudio].firstObject;
+    if (JVSTrackHasContent(srcAudio)) {
+      AVMutableCompositionTrack *audioTrack =
+          [composition addMutableTrackWithMediaType:AVMediaTypeAudio
+                                   preferredTrackID:kCMPersistentTrackID_Invalid];
+      if (![audioTrack insertTimeRange:range
+                               ofTrack:srcAudio
+                                atTime:kCMTimeZero
+                                 error:&insertError]) {
+        // Audio is worth losing to keep the moment; video is not.
+        JVSLog(@"audio insert failed (%@) - cutting video only",
+               insertError.localizedDescription);
+        [composition removeTrack:audioTrack];
+      }
+    }
+
+    JVSLog(@"extracting %.2f-%.2fs from a %.2fs recording", clampedStart,
+           clampedEnd, sourceSec);
+
+    [self exportPassthrough:composition
+                 outputPath:outputPath
+                 completion:^(BOOL ok, NSError *passthroughError) {
+      if (ok) {
+        [self finishWithOutputPath:outputPath resolver:resolve rejecter:reject];
+        return;
+      }
+      JVSLog(@"PASSTHROUGH FAILED for a single-source cut (%@) - transcoding, "
+             @"which will flatten HDR",
+             passthroughError.localizedDescription);
+      [self transcodeComposition:composition
+                      outputPath:outputPath
+                        resolver:resolve
+                        rejecter:reject];
+    }];
+  });
+}
+
+/**
  * Copies the composition to `outputPath` without touching the encoded samples.
  * Reports failure rather than rejecting, so the caller can fall back.
  */

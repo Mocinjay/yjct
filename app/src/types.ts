@@ -48,7 +48,15 @@ export interface Clip {
   captionError?: string | null;
 }
 
-export type DeviceKind = 'mock' | 'mwdat';
+/**
+ * Where a clip's footage came from.
+ *
+ * `glasses-library` is not a device the app talks to: it is footage the glasses
+ * recorded to their own storage, which Meta AI syncs into the photo library and
+ * the app imports afterwards. There is no session, no stream and no live
+ * connection behind it — only a file and the wall clock.
+ */
+export type DeviceKind = 'mock' | 'mwdat' | 'glasses-library';
 
 export interface Segment {
   /** Absolute file path of the recorded segment. */
@@ -77,6 +85,18 @@ export interface Settings {
    * stream is not yet confirmed on hardware.
    */
   glassesChime: boolean;
+  /**
+   * Listen for "Clypso" continuously and clip from what the glasses recorded
+   * themselves, rather than from the live stream.
+   *
+   * A different shape of capture, not a variation on it. Nothing streams, no
+   * session is held, and the glasses are recording to their own storage the
+   * way they would with no app installed — which is why the footage is
+   * 1520x2032 HDR instead of the 720x1280 the Bluetooth link allows. The cost
+   * is that clips appear only once Meta AI has synced the recording across,
+   * and that the phone holds a microphone the whole time it is armed.
+   */
+  glassesLibraryImport: boolean;
 }
 
 export interface WakeWordConfig {

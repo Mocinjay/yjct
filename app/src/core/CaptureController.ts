@@ -462,7 +462,7 @@ export class CaptureController {
   }
 }
 
-function defaultClipName(capturedAt: number): string {
+export function defaultClipName(capturedAt: number): string {
   const d = new Date(capturedAt);
   const pad = (n: number) => String(n).padStart(2, '0');
   return `Clip ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}.${pad(d.getMinutes())}.${pad(d.getSeconds())}`;

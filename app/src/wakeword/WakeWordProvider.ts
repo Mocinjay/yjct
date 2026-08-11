@@ -18,6 +18,17 @@ export interface WakeDetection {
   segmentPath: string;
   /** Seconds from the start of that segment to the end of the phrase. */
   endOffsetSec: number;
+  /**
+   * UNIX epoch milliseconds at which the phrase finished being spoken, when
+   * the provider owns its own microphone and can stamp one.
+   *
+   * Offsets within a segment only mean something to whoever holds that
+   * segment. An absolute time means something to a recording made somewhere
+   * else entirely — which is what the glasses do when they capture to their
+   * own storage with the phone uninvolved. This is the field that lets a
+   * detection be found inside that footage afterwards.
+   */
+  atMs?: number;
 }
 
 export interface WakeWordProvider {

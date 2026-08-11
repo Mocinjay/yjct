@@ -56,4 +56,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // than something every clip silently gets.
   climaxEdit: false,
   glassesChime: true,
+  // Off until the wearer turns it on: it holds a microphone for as long as it
+  // is armed, which is not something to start doing on their behalf.
+  glassesLibraryImport: false,
 };

@@ -151,6 +151,39 @@ export function SettingsScreen({ navigation }: Props) {
         </View>
       </Section>
 
+      <Section title="Clip your own recordings">
+        <Text style={styles.hint}>
+          Record with the glasses the way you normally do — the capture button,
+          or “Hey Meta, take a video”. Say “{WAKE_PHRASE}” while you're
+          recording and Clypso marks the moment. When Meta AI syncs the video
+          across, the marked moments come in and get captioned.
+        </Text>
+        <Text style={styles.hint}>
+          This is the high-quality path: the glasses record at full resolution
+          in HDR to their own storage, far beyond what the live stream can carry
+          over Bluetooth. Recordings you didn't mark are left alone.
+        </Text>
+        <View style={styles.row}>
+          <Choice
+            label="Listening"
+            selected={settings.glassesLibraryImport}
+            onPress={() => updateSettings({ glassesLibraryImport: true })}
+          />
+          <Choice
+            label="Off"
+            selected={!settings.glassesLibraryImport}
+            onPress={() => updateSettings({ glassesLibraryImport: false })}
+          />
+        </View>
+        {settings.glassesLibraryImport ? (
+          <Text style={styles.hint}>
+            Clypso holds your phone's microphone while this is on, so keep the
+            app running — swiping it away stops it hearing you. Clips appear
+            after Meta AI syncs, not the instant you speak.
+          </Text>
+        ) : null}
+      </Section>
+
       <Section title={`Voice trigger — “${WAKE_PHRASE}”`}>
         <View style={styles.row}>
           <Choice

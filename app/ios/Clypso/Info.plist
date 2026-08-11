@@ -83,6 +83,14 @@
 	<string>Clypso records audio with your clips and listens on-device for your trigger word. No audio leaves your phone.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Clypso transcribes your recording on-device to hear “Clypso”. Nothing is sent anywhere.</string>
+	<!--
+	  Read-only, and only for recordings the glasses made themselves. Meta AI
+	  syncs those into the library like any other camera would, and the library
+	  is the only place they can be reached from — the toolkit exposes the live
+	  stream and nothing else.
+	-->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Clypso reads videos your glasses recorded so it can clip them at full quality. It never changes or deletes anything in your library.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>NSSupportsLiveActivities</key>

@@ -19,6 +19,16 @@ interface ClipStitcherModule {
     outputPath: string,
     trimEndSec: number,
   ): Promise<StitchResult>;
+  /**
+   * Cuts `startSec`…`endSec` out of one recording without re-encoding, and
+   * writes a poster frame next to it.
+   */
+  extractRange(
+    sourcePath: string,
+    startSec: number,
+    endSec: number,
+    outputPath: string,
+  ): Promise<StitchResult>;
 }
 
 const native: ClipStitcherModule | undefined = NativeModules.ClipStitcher;
@@ -41,4 +51,27 @@ export function stitchSegments(
     );
   }
   return native.stitch(segmentPaths, outputPath, trimEndSec);
+}
+
+/**
+ * Cuts one window out of a recording the glasses made themselves.
+ *
+ * Passthrough, so the HEVC and its HDR colour survive: re-encoding here would
+ * undo the entire reason for importing the original rather than using the
+ * Bluetooth stream.
+ */
+export function extractRange(
+  sourcePath: string,
+  startSec: number,
+  endSec: number,
+  outputPath: string,
+): Promise<StitchResult> {
+  if (!native) {
+    return Promise.reject(
+      new Error(
+        'ClipStitcher native module not linked — rebuild the app (pod install / gradle sync).',
+      ),
+    );
+  }
+  return native.extractRange(sourcePath, startSec, endSec, outputPath);
 }
