@@ -111,7 +111,19 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
         return;
       }
 
-      CMTime take = asset.duration;
+      NSError *error = nil;
+      AVAssetTrack *srcVideo = [asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
+
+      // The video track's own end, not the asset's — `asset.duration` is the
+      // LONGER of the two tracks. Audio is stamped from the host clock and
+      // video from frame PTS, so a dropped frame or a late buffer leaves them
+      // disagreeing by tens of milliseconds, and taking the longer of the two
+      // asks for content one of them does not have. `insertTimeRange` quietly
+      // supplies what exists, which lands a hole of exactly that size at the
+      // segment boundary. Anchoring on video means the composition's timeline
+      // is the picture's timeline, which is the only one the viewer can see.
+      CMTime take = srcVideo != nil ? CMTimeRangeGetEnd(srcVideo.timeRange)
+                                    : asset.duration;
       if (index == segmentPaths.count - 1 && trimEndSec > 0) {
         CMTime trimmed = CMTimeSubtract(
             take, CMTimeMakeWithSeconds(trimEndSec, take.timescale));
@@ -130,8 +142,6 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
       }
       CMTimeRange range = CMTimeRangeMake(kCMTimeZero, take);
 
-      NSError *error = nil;
-      AVAssetTrack *srcVideo = [asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
       if (srcVideo != nil) {
         if (videoTrack == nil) {
           videoTrack = [composition addMutableTrackWithMediaType:AVMediaTypeVideo
@@ -168,6 +178,16 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
         if (audioTrack == nil) {
           audioTrack = [composition addMutableTrackWithMediaType:AVMediaTypeAudio
                                                preferredTrackID:kCMPersistentTrackID_Invalid];
+        }
+        // Anything the audio is short by is a hole at this boundary, and it is
+        // the only remaining way the two tracks can disagree. Logged rather
+        // than corrected because there are no samples to put there — the
+        // number is what tells us whether it is worth correcting.
+        double const audioShortfall =
+            CMTimeGetSeconds(CMTimeSubtract(take, CMTimeRangeGetEnd(srcAudio.timeRange)));
+        if (audioShortfall > 0.001) {
+          JVSLog(@"A/V mismatch in %@: audio is %.0f ms short of video",
+                 path.lastPathComponent, audioShortfall * 1000.0);
         }
         // Inserting at `cursor` keeps audio aligned when only some segments
         // carry it: the gap before it stays silent rather than shifting.
