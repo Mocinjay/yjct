@@ -26,6 +26,76 @@ static const double kCEFadeOutSeconds = 0.04;
 
 #pragma mark - Asset helpers
 
+#pragma mark - Canvas promotion (Path A only, disabled pending measurement)
+
+/**
+ * Whether a Path A proxy may be promoted to a 1080x1920 canvas before the
+ * caption burn.
+ *
+ * OFF until `tools/measure/ladder.sh` says otherwise. The claim it would rest
+ * on — that handing a platform 1080p wins back bitrate on the far side — is
+ * about someone else's transcoder, not about our pixels: upscaling invents
+ * every added sample and cannot add detail. Turning this on without the
+ * measurement would cost a slower export and a larger upload for a benefit
+ * nobody has observed.
+ *
+ * The decision rule is written down in tools/measure/README.md. Flip this to
+ * YES only when the 1080p arm has come back with both a higher bitrate and no
+ * SSIM loss, three runs per platform.
+ */
+static BOOL const CECanvasPromotionEnabled = NO;
+
+static CGFloat const CECanvasPromotionWidth = 1080.0;
+static CGFloat const CECanvasPromotionHeight = 1920.0;
+
+/**
+ * The largest source this may touch: the MWDAT proxy, which the SDK caps at
+ * 720x1280. Path B masters are 1520x2032 and fail this on both axes, which is
+ * the point — they are the footage worth protecting, and nothing here is
+ * allowed to resample them.
+ */
+static CGFloat const CECanvasPromotionMaxWidth = 720.0;
+static CGFloat const CECanvasPromotionMaxHeight = 1280.0;
+
+/**
+ * The promoted render size for a source, or the source's own size unchanged.
+ *
+ * Four things have to hold before a frame is resampled, and all four are
+ * checked against the asset itself rather than against a flag passed down from
+ * JS. A flag can be wrong; the pixels cannot. The failure this guards against
+ * is silently downscaling a 1520x2032 master, which would take the one path
+ * that can actually ship and make it worse.
+ */
+static CGSize CEPromotedRenderSize(CGSize source)
+{
+  if (!CECanvasPromotionEnabled) {
+    return source;
+  }
+  if (source.width < 1 || source.height < 1) {
+    return source;
+  }
+  // 1. Only the proxy. Anything larger on either axis is Path B.
+  if (source.width > CECanvasPromotionMaxWidth ||
+      source.height > CECanvasPromotionMaxHeight) {
+    return source;
+  }
+  // 2. Only an upscale. A "promotion" that shrinks the picture is a bug.
+  if (source.width >= CECanvasPromotionWidth ||
+      source.height >= CECanvasPromotionHeight) {
+    return source;
+  }
+  // 3. Only a uniform scale. Promoting a source whose aspect ratio differs
+  //    from the canvas would mean cropping or pillarboxing, and neither is
+  //    worth a bitrate experiment. 1% covers 720x1280 vs 1080x1920 exactly
+  //    while rejecting anything genuinely differently shaped.
+  CGFloat const sourceAspect = source.width / source.height;
+  CGFloat const canvasAspect = CECanvasPromotionWidth / CECanvasPromotionHeight;
+  if (fabs(sourceAspect - canvasAspect) > canvasAspect * 0.01) {
+    return source;
+  }
+  return CGSizeMake(CECanvasPromotionWidth, CECanvasPromotionHeight);
+}
+
 static BOOL CETrackHasContent(AVAssetTrack *track)
 {
   if (track == nil) {
@@ -435,10 +505,28 @@ RCT_EXPORT_METHOD(renderEdit:(NSString *)sourcePath
   // captions laid out along the wrong axis.
   CGAffineTransform transform = videoTrack.preferredTransform;
   CGSize natural = videoTrack.naturalSize;
-  CGSize render = CGSizeApplyAffineTransform(natural, transform);
-  render = CGSizeMake(fabs(render.width), fabs(render.height));
-  if (render.width < 1 || render.height < 1) {
-    render = natural;
+  CGSize sourceSize = CGSizeApplyAffineTransform(natural, transform);
+  sourceSize = CGSizeMake(fabs(sourceSize.width), fabs(sourceSize.height));
+  if (sourceSize.width < 1 || sourceSize.height < 1) {
+    sourceSize = natural;
+  }
+
+  // Normally identical to the source. Larger only for a Path A proxy, and only
+  // once the ladder measurement has justified it — see CEPromotedRenderSize.
+  CGSize const render = CEPromotedRenderSize(sourceSize);
+
+  // The scale that carries the source into the promoted canvas. Uniform by
+  // construction: promotion refuses any source whose aspect ratio does not
+  // match, so this is 1.0 in every case except a 720x1280 proxy, where it is
+  // exactly 1.5. Without it the frames would sit in the bottom-left corner of
+  // a larger canvas with the rest painted black.
+  CGFloat const canvasScale =
+      MIN(render.width / sourceSize.width, render.height / sourceSize.height);
+  if (canvasScale != 1.0) {
+    transform = CGAffineTransformConcat(
+        transform, CGAffineTransformMakeScale(canvasScale, canvasScale));
+    CELog(@"canvas promoted %.0fx%.0f -> %.0fx%.0f (scale %.3f)", sourceSize.width,
+          sourceSize.height, render.width, render.height, canvasScale);
   }
 
   // Boundaries are converted once and shared, so instruction N's end is bit
