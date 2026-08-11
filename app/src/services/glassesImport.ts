@@ -6,6 +6,8 @@ import { ErrorCode } from '../core/errors';
 import { settingsStore } from '../core/SettingsStore';
 import { GlassesImportController } from '../markers/GlassesImportController';
 import { MarkerStore } from '../markers/MarkerStore';
+import { photoAccessBlocker } from '../markers/photoAccess';
+import { GlassesMediaLibraryNative } from '../native/GlassesMediaLibraryNative';
 import { SpeechWakeWord } from '../wakeword/SpeechWakeWord';
 
 const log = createLogger('glasses-import');
@@ -30,19 +32,85 @@ const LOOKBACK_SECONDS = 20;
 class GlassesImportService {
   private controller: GlassesImportController | null = null;
   private appStateSub: NativeEventSubscription | null = null;
+  private blocker: string | null = null;
+  private listeners = new Set<(blocker: string | null) => void>();
 
   get running(): boolean {
     return this.controller !== null;
   }
 
-  /** Start if the setting is on; a no-op otherwise. Safe to call repeatedly. */
+  /**
+   * Why importing is not running despite being switched on, or null.
+   *
+   * Read by the settings screen so the switch and the reality agree. Kept here
+   * rather than thrown from `start()` because it outlives the call: the wearer
+   * turns Photos down to Selected weeks later, and the screen has to be able to
+   * say so whenever it is next opened.
+   */
+  get blockedBecause(): string | null {
+    return this.blocker;
+  }
+
+  subscribe(listener: (blocker: string | null) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private setBlocker(next: string | null): void {
+    if (this.blocker === next) {
+      return;
+    }
+    this.blocker = next;
+    for (const listener of this.listeners) {
+      listener(next);
+    }
+  }
+
+  /**
+   * Ask for photo access, for the moment the wearer reaches for the switch.
+   *
+   * Returns the reason importing cannot run, or null when it can — the caller
+   * is expected to leave the setting alone on a reason. Switching something on
+   * that cannot work is the failure this whole feature is most exposed to.
+   */
+  async requestEnable(): Promise<string | null> {
+    const access = await GlassesMediaLibraryNative.requestAccess();
+    const blocker = photoAccessBlocker(access.status);
+    this.setBlocker(blocker);
+    return blocker;
+  }
+
+  /**
+   * Start if the setting is on and access allows it; a no-op otherwise.
+   *
+   * Safe to call repeatedly, and called on every foreground — which is what
+   * catches access being taken away in Settings after it was granted.
+   */
   async syncWithSettings(): Promise<void> {
     const { glassesLibraryImport } = await settingsStore.get();
-    if (glassesLibraryImport) {
-      await this.start();
-    } else {
+    if (!glassesLibraryImport) {
+      this.setBlocker(null);
       await this.stop();
+      return;
     }
+
+    const access = await GlassesMediaLibraryNative.currentAccess();
+    const blocker = photoAccessBlocker(access.status);
+    this.setBlocker(blocker);
+    if (blocker !== null) {
+      // Switched on, but it cannot hear anything useful. Stopping is the honest
+      // move: a microphone held open for markers that can never be matched
+      // costs battery and buys nothing.
+      if (this.controller) {
+        log.info('photo access no longer usable — stopping', {
+          status: access.status,
+        });
+      }
+      await this.stop();
+      return;
+    }
+
+    await this.start();
   }
 
   async start(): Promise<void> {
@@ -69,14 +137,14 @@ class GlassesImportService {
 
     // The library observer only fires while the app is running. Coming back to
     // the foreground is the other moment worth checking, because that is when
-    // a sync that happened while the app was asleep becomes visible.
+    // a sync that happened while the app was asleep becomes visible — and the
+    // only moment photo access can be re-examined, since revoking it in
+    // Settings notifies nobody.
     this.appStateSub = AppState.addEventListener('change', state => {
       if (state === 'active') {
-        controller
-          .sync()
-          .catch(err =>
-            log.expected('foreground sync failed', err, ErrorCode.StorageIndexUnreadable),
-          );
+        this.onForeground().catch(err =>
+          log.expected('foreground sync failed', err, ErrorCode.StorageIndexUnreadable),
+        );
       }
     });
 
@@ -86,6 +154,12 @@ class GlassesImportService {
       return [];
     });
     log.info('glasses import started', { clipsOnStartup: caught.length });
+  }
+
+  /** Re-check access, then catch up. Order matters: a revoked grant stops it. */
+  private async onForeground(): Promise<void> {
+    await this.syncWithSettings();
+    await this.controller?.sync();
   }
 
   async stop(): Promise<void> {

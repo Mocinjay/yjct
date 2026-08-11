@@ -127,36 +127,56 @@ RCT_EXPORT_MODULE();
 
 #pragma mark - Access
 
+static NSDictionary *GMLAccessPayload(PHAuthorizationStatus status)
+{
+  NSString *name;
+  switch (status) {
+    case PHAuthorizationStatusAuthorized: name = @"authorized"; break;
+    case PHAuthorizationStatusLimited: name = @"limited"; break;
+    case PHAuthorizationStatusDenied: name = @"denied"; break;
+    case PHAuthorizationStatusRestricted: name = @"restricted"; break;
+    default: name = @"undetermined"; break;
+  }
+  return @{
+    @"status" : name,
+    // "limited" means the wearer picked specific assets. Reads work, but a
+    // glasses recording they did not hand-pick is invisible, which for this
+    // feature is functionally the same as denied — say so rather than let it
+    // look like the glasses never recorded anything.
+    @"usable" : @(status == PHAuthorizationStatusAuthorized),
+  };
+}
+
 /**
- * Ask for read access to the library.
+ * Ask for access to the library, prompting if the wearer has not been asked.
  *
- * `PHAccessLevelReadWrite` is deliberately not requested: this only ever reads,
- * and asking for write would put a prompt in front of the wearer that promises
- * more than the app does.
+ * `PHAccessLevelReadWrite` is the only level that grants reads at all —
+ * `PHAccessLevelAddOnly` permits writing and nothing else — so it is what has
+ * to be asked for even though nothing here ever writes.
  */
 RCT_EXPORT_METHOD(requestAccess:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
   [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelReadWrite
                                              handler:^(PHAuthorizationStatus status) {
-    NSString *name;
-    switch (status) {
-      case PHAuthorizationStatusAuthorized: name = @"authorized"; break;
-      case PHAuthorizationStatusLimited: name = @"limited"; break;
-      case PHAuthorizationStatusDenied: name = @"denied"; break;
-      case PHAuthorizationStatusRestricted: name = @"restricted"; break;
-      default: name = @"undetermined"; break;
-    }
-    GMLLog(@"photo library access -> %@", name);
-    resolve(@{
-      @"status" : name,
-      // "limited" means the wearer picked specific assets. Reads work, but a
-      // glasses recording they did not hand-pick is invisible, which for this
-      // feature is functionally the same as denied — say so rather than let it
-      // look like the glasses never recorded anything.
-      @"usable" : @(status == PHAuthorizationStatusAuthorized),
-    });
+    GMLLog(@"photo library access -> %@", GMLAccessPayload(status)[@"status"]);
+    resolve(GMLAccessPayload(status));
   }];
+}
+
+/**
+ * What access stands right now, without prompting.
+ *
+ * Separate from `requestAccess` because the interesting case is the wearer
+ * revoking access in Settings long after granting it — iOS restarts the app,
+ * but nothing tells the running code, so the only way to notice is to look
+ * again. Looking must not be able to put a prompt on screen.
+ */
+RCT_EXPORT_METHOD(currentAccess:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  resolve(GMLAccessPayload(
+      [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite]));
 }
 
 #pragma mark - Recognition

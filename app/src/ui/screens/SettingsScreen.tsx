@@ -19,6 +19,7 @@ import type {
 } from '../../captions/captionStyles';
 import { CAPTION_STYLES } from '../../captions/captionStyles';
 import { runTestRender } from '../../editing/testRender';
+import { glassesImport } from '../../services/glassesImport';
 import { useEntitlement } from '../hooks/useEntitlement';
 import { useSettings } from '../hooks/useSettings';
 import type { RootStackParamList } from '../navigation';
@@ -32,11 +33,16 @@ export function SettingsScreen({ navigation }: Props) {
   const { settings, update: updateSettings } = useSettings();
   const { isPro, clear: clearEntitlement } = useEntitlement();
   const [connectors, setConnectors] = useState<ConnectorConfig>({});
+  const [importBlocker, setImportBlocker] = useState<string | null>(
+    glassesImport.blockedBecause,
+  );
 
   useEffect(() => {
     connectorConfigStore.get().then(setConnectors);
     return connectorConfigStore.subscribe(setConnectors);
   }, []);
+
+  useEffect(() => glassesImport.subscribe(setImportBlocker), []);
 
   if (!settings) {
     return <View style={styles.root} />;
@@ -48,6 +54,16 @@ export function SettingsScreen({ navigation }: Props) {
       return;
     }
     updateSettings({ bufferSeconds: secs });
+  };
+
+  // Asks for photo access first and leaves the setting alone if it is refused.
+  // Turning the switch on regardless would arm something that can never fire —
+  // the wearer would say the word all day and get nothing back.
+  const enableGlassesImport = async () => {
+    const blocker = await glassesImport.requestEnable();
+    if (blocker === null) {
+      updateSettings({ glassesLibraryImport: true });
+    }
   };
 
   const pickCaptionStyle = (captionStyle: CaptionStyleKey) => {
@@ -166,8 +182,8 @@ export function SettingsScreen({ navigation }: Props) {
         <View style={styles.row}>
           <Choice
             label="Listening"
-            selected={settings.glassesLibraryImport}
-            onPress={() => updateSettings({ glassesLibraryImport: true })}
+            selected={settings.glassesLibraryImport && importBlocker === null}
+            onPress={enableGlassesImport}
           />
           <Choice
             label="Off"
@@ -175,7 +191,10 @@ export function SettingsScreen({ navigation }: Props) {
             onPress={() => updateSettings({ glassesLibraryImport: false })}
           />
         </View>
-        {settings.glassesLibraryImport ? (
+        {importBlocker !== null ? (
+          <Text style={styles.warning}>{importBlocker}</Text>
+        ) : null}
+        {settings.glassesLibraryImport && importBlocker === null ? (
           <Text style={styles.hint}>
             Clypso holds your phone's microphone while this is on, so keep the
             app running — swiping it away stops it hearing you. Clips appear

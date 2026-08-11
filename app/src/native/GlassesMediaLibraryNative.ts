@@ -78,6 +78,15 @@ export interface GlassesExportResult {
 interface GlassesMediaLibraryModule {
   requestAccess(): Promise<PhotoAccessResult>;
   /**
+   * The standing verdict, without prompting.
+   *
+   * The case this exists for is access revoked in Settings after it was
+   * granted. iOS relaunches the app but tells the running code nothing, so the
+   * only way to notice is to ask again — and asking must never be able to put a
+   * prompt in front of someone who is out wearing the glasses.
+   */
+  currentAccess(): Promise<PhotoAccessResult>;
+  /**
    * Every video created at or after `sinceMs`, newest first — glasses or not.
    *
    * Cheap by design: reads only what the library already knows, opening
