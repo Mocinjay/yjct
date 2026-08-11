@@ -2322,7 +2322,7 @@ SPEC CHECKSUMS:
   AsyncStorage: dba9d05b9aa34413760ea5a74f63a7e7f9fddf73
   ClipStitcher: 8fc5141d29331f380a934d9d38b9af16895f5c78
   FBLazyVector: b3e7ad108f0d882e30445c5527d774e3fd432f3d
-  hermes-engine: 2d5f60a5101e2f3b384977a2f645cd6f061d2a12
+  hermes-engine: 166652725dbdadbe665e69f27c45af99431b03fb
   RCTDeprecation: 2a74a2c57675e64419bd89078efde81f7c1de90b
   RCTRequired: 30451112e6fef4e6f31b4e7eee0845156e35e4b0
   RCTSwiftUI: 5aaf0b07e747ba749dc6acc94d8bd41eea4b570f
