@@ -1,4 +1,5 @@
 import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
+import type { StreamTimelineEntry } from '../markers/streamConcurrency';
 
 /**
  * Native bridge to the Meta Wearables Device Access Toolkit (iOS: Swift
@@ -77,6 +78,15 @@ interface MWDATBridgeModule {
   stopRecording(): Promise<void>;
   /** Tear down the whole glasses session (stream + writer). */
   stop(): Promise<void>;
+  /**
+   * TEMPORARY: what the live stream was doing, second by second.
+   *
+   * Read by the import pass when a native recording turns up, to settle
+   * whether the glasses can stream and record natively at once. In-memory and
+   * session-scoped, so it only carries an answer when both halves happened
+   * without an app restart in between. Remove with the probe.
+   */
+  getStreamTimeline(): Promise<{ entries: StreamTimelineEntry[] }>;
 }
 
 const native: MWDATBridgeModule | undefined = NativeModules.MWDATBridge;
@@ -116,6 +126,19 @@ export const MWDATNative = {
   chime: () => requireNative().chime(),
   stopRecording: () => requireNative().stopRecording(),
   stop: () => requireNative().stop(),
+  /**
+   * Resolves to an empty timeline rather than throwing when the bridge is
+   * absent. A diagnostic that can take down an import pass is worse than the
+   * question it answers — and "no entries" is scored as no-evidence, which is
+   * the honest reading of a bridge that was never there.
+   */
+  getStreamTimeline: async (): Promise<StreamTimelineEntry[]> => {
+    if (!native) {
+      return [];
+    }
+    const result = await native.getStreamTimeline();
+    return result?.entries ?? [];
+  },
 };
 
 export function mwdatEvents(): NativeEventEmitter {

@@ -14,6 +14,7 @@
 		1C313A6B301AB48D00F4E893 /* MWDATCamera in Frameworks */ = {isa = PBXBuildFile; productRef = 3DA9135D1916C99C81815599 /* MWDATCamera */; };
 		1C313A6C301AB48D00F4E893 /* MWDATMockDevice in Frameworks */ = {isa = PBXBuildFile; productRef = 8018480ED72052F17324316E /* MWDATMockDevice */; };
 		3CBFE536DBEB66F0727FF8D4 /* MWDATStreamHealth.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C7D79D1F823A584F31EA4D2 /* MWDATStreamHealth.swift */; };
+		3CBFE536DBEB66F0727FF8E1 /* MWDATStreamTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C7D79D1F823A584F31EA4E1 /* MWDATStreamTimeline.swift */; };
 		5BCAC6849FB26A8A24213F4F /* LiveActivityBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41DCE301BA184309E6B71F59 /* LiveActivityBridge.swift */; };
 		61662EB452689C12D4864E07 /* MWDATBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = B50CD06736D50709609B0DF7 /* MWDATBridge.m */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
@@ -77,6 +78,7 @@
 		8439CF4812DD97E1C56847EC /* MWDATSegmentWriter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Clypso/MWDATSegmentWriter.swift; sourceTree = "<group>"; };
 		8C2ED39333D84E1CFE37525B /* LiveActivityBridge.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = Clypso/LiveActivityBridge.m; sourceTree = "<group>"; };
 		8C7D79D1F823A584F31EA4D2 /* MWDATStreamHealth.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MWDATStreamHealth.swift; path = Clypso/MWDATStreamHealth.swift; sourceTree = "<group>"; };
+		8C7D79D1F823A584F31EA4E1 /* MWDATStreamTimeline.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MWDATStreamTimeline.swift; path = Clypso/MWDATStreamTimeline.swift; sourceTree = "<group>"; };
 		A66F714E2955F9AA8DA525E7 /* ClypsoActivityAttributes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Clypso/ClypsoActivityAttributes.swift; sourceTree = "<group>"; };
 		AC343EE77DB7B8EF74C58C97 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS14.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		B032E5A05050FA7ACD489623 /* MWDATBridge.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Clypso/MWDATBridge.swift; sourceTree = "<group>"; };
@@ -130,6 +132,7 @@
 				8C2ED39333D84E1CFE37525B /* LiveActivityBridge.m */,
 				DDF23922EBAC1D64159F313F /* MWDATPreviewEncoder.swift */,
 				8C7D79D1F823A584F31EA4D2 /* MWDATStreamHealth.swift */,
+				8C7D79D1F823A584F31EA4E1 /* MWDATStreamTimeline.swift */,
 				FDC4242731D06A43C3E5815A /* MWDATBridge+Setup.swift */,
 			);
 			name = Clypso;
@@ -430,6 +433,7 @@
 				768BB1A628C21D587FCAD590 /* LiveActivityBridge.m in Sources */,
 				7C25BA834F72BBE5169CAB68 /* MWDATPreviewEncoder.swift in Sources */,
 				3CBFE536DBEB66F0727FF8D4 /* MWDATStreamHealth.swift in Sources */,
+				3CBFE536DBEB66F0727FF8E1 /* MWDATStreamTimeline.swift in Sources */,
 				D07FA688A97BC967C331A228 /* MWDATBridge+Setup.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

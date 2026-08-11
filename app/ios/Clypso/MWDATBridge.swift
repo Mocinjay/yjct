@@ -87,9 +87,17 @@ final class MWDATBridge: RCTEventEmitter {
     log: { Self.log($0) }
   )
 
+  /// Temporary instrument for the Path A / Path B concurrency question.
+  let timeline = MWDATStreamTimeline()
+
   private lazy var health = MWDATStreamHealth(
     onSample: { [weak self] sample in
       guard let self else { return }
+      self.timeline.record(
+        kind: "fps",
+        detail: String(format: "%.1fs since frame", sample.secondsSinceFrame),
+        fps: sample.fps
+      )
       self.sendEvent(
         withName: Event.streamHealth,
         body: [
@@ -104,12 +112,17 @@ final class MWDATBridge: RCTEventEmitter {
       switch transition {
       case .recovered:
         Self.log("frames RESUMED after stall")
+        self.timeline.record(kind: "recovered", detail: "frames resumed")
         self.sendEvent(
           withName: Event.streamState,
           body: ["state": "streaming", "reason": "recovered"]
         )
       case let .stalled(sinceFrame):
         Self.log(String(format: "STALL — no glasses frame for %.1fs", sinceFrame))
+        self.timeline.record(
+          kind: "stalled",
+          detail: String(format: "no frame for %.1fs", sinceFrame)
+        )
         self.sendEvent(
           withName: Event.error,
           body: [
@@ -143,6 +156,20 @@ final class MWDATBridge: RCTEventEmitter {
   @objc(writeDiagnostic:)
   func writeDiagnostic(_ line: String) {
     DiagnosticLog.write(line)
+  }
+
+  /// What the live stream was doing, oldest entry first.
+  ///
+  /// Read by the import pass once a native recording turns up, so the window
+  /// it was captured in can be scored against the link's behaviour at the
+  /// time. The scoring lives in JS; this hands over observations, not a
+  /// verdict.
+  @objc(getStreamTimeline:rejecter:)
+  func getStreamTimeline(
+    _ resolve: @escaping RCTPromiseResolveBlock,
+    rejecter _: @escaping RCTPromiseRejectBlock
+  ) {
+    resolve(["entries": timeline.snapshot()])
   }
 
   // MARK: - App lifecycle
@@ -660,6 +687,7 @@ final class MWDATBridge: RCTEventEmitter {
       newStream.statePublisher.listen { [weak self] state in
         guard let self else { return }
         Self.log("stream state → \(state) (hasLeftStopped=\(self.streamHasLeftStopped), stopping=\(self.stopping))")
+        self.timeline.record(kind: "state", detail: String(describing: state))
         self.sendEvent(withName: Event.streamState, body: ["state": String(describing: state)])
         if state != .stopped {
           self.streamHasLeftStopped = true
@@ -678,6 +706,7 @@ final class MWDATBridge: RCTEventEmitter {
     listenerTokens.append(
       newStream.errorPublisher.listen { [weak self] error in
         Self.log("stream ERROR: \(error.description)")
+        self?.timeline.record(kind: "error", detail: error.description)
         self?.lastStreamError = error
         self?.sendEvent(withName: Event.error, body: ["message": error.description])
       }

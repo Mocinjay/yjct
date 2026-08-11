@@ -11,11 +11,13 @@ import {
   GLASSES_LIBRARY_CHANGED_EVENT,
   GlassesMediaLibraryNative,
 } from '../native/GlassesMediaLibraryNative';
+import { MWDATNative } from '../native/MWDATNative';
 import type { Clip } from '../types';
 import type { WakeWordProvider } from '../wakeword/WakeWordProvider';
 import type { MarkerStore } from './MarkerStore';
 import type { GlassesVideo } from './markerMatching';
 import { clipRangesForVideo, markersWithin } from './markerMatching';
+import { concurrencyVerdict } from './streamConcurrency';
 
 const log = createLogger('glasses-import');
 
@@ -218,6 +220,12 @@ export class GlassesImportController {
       return [];
     }
 
+    await this.probeConcurrency(
+      localIdentifier,
+      confirmation.startedAtMs,
+      confirmation.durationSec,
+    );
+
     // Re-matched against the container's own capture time, which is the exact
     // value the cut depends on — the library's is only approximately right.
     const video: GlassesVideo = {
@@ -267,6 +275,35 @@ export class GlassesImportController {
       await this.markerStore.remove(consumed);
     }
     return clips;
+  }
+
+  /**
+   * TEMPORARY: record what the live stream was doing while this was recorded.
+   *
+   * The glasses never tell the phone that a native recording started, so the
+   * question can only be answered backwards — the file turns up later carrying
+   * its own capture time, and the link telemetry from that window is the only
+   * evidence of whether Path A was alive at the same moment. Purely
+   * observational; it cannot fail an import.
+   */
+  private async probeConcurrency(
+    localIdentifier: string,
+    startedAtMs: number,
+    durationSec: number,
+  ): Promise<void> {
+    try {
+      const entries = await MWDATNative.getStreamTimeline();
+      const verdict = concurrencyVerdict(entries, { startedAtMs, durationSec });
+      log.info(`concurrency probe — ${verdict.summary}`, {
+        localIdentifier,
+        outcome: verdict.outcome,
+        minFps: verdict.minFps,
+        stalls: verdict.stalls,
+        errors: verdict.errors,
+      });
+    } catch (err) {
+      log.expected('concurrency probe failed', err, ErrorCode.StorageIndexUnreadable);
+    }
   }
 
   private async cutClip(

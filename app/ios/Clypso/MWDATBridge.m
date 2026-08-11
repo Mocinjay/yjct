@@ -17,6 +17,10 @@ RCT_EXTERN_METHOD(prepare:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject)
+// Temporary instrument: proves whether the live stream survives a native
+// glasses recording. Remove with the concurrency probe once answered.
+RCT_EXTERN_METHOD(getStreamTimeline:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(mockEnable:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(startPreview:(RCTPromiseResolveBlock)resolve
