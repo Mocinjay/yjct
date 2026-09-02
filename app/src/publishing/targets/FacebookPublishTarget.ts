@@ -7,6 +7,7 @@ import type {
   PublishStatus,
   PublishTarget,
 } from '../PublishTarget';
+import { publishFailure } from '../PublishTarget';
 
 /**
  * Facebook Page video connector — same Meta app and the SAME App Review
@@ -91,10 +92,7 @@ export class FacebookPublishTarget implements PublishTarget {
         url: permalink ? `https://facebook.com${permalink}` : undefined,
       };
     } catch (err) {
-      return {
-        state: 'failed',
-        error: err instanceof Error ? err.message : String(err),
-      };
+      return publishFailure(err);
     }
   }
 }

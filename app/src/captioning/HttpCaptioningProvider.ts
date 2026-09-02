@@ -1,6 +1,7 @@
 import RNFS from 'react-native-fs';
 import { AppError, ErrorCode } from '../core/errors';
 import { parseJsonObject, readString, requireHttpsUrl } from '../core/http';
+import { captionedPath } from './captionedPath';
 import type { CaptioningProvider } from './CaptioningProvider';
 import type { CaptionStyleKey } from '../captions/captionStyles';
 import { DEFAULT_CAPTION_STYLE } from '../captions/captionStyles';
@@ -64,13 +65,7 @@ export class HttpCaptioningProvider implements CaptioningProvider {
       );
     }
 
-    // The style is part of the filename so re-captioning in a different style
-    // writes a new file. Overwriting one path would leave the player showing
-    // the old, already-decoded video.
-    const captionedFilePath = clipFilePath.replace(
-      /\.mp4$/,
-      `.captioned.${style}.mp4`,
-    );
+    const captionedFilePath = captionedPath(clipFilePath, style);
     const download = await RNFS.downloadFile({
       fromUrl: `${base}/caption/${encodeURIComponent(id)}/download`,
       toFile: captionedFilePath,

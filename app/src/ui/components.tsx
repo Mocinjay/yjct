@@ -88,50 +88,6 @@ const btn = StyleSheet.create({
   sublabel: { color: 'rgba(245,245,248,0.72)', fontSize: 12, marginTop: 2 },
 });
 
-/* ----------------------------------- Chips ---------------------------------- */
-
-export function Chip({
-  label,
-  selected,
-  onPress,
-  dim,
-}: {
-  label: string;
-  selected?: boolean;
-  onPress?: () => void;
-  dim?: boolean;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={!onPress}
-      style={({ pressed }) => [
-        chip.base,
-        selected && chip.selected,
-        pressed && btn.pressed,
-      ]}>
-      <Text style={[chip.text, selected && chip.textSelected, dim && chip.textDim]}>
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
-
-const chip = StyleSheet.create({
-  base: {
-    backgroundColor: colors.surfaceHigh,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.pill,
-    paddingHorizontal: spacing.m,
-    paddingVertical: spacing.s + 2,
-  },
-  selected: { backgroundColor: colors.accent, borderColor: colors.accent },
-  text: { color: colors.textDim, fontSize: 14, fontWeight: '600' },
-  textSelected: { color: colors.text },
-  textDim: { color: colors.textFaint },
-});
-
 /* ----------------------------------- Cards ---------------------------------- */
 
 export function Card({

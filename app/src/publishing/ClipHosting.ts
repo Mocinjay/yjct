@@ -1,3 +1,5 @@
+import { sleep } from '../core/sleep';
+
 /**
  * PHASE 2 — cloud storage + CDN seam.
  *
@@ -33,8 +35,4 @@ export class MockClipHosting implements ClipHosting {
   async remove(_hostedUrl: string): Promise<void> {
     // nothing hosted, nothing to remove
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }

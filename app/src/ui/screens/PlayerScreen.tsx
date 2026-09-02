@@ -19,7 +19,8 @@ import { useClipActions } from '../hooks/useClipActions';
 import { useClip } from '../hooks/useClips';
 import { useEntitlement } from '../hooks/useEntitlement';
 import type { RootStackParamList } from '../navigation';
-import { formatDuration, relativeDate, shareClip } from './LibraryScreen';
+import { formatDuration, relativeDate } from '../format';
+import { shareClip } from '../shareClip';
 import { colors, radius, spacing, type } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Player'>;

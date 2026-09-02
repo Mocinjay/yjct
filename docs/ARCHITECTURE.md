@@ -26,7 +26,7 @@
 
 **Segmented rolling buffer.** The source records fixed-length segments (default 5s) back-to-back. The ring buffer keeps just enough segments to cover the configured window (30–90s) and deletes evicted files immediately. On trigger, the in-flight segment is finalized, the covering segments are stitched natively into one MP4, and a thumbnail is generated. Rationale: works identically for the mock (phone camera) and future MWDAT stream, keeps memory flat, and survives app suspension better than an in-memory frame buffer.
 
-**`DeviceVideoSource` interface.** `MockDeviceSource` drives `react-native-vision-camera` on the phone. `MWDATSource` is a typed stub that throws until the Meta Wearables Device Access Toolkit native bridge lands — no code path pretends glasses exist. Swapping sources is a Settings toggle.
+**`DeviceVideoSource` interface.** `MockDeviceSource` drives `react-native-vision-camera` on the phone. `MWDATSource` drives the Meta Wearables Device Access Toolkit through the native bridge in `ios/Clypso/MWDATBridge.swift`, and reports honestly when the toolkit is unavailable rather than pretending glasses exist. Swapping sources is a Settings toggle.
 
 **Wake word is our problem, not Meta's.** There is no third-party "Hey Meta" hook. `SpeechWakeWord` runs the OS's own speech recognition on-device — keyless, no vendor SDK — and `phraseMatch.ts` scores the transcript for "Clypso" and its common mis-hearings ("clip so", "clips o"). Detection trails the spoken word by up to one segment; the look-back window still contains the moment. `MockWakeWord` exposes a manual trigger button so the loop is testable with no microphone.
 
@@ -34,7 +34,7 @@
 
 ## Phase 2 (implemented mock-first; credentials pending)
 
-- `CaptioningProvider`: `(clipFile, {style}) → captionedClipFile`. Pluggable, and the seam is what let captioning move on-device without touching anything above it. Resolution order in `PublishService.getCaptioner()`:
+- `CaptioningProvider`: `(clipFile, {style}) → captionedClipFile`. Pluggable, and the seam is what let captioning move on-device without touching anything above it. Resolution order in `captioning/resolveCaptioner.ts`:
   1. **`OnDeviceCaptioningProvider` (iOS)** — no server, no key, nothing uploaded. Apple's Speech framework transcribes the clip's own audio on-device with per-word timings; `captionTimeline.ts` turns those into timed cues; the `CaptionEngine` native module burns them in with AVFoundation.
   2. **`HttpCaptioningProvider`** — Android, or iOS where the locale has no offline dictation. Talks to `server/captioning`.
   3. **`MockCaptioningProvider`** — dev only. Reports `burnsCaptions: false` so its output is never badged as really captioned.

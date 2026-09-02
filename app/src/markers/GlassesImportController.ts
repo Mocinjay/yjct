@@ -1,8 +1,6 @@
 import { NativeEventEmitter, NativeModules } from 'react-native';
 import RNFS from 'react-native-fs';
-import { FREE_RETENTION_HOURS } from '../config';
-import { clipStore } from '../core/ClipStore';
-import { defaultClipName } from '../core/CaptureController';
+import { clipStore, newClip, newClipId } from '../core/ClipStore';
 import { entitlementStore } from '../core/EntitlementStore';
 import { createLogger } from '../core/Logger';
 import { AppError, ErrorCode } from '../core/errors';
@@ -315,7 +313,7 @@ export class GlassesImportController {
     // otherwise a day's worth of clips all land in the library at once,
     // labelled with the moment they were processed.
     const capturedAt = video.startedAtMs + range.endSec * 1000;
-    const id = `clip_${capturedAt}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = newClipId(capturedAt);
     const dir = await clipStore.ensureDir();
     const result = await extractRange(
       sourcePath,
@@ -324,17 +322,14 @@ export class GlassesImportController {
       `${dir}/${id}.mp4`,
     );
 
-    const isPro = await entitlementStore.isPro();
-    return {
+    return newClip({
       id,
-      name: defaultClipName(capturedAt),
+      capturedAt,
       filePath: result.outputPath,
       thumbnailPath: result.thumbnailPath,
-      capturedAt,
       durationSec: result.durationSec,
       sourceKind: 'glasses-library',
-      savedAt: isPro ? capturedAt : null,
-      expiresAt: isPro ? null : capturedAt + FREE_RETENTION_HOURS * 3600_000,
-    };
+      isPro: await entitlementStore.isPro(),
+    });
   }
 }

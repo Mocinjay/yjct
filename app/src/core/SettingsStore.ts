@@ -5,6 +5,7 @@ import {
   DEFAULT_SETTINGS,
 } from '../config';
 import type { Settings } from '../types';
+import { Emitter } from './Emitter';
 import { createLogger } from './Logger';
 import { ErrorCode } from './errors';
 
@@ -15,7 +16,7 @@ const LEGACY_KEY = 'settings.v1';
 
 export class SettingsStore {
   private cached: Settings | null = null;
-  private listeners = new Set<(s: Settings) => void>();
+  private changes = new Emitter<Settings>();
 
   async get(): Promise<Settings> {
     if (this.cached) {
@@ -75,13 +76,12 @@ export class SettingsStore {
     );
     this.cached = next;
     await AsyncStorage.setItem(KEY, JSON.stringify(next));
-    this.listeners.forEach(l => l(next));
+    this.changes.emit(next);
     return next;
   }
 
   subscribe(listener: (s: Settings) => void): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    return this.changes.subscribe(listener);
   }
 }
 

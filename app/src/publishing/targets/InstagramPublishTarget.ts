@@ -1,12 +1,14 @@
 import { AppError, ErrorCode } from '../../core/errors';
 import { GRAPH, graphGet, graphPost, graphUrl } from './metaGraph';
 import { readString, requireId } from '../../core/http';
+import { sleep } from '../../core/sleep';
 import type {
   PublishableClip,
   PublishPrivacy,
   PublishStatus,
   PublishTarget,
 } from '../PublishTarget';
+import { publishFailure } from '../PublishTarget';
 
 /**
  * Instagram Reels connector — Graph API container-based flow:
@@ -143,14 +145,7 @@ export class InstagramPublishTarget implements PublishTarget {
         url: readString(media, 'permalink'),
       };
     } catch (err) {
-      return {
-        state: 'failed',
-        error: err instanceof Error ? err.message : String(err),
-      };
+      return publishFailure(err);
     }
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }

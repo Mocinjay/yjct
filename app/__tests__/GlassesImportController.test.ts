@@ -55,7 +55,11 @@ jest.mock('../src/native/GlassesMediaLibraryNative', () => ({
   },
 }));
 
+// Only the store's disk-backed half is replaced. `newClip`/`newClipId` are
+// pure and shared with the capture path, so stubbing them out here would test
+// a clip shape this module does not actually produce.
 jest.mock('../src/core/ClipStore', () => ({
+  ...jest.requireActual('../src/core/ClipStore'),
   clipStore: {
     ensureDir: jest.fn(async () => '/docs/clips'),
     add: jest.fn(async (clip: { id: string; sourceKind: string; durationSec: number }) => {

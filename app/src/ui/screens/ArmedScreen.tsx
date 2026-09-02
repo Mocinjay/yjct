@@ -12,7 +12,7 @@ import { GlassesPreview } from '../GlassesPreview';
 import { RecDot } from '../components';
 import { useCaptureSession } from '../hooks/useCaptureSession';
 import type { RootStackParamList } from '../navigation';
-import { formatDuration } from './LibraryScreen';
+import { formatDuration } from '../format';
 import { colors, radius, spacing } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Armed'>;

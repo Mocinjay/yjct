@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 import { FREE_BUFFER_SECONDS_MAX, WAKE_PHRASE } from '../../config';
+import { describe } from '../../core/errors';
 import { MWDATNative, mwdatAvailable, mwdatEvents } from '../../native/MWDATNative';
 import type { ConnectorConfig } from '../../core/ConnectorConfig';
 import { connectorConfigStore } from '../../core/ConnectorConfig';
@@ -231,27 +232,19 @@ export function SettingsScreen({ navigation }: Props) {
           user-facing OAuth replaces this before any store release.
         </Text>
 
-        <Text style={styles.fieldLabel}>Clip hosting — presign endpoint URL</Text>
-        <TextInput
-          style={styles.input}
-          value={connectors.hostingPresignUrl ?? ''}
-          autoCapitalize="none"
-          autoCorrect={false}
+        <CredentialField
+          label="Clip hosting — presign endpoint URL"
+          value={connectors.hostingPresignUrl}
           placeholder="https://…/presign (blank = mock hosting)"
-          placeholderTextColor={colors.textDim}
           onChangeText={hostingPresignUrl =>
             connectorConfigStore.update({ hostingPresignUrl })
           }
         />
 
-        <Text style={styles.fieldLabel}>Captioning service URL — fallback only</Text>
-        <TextInput
-          style={styles.input}
-          value={connectors.captioningUrl ?? ''}
-          autoCapitalize="none"
-          autoCorrect={false}
+        <CredentialField
+          label="Captioning service URL — fallback only"
+          value={connectors.captioningUrl}
           placeholder="http://<mac-ip>:8787 (blank = mock captioner)"
-          placeholderTextColor={colors.textDim}
           onChangeText={captioningUrl =>
             connectorConfigStore.update({ captioningUrl })
           }
@@ -262,60 +255,41 @@ export function SettingsScreen({ navigation }: Props) {
           your language.
         </Text>
 
-        <Text style={styles.fieldLabel}>Instagram — Graph access token</Text>
-        <TextInput
-          style={styles.input}
-          value={connectors.meta?.accessToken ?? ''}
-          autoCapitalize="none"
-          autoCorrect={false}
+        <CredentialField
+          label="Instagram — Graph access token"
+          value={connectors.meta?.accessToken}
           placeholder="needs instagram_content_publish"
-          placeholderTextColor={colors.textDim}
           onChangeText={accessToken =>
             connectorConfigStore.update({ meta: { accessToken } })
           }
         />
-        <Text style={styles.fieldLabel}>Instagram — IG user id</Text>
-        <TextInput
-          style={styles.input}
-          value={connectors.meta?.igUserId ?? ''}
-          autoCapitalize="none"
-          autoCorrect={false}
+        <CredentialField
+          label="Instagram — IG user id"
+          value={connectors.meta?.igUserId}
           placeholder="Business/Creator account id"
-          placeholderTextColor={colors.textDim}
           onChangeText={igUserId =>
             connectorConfigStore.update({ meta: { igUserId } })
           }
         />
 
-        <Text style={styles.fieldLabel}>Facebook — Page id</Text>
-        <TextInput
-          style={styles.input}
-          value={connectors.meta?.pageId ?? ''}
-          autoCapitalize="none"
-          autoCorrect={false}
+        <CredentialField
+          label="Facebook — Page id"
+          value={connectors.meta?.pageId}
           onChangeText={pageId => connectorConfigStore.update({ meta: { pageId } })}
         />
-        <Text style={styles.fieldLabel}>Facebook — Page access token</Text>
-        <TextInput
-          style={styles.input}
-          value={connectors.meta?.pageAccessToken ?? ''}
-          autoCapitalize="none"
-          autoCorrect={false}
+        <CredentialField
+          label="Facebook — Page access token"
+          value={connectors.meta?.pageAccessToken}
           placeholder="needs pages_manage_posts"
-          placeholderTextColor={colors.textDim}
           onChangeText={pageAccessToken =>
             connectorConfigStore.update({ meta: { pageAccessToken } })
           }
         />
 
-        <Text style={styles.fieldLabel}>TikTok — Content Posting access token</Text>
-        <TextInput
-          style={styles.input}
-          value={connectors.tiktok?.accessToken ?? ''}
-          autoCapitalize="none"
-          autoCorrect={false}
+        <CredentialField
+          label="TikTok — Content Posting access token"
+          value={connectors.tiktok?.accessToken}
           placeholder="sandbox token until audit clears"
-          placeholderTextColor={colors.textDim}
           onChangeText={accessToken =>
             connectorConfigStore.update({ tiktok: { accessToken } })
           }
@@ -387,7 +361,9 @@ function GlassesConnection() {
       setError('Meta glasses support is iOS-only for now.');
       return;
     }
-    MWDATNative.getRegistrationState().then(setRegState).catch(e => setError(String(e?.message ?? e)));
+    MWDATNative.getRegistrationState()
+      .then(setRegState)
+      .catch(err => setError(describe(err)));
     const sub = mwdatEvents().addListener(
       'MWDATRegistrationState',
       (event: { state: string }) => setRegState(event.state),
@@ -400,8 +376,8 @@ function GlassesConnection() {
     setError(null);
     try {
       setRegState(await MWDATNative.startRegistration());
-    } catch (e: any) {
-      setError(String(e?.message ?? e));
+    } catch (err) {
+      setError(describe(err));
     } finally {
       setBusy(false);
     }
@@ -418,7 +394,7 @@ function GlassesConnection() {
       {error ? <Text style={styles.warning}>{error}</Text> : null}
       {!registered ? (
         <Pressable
-          style={[styles.choice, busy && { opacity: 0.5 }]}
+          style={[styles.choice, busy && styles.choiceBusy]}
           disabled={busy}
           onPress={connect}>
           <Text style={styles.choiceText}>
@@ -450,10 +426,10 @@ function TestRender() {
         setLog(previous => [...previous, line]),
       );
       setLog(report.lines);
-    } catch (e) {
+    } catch (err) {
       setLog(previous => [
         ...previous,
-        `Failed: ${e instanceof Error ? e.message : String(e)}`,
+        `Failed: ${describe(err)}`,
       ]);
     } finally {
       setBusy(false);
@@ -540,6 +516,41 @@ function CaptionSample({ preview }: { preview: CaptionPreview }) {
         </Text>
       ))}
     </View>
+  );
+}
+
+/**
+ * One pasted credential.
+ *
+ * Seven of these were written out longhand, and each repeated the same four
+ * lines of keyboard configuration — the ones that matter, because a token
+ * autocapitalised or autocorrected on the way in is a token that silently does
+ * not work.
+ */
+function CredentialField({
+  label,
+  value,
+  placeholder,
+  onChangeText,
+}: {
+  label: string;
+  value: string | undefined;
+  placeholder?: string;
+  onChangeText: (text: string) => void;
+}) {
+  return (
+    <>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <TextInput
+        style={styles.input}
+        value={value ?? ''}
+        autoCapitalize="none"
+        autoCorrect={false}
+        placeholder={placeholder}
+        placeholderTextColor={colors.textDim}
+        onChangeText={onChangeText}
+      />
+    </>
   );
 }
 

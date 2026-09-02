@@ -1,3 +1,4 @@
+import { sleep } from '../../core/sleep';
 import type {
   PublishableClip,
   PublishPrivacy,
@@ -56,8 +57,4 @@ export class MockPublishTarget implements PublishTarget {
       url: `https://mock.fadeaway.invalid/${publishId}`,
     };
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }

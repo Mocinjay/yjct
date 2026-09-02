@@ -1,4 +1,5 @@
 import RNFS from 'react-native-fs';
+import { captionedPath } from './captionedPath';
 import type { CaptioningProvider } from './CaptioningProvider';
 import type { CaptionStyleKey } from '../captions/captionStyles';
 import { DEFAULT_CAPTION_STYLE } from '../captions/captionStyles';
@@ -22,10 +23,7 @@ export class MockCaptioningProvider implements CaptioningProvider {
   ): Promise<{ captionedFilePath: string }> {
     await new Promise<void>(resolve => setTimeout(resolve, 800));
     const style = options?.style ?? DEFAULT_CAPTION_STYLE;
-    const captionedFilePath = clipFilePath.replace(
-      /\.mp4$/,
-      `.captioned.${style}.mp4`,
-    );
+    const captionedFilePath = captionedPath(clipFilePath, style);
     await RNFS.copyFile(clipFilePath, captionedFilePath);
     return { captionedFilePath };
   }

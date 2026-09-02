@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Emitter } from './Emitter';
 
 const KEY = 'entitlement.v1';
 
@@ -12,7 +13,7 @@ const KEY = 'entitlement.v1';
  */
 export class EntitlementStore {
   private cached: boolean | null = null;
-  private listeners = new Set<(isPro: boolean) => void>();
+  private changes = new Emitter<boolean>();
 
   async isPro(): Promise<boolean> {
     if (this.cached !== null) {
@@ -31,18 +32,17 @@ export class EntitlementStore {
   async devUnlock(): Promise<void> {
     this.cached = true;
     await AsyncStorage.setItem(KEY, 'pro');
-    this.listeners.forEach(l => l(true));
+    this.changes.emit(true);
   }
 
   async clear(): Promise<void> {
     this.cached = false;
     await AsyncStorage.removeItem(KEY);
-    this.listeners.forEach(l => l(false));
+    this.changes.emit(false);
   }
 
   subscribe(listener: (isPro: boolean) => void): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    return this.changes.subscribe(listener);
   }
 }
 

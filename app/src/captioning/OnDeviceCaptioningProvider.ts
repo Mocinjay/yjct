@@ -4,6 +4,7 @@ import {
   renderEdit,
   transcribeClip,
 } from '../native/CaptionEngineNative';
+import { captionedPath } from './captionedPath';
 import type { CaptioningProvider } from './CaptioningProvider';
 import type { CaptionStyleKey } from '../captions/captionStyles';
 import { DEFAULT_CAPTION_STYLE, captionStylePreset } from '../captions/captionStyles';
@@ -51,12 +52,9 @@ export class OnDeviceCaptioningProvider implements CaptioningProvider {
       ? await this.climaxPlan(clipFilePath, words, style)
       : { segments: null as EditSegment[] | null, cues: buildCaptionCues(words, style) };
 
-    // The style is part of the filename so restyling writes a new file rather
-    // than overwriting one the player may already have decoded.
-    const suffix = this.climax ? `hook.${styleKey}` : styleKey;
-    const captionedFilePath = clipFilePath.replace(
-      /\.mp4$/,
-      `.captioned.${suffix}.mp4`,
+    const captionedFilePath = captionedPath(
+      clipFilePath,
+      this.climax ? `hook.${styleKey}` : styleKey,
     );
 
     // An empty plan means "the whole source, unchanged"; the native side fills

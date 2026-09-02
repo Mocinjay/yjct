@@ -2,6 +2,7 @@ import { AppState } from 'react-native';
 import type { NativeEventSubscription } from 'react-native';
 import { captionQueue } from '../captioning/CaptionQueue';
 import { BUFFER_SECONDS_MAX, FREE_BUFFER_SECONDS_MAX } from '../config';
+import { Emitter } from '../core/Emitter';
 import { entitlementStore } from '../core/EntitlementStore';
 import { createLogger } from '../core/Logger';
 import { ErrorCode } from '../core/errors';
@@ -35,7 +36,7 @@ class GlassesImportService {
   private controller: GlassesImportController | null = null;
   private appStateSub: NativeEventSubscription | null = null;
   private blocker: string | null = null;
-  private listeners = new Set<(blocker: string | null) => void>();
+  private changes = new Emitter<string | null>();
 
   get running(): boolean {
     return this.controller !== null;
@@ -54,8 +55,7 @@ class GlassesImportService {
   }
 
   subscribe(listener: (blocker: string | null) => void): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    return this.changes.subscribe(listener);
   }
 
   private setBlocker(next: string | null): void {
@@ -63,9 +63,7 @@ class GlassesImportService {
       return;
     }
     this.blocker = next;
-    for (const listener of this.listeners) {
-      listener(next);
-    }
+    this.changes.emit(next);
   }
 
   /**

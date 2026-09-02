@@ -1,6 +1,6 @@
 import { NativeModules, Platform } from 'react-native';
 import type { LogEntry, LogSink } from '../core/Logger';
-import { logger } from '../core/Logger';
+import { formatEntry, logger } from '../core/Logger';
 
 interface DiagnosticWriter {
   writeDiagnostic(line: string): void;
@@ -23,21 +23,16 @@ const native: DiagnosticWriter | undefined = NativeModules.MWDATBridge;
  * costs signal directly.
  */
 function format(entry: LogEntry): string {
-  const parts = [`[js:${entry.scope}]`, entry.message];
-  if (entry.code) {
-    parts.push(`(${entry.code})`);
+  const line = formatEntry(entry, 'js:');
+  if (!entry.context) {
+    return line;
   }
-  if (entry.suppressed > 0) {
-    parts.push(`(+${entry.suppressed} repeated)`);
+  try {
+    return `${line} ${JSON.stringify(entry.context)}`;
+  } catch {
+    // A context that will not serialise is not worth losing the line over.
+    return line;
   }
-  if (entry.context) {
-    try {
-      parts.push(JSON.stringify(entry.context));
-    } catch {
-      // A context that will not serialise is not worth losing the line over.
-    }
-  }
-  return parts.join(' ');
 }
 
 export const nativeDiagnosticSink: LogSink = {

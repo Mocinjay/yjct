@@ -3,6 +3,7 @@ import type { CaptureSession } from '../services/capture';
 import { buildCaptureSession } from '../services/capture';
 import type { Clip } from '../types';
 import type { CaptureStatus } from './CaptureController';
+import { Emitter } from './Emitter';
 import { createLogger } from './Logger';
 import { settingsStore } from './SettingsStore';
 import { ErrorCode } from './errors';
@@ -87,18 +88,16 @@ export class CaptureSessionManager {
   private recoveryAttempts = 0;
   private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
   private recoveryExhausted = false;
-  private listeners = new Set<(s: CaptureSessionSnapshot) => void>();
+  private changes = new Emitter<CaptureSessionSnapshot>();
 
   constructor(deps: Partial<CaptureSessionDeps> = {}) {
     this.deps = { ...defaultDeps, ...deps };
   }
 
   subscribe(listener: (s: CaptureSessionSnapshot) => void): () => void {
-    this.listeners.add(listener);
+    const unsubscribe = this.changes.subscribe(listener);
     listener(this.snapshot());
-    return () => {
-      this.listeners.delete(listener);
-    };
+    return unsubscribe;
   }
 
   snapshot(): CaptureSessionSnapshot {
@@ -384,8 +383,7 @@ export class CaptureSessionManager {
   }
 
   private emit(): void {
-    const snapshot = this.snapshot();
-    this.listeners.forEach(l => l(snapshot));
+    this.changes.emit(this.snapshot());
   }
 }
 

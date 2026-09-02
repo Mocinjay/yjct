@@ -1,6 +1,7 @@
 import RNFS from 'react-native-fs';
 import { FREE_RETENTION_HOURS } from '../config';
-import type { Clip } from '../types';
+import type { Clip, DeviceKind } from '../types';
+import { Emitter } from './Emitter';
 import { createLogger } from './Logger';
 import { ErrorCode } from './errors';
 
@@ -26,7 +27,7 @@ const BACKUP_PATH = `${CLIPS_DIR}/index.bak.json`;
  */
 export class ClipStore {
   private clips: Clip[] | null = null;
-  private listeners = new Set<() => void>();
+  private changes = new Emitter<void>();
   /**
    * Serializes read-modify-write. Capture calls `add()` while CaptionQueue
    * calls `setCaptionState()` on its own schedule, so two mutations really do
@@ -57,8 +58,7 @@ export class ClipStore {
   }
 
   subscribe(listener: () => void): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    return this.changes.subscribe(listener);
   }
 
   async list(): Promise<Clip[]> {
@@ -85,16 +85,6 @@ export class ClipStore {
     }
   }
 
-  /** Temporary clips, newest first — the "Recent" tab. */
-  async listPending(): Promise<Clip[]> {
-    return (await this.list()).filter(isPending);
-  }
-
-  /** Kept clips, newest first — the "Saved" tab. */
-  async listSaved(): Promise<Clip[]> {
-    return (await this.list()).filter(c => !isPending(c));
-  }
-
   async add(clip: Clip): Promise<void> {
     await this.mutate(clips => ({ next: [clip, ...clips], result: undefined }));
   }
@@ -111,19 +101,6 @@ export class ClipStore {
     await this.mutate(clips => ({
       next: clips.map(c =>
         c.id === id ? { ...c, savedAt: c.savedAt ?? Date.now(), expiresAt: null } : c,
-      ),
-      result: undefined,
-    }));
-  }
-
-  /** Back to temporary, with a fresh clock. No-op for a clip already pending. */
-  async unsave(id: string, retentionHours = FREE_RETENTION_HOURS): Promise<void> {
-    const now = Date.now();
-    await this.mutate(clips => ({
-      next: clips.map(c =>
-        c.id === id
-          ? { ...c, savedAt: null, expiresAt: now + retentionHours * 3600_000 }
-          : c,
       ),
       result: undefined,
     }));
@@ -267,8 +244,57 @@ export class ClipStore {
       await RNFS.moveFile(INDEX_PATH, BACKUP_PATH);
     }
     await RNFS.moveFile(tmp, INDEX_PATH);
-    this.listeners.forEach(l => l());
+    this.changes.emit();
   }
+}
+
+/**
+ * A brand-new library entry.
+ *
+ * Both capture paths — the rolling buffer's stitch and the glasses-library
+ * import's cut — built this object by hand, which meant the id format, the
+ * default name and (the part that matters) the free-tier retention rule each
+ * existed twice. A tier change that reached one of them and not the other
+ * would be invisible until somebody's clips started outliving their clock.
+ */
+export function newClip(fields: {
+  /** From `newClipId`. The caller needs it first, to name the output file. */
+  id: string;
+  capturedAt: number;
+  filePath: string;
+  thumbnailPath: string;
+  durationSec: number;
+  sourceKind: DeviceKind;
+  /** Pro clips are born saved and never expire; free clips start the clock. */
+  isPro: boolean;
+}): Clip {
+  const { capturedAt, isPro } = fields;
+  return {
+    id: fields.id,
+    name: defaultClipName(capturedAt),
+    filePath: fields.filePath,
+    thumbnailPath: fields.thumbnailPath,
+    capturedAt,
+    durationSec: fields.durationSec,
+    sourceKind: fields.sourceKind,
+    savedAt: isPro ? capturedAt : null,
+    expiresAt: isPro ? null : capturedAt + FREE_RETENTION_HOURS * 3600_000,
+  };
+}
+
+/**
+ * A clip id, which is also the stem of every file the clip owns. Minted before
+ * the media exists because the stitcher is told where to write.
+ */
+export function newClipId(capturedAt: number): string {
+  return `clip_${capturedAt}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** "Clip 2026-09-02 14.31.07" — the name a clip carries until it is renamed. */
+function defaultClipName(capturedAt: number): string {
+  const d = new Date(capturedAt);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `Clip ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}.${pad(d.getMinutes())}.${pad(d.getSeconds())}`;
 }
 
 /** The caption fields, which are the only thing setCaptionState may touch. */
@@ -317,7 +343,7 @@ async function readIndex(): Promise<Clip[]> {
   let sawExistingFile = false;
 
   for (const path of [INDEX_PATH, BACKUP_PATH]) {
-    if (!(await RNFS.exists(path).catch(() => false))) {
+    if (!(await exists(path))) {
       continue;
     }
     sawExistingFile = true;

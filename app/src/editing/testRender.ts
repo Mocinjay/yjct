@@ -3,8 +3,6 @@ import { clipStore } from '../core/ClipStore';
 import { createLogger } from '../core/Logger';
 import { ErrorCode } from '../core/errors';
 import { settingsStore } from '../core/SettingsStore';
-
-const log = createLogger('test-render');
 import {
   climaxEngineAvailable,
   extractFeatures,
@@ -15,6 +13,8 @@ import { captionStylePreset } from '../captions/captionStyles';
 import { buildCaptionCues } from '../captions/captionTimeline';
 import { buildClimaxCaptionCues, outputDuration, planSegments } from './climaxEdit';
 import { findHook } from './climaxScoring';
+
+const log = createLogger('test-render');
 
 /**
  * DEV ONLY — runs the whole on-device pipeline against the sample clip bundled

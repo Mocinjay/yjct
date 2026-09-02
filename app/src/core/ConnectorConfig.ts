@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Emitter } from './Emitter';
 import { createLogger } from './Logger';
 import { ErrorCode } from './errors';
 
@@ -49,7 +50,7 @@ const KEY = 'connectorConfig.v1';
 
 export class ConnectorConfigStore {
   private cached: ConnectorConfig | null = null;
-  private listeners = new Set<(c: ConnectorConfig) => void>();
+  private changes = new Emitter<ConnectorConfig>();
 
   async get(): Promise<ConnectorConfig> {
     if (this.cached) {
@@ -82,13 +83,12 @@ export class ConnectorConfigStore {
     };
     this.cached = next;
     await AsyncStorage.setItem(KEY, JSON.stringify(next));
-    this.listeners.forEach(l => l(next));
+    this.changes.emit(next);
     return next;
   }
 
   subscribe(listener: (c: ConnectorConfig) => void): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    return this.changes.subscribe(listener);
   }
 }
 

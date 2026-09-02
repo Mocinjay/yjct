@@ -1,3 +1,5 @@
+import { describe } from '../core/errors';
+
 /**
  * PHASE 2 — connector contract. Each platform (YouTube Shorts, Instagram,
  * Facebook, TikTok) is one isolated module behind this interface,
@@ -52,4 +54,17 @@ export interface PublishTarget {
   ): Promise<{ publishId: string }>;
 
   checkStatus(publishId: string): Promise<PublishStatus>;
+}
+
+/**
+ * The `PublishStatus` a failed status check reports.
+ *
+ * All four connectors ended `checkStatus` with the same try/catch and the same
+ * hand-rolled `err instanceof Error ? err.message : String(err)` — a fourth
+ * copy of what `describe()` already does, in the one place where a status check
+ * must not throw: the UI polls it on a timer and an exception there kills the
+ * poll rather than reporting the failure.
+ */
+export function publishFailure(error: unknown): PublishStatus {
+  return { state: 'failed', error: describe(error) };
 }

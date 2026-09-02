@@ -9,6 +9,8 @@ import {
   Text,
   View,
 } from 'react-native';
+import { createLogger } from '../../core/Logger';
+import { describe } from '../../core/errors';
 import { useGlassesLease } from '../../device/glassesLease';
 import {
   MWDATNative,
@@ -20,6 +22,8 @@ import { GlassesPreview } from '../GlassesPreview';
 import { useGlassesDiagnostics } from '../hooks/useGlassesDiagnostics';
 import type { RootStackParamList } from '../navigation';
 import { colors, radius, spacing } from '../theme';
+
+const log = createLogger('connect');
 
 /** Simulator dev builds run against MockDeviceKit glasses automatically. */
 const AUTO_MOCK = __DEV__ && mwdatIsSimulator();
@@ -66,8 +70,8 @@ export function ConnectScreen({ navigation }: Props) {
       return;
     }
     MWDATNative.mockEnable()
-      .then(() => console.log('[connect] mock glasses paired'))
-      .catch(e => setError(String(e?.message ?? e)))
+      .then(() => log.info('mock glasses paired'))
+      .catch(err => setError(describe(err)))
       .finally(() => setMockReady(true));
   }, [setError]);
 
@@ -179,8 +183,8 @@ export function ConnectScreen({ navigation }: Props) {
         await MWDATNative.startPreview();
         setPreviewing(true);
         setError(null);
-      } catch (e: any) {
-        setError(String(e?.message ?? e));
+      } catch (err) {
+        setError(describe(err));
         previewStarted.current = false; // allow retry
       } finally {
         setBusy(null);
@@ -211,8 +215,8 @@ export function ConnectScreen({ navigation }: Props) {
     setError(null);
     try {
       await MWDATNative.startRegistration();
-    } catch (e: any) {
-      setError(String(e?.message ?? e));
+    } catch (err) {
+      setError(describe(err));
     } finally {
       setBusy(null);
     }
@@ -229,8 +233,8 @@ export function ConnectScreen({ navigation }: Props) {
       await MWDATNative.unregister();
       refresh();
       setError('Link reset. Tap “Connect through Meta AI” to link again.');
-    } catch (e: any) {
-      setError(String(e?.message ?? e));
+    } catch (err) {
+      setError(describe(err));
     } finally {
       setBusy(null);
     }

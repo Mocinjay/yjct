@@ -46,7 +46,7 @@ Two facts shape every decision about picture quality:
 | 3 | Ring buffer | `src/core/SegmentRingBuffer.ts` | Holds segments, evicts old ones. No transcode. |
 | 4 | Stitch | `modules/clip-stitcher/ios/ClipStitcher.m` | Concatenates the covering window. **Passthrough — no re-encode.** |
 | 5 | Caption burn | `modules/clip-stitcher/ios/CaptionEngine.m` | Composition + Core Animation caption overlay, then one `AVAssetExportSession`. **One encode generation.** |
-| 6 | Share | `src/ui/screens/LibraryScreen.tsx:362` | Hands the `.mp4` path to `Share.open`. We do nothing to it. |
+| 6 | Share | `src/ui/shareClip.ts:14` | Hands the `.mp4` path to `Share.open`. We do nothing to it. |
 
 Stage 2 is the fidelity ceiling we control. Stage 1 is the fidelity ceiling we
 do not.
@@ -493,8 +493,8 @@ field evidence of how often the ladder drops.
   (`CaptionQueue.ts:43–48`); so do `retry()` and `resume()`.
 - With nothing queued, `captionState` stays `'none'`.
 - `deliverablePath()` returns `captionedFilePath` only when `captionState` is
-  `'ready'` (`ClipStore.ts:228`), so it returns the raw stitched `filePath`.
-- `LibraryScreen.tsx:347` hands that path to `Share.open`.
+  `'ready'` (`ClipStore.ts:322`), so it returns the raw stitched `filePath`.
+- `shareClip.ts:14` hands that path to `Share.open`.
 
 Stage 5 is skipped entirely. Promotion is a **Pro-only** change, and since Phase
 2 credentials are still pending, no clip shipping today would be affected by

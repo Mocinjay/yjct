@@ -89,16 +89,30 @@ const CONSOLE_METHOD: Record<Exclude<LogLevel, 'silent'>, 'log' | 'warn' | 'erro
     error: 'error',
   };
 
+/**
+ * One entry as a single line, minus its context.
+ *
+ * Shared with the native diagnostics sink, which had grown its own copy —
+ * including the `(+N repeated)` suffix, which is the part a reader has to be
+ * able to trust: a line without it means the failure really did happen once.
+ *
+ * `scopePrefix` is the sink's own tag for where the line came from; the file
+ * carries native lines too, so JS ones say so.
+ */
+export function formatEntry(entry: LogEntry, scopePrefix = ''): string {
+  const parts = [`[${scopePrefix}${entry.scope}]`, entry.message];
+  if (entry.code) {
+    parts.push(`(${entry.code})`);
+  }
+  if (entry.suppressed > 0) {
+    parts.push(`(+${entry.suppressed} repeated)`);
+  }
+  return parts.join(' ');
+}
+
 export const consoleSink: LogSink = {
   write(entry) {
-    const parts = [`[${entry.scope}]`, entry.message];
-    if (entry.code) {
-      parts.push(`(${entry.code})`);
-    }
-    if (entry.suppressed > 0) {
-      parts.push(`(+${entry.suppressed} repeated)`);
-    }
-    const line = parts.join(' ');
+    const line = formatEntry(entry);
     if (entry.context) {
       console[CONSOLE_METHOD[entry.level]](line, entry.context);
     } else {

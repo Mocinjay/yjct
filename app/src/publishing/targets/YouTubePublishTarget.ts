@@ -15,6 +15,7 @@ import type {
   PublishStatus,
   PublishTarget,
 } from '../PublishTarget';
+import { publishFailure } from '../PublishTarget';
 
 /**
  * YouTube Shorts connector — first of the four per the build order
@@ -173,10 +174,7 @@ export class YouTubePublishTarget implements PublishTarget {
         url: `https://youtube.com/shorts/${publishId}`,
       };
     } catch (err) {
-      return {
-        state: 'failed',
-        error: err instanceof Error ? err.message : String(err),
-      };
+      return publishFailure(err);
     }
   }
 }

@@ -2,7 +2,6 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   Image,
   Pressable,
@@ -11,20 +10,16 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Share from 'react-native-share';
 import { FREE_RETENTION_HOURS } from '../../config';
-import {
-  deliverablePath,
-  isCaptioning,
-  isPending,
-  msUntilExpiry,
-} from '../../core/ClipStore';
+import { isCaptioning, isPending, msUntilExpiry } from '../../core/ClipStore';
 import type { Clip } from '../../types';
 import { ProBadge, RecDot, RecRings } from '../components';
+import { formatDuration, formatRemaining, relativeDate } from '../format';
 import { useClipActions } from '../hooks/useClipActions';
 import { useClips } from '../hooks/useClips';
 import { useEntitlement } from '../hooks/useEntitlement';
 import type { RootStackParamList } from '../navigation';
+import { shareClip } from '../shareClip';
 import { colors, radius, spacing, type } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Library'>;
@@ -308,53 +303,6 @@ function CaptionOverlay({ clip }: { clip: Clip }) {
     );
   }
   return null;
-}
-
-/** "23h left" / "42m left" / "expiring" once the clock has run out. */
-export function formatRemaining(ms: number): string {
-  if (ms <= 0) {
-    return 'expiring';
-  }
-  const minutes = Math.floor(ms / 60_000);
-  if (minutes < 60) {
-    return `${Math.max(1, minutes)}m left`;
-  }
-  return `${Math.floor(minutes / 60)}h left`;
-}
-
-export function formatDuration(sec: number): string {
-  const s = Math.max(0, Math.round(sec));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-}
-
-export function relativeDate(epochMs: number): string {
-  const d = new Date(epochMs);
-  const now = new Date();
-  const sameDay = d.toDateString() === now.toDateString();
-  if (sameDay) {
-    return `Today ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
-  }
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  if (d.toDateString() === yesterday.toDateString()) {
-    return 'Yesterday';
-  }
-  return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-}
-
-export async function shareClip(clip: Clip): Promise<void> {
-  try {
-    // Free tier: raw footage via the native OS share sheet. Not an API
-    // integration — same mechanism as sharing a Camera Roll video. Once
-    // captions are burned in, that is the cut the wearer meant to send.
-    await Share.open({
-      url: `file://${deliverablePath(clip)}`,
-      type: 'video/mp4',
-      failOnCancel: false,
-    });
-  } catch (e) {
-    Alert.alert('Share failed', e instanceof Error ? e.message : String(e));
-  }
 }
 
 const styles = StyleSheet.create({

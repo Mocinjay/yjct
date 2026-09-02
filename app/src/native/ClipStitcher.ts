@@ -60,23 +60,30 @@ interface ClipStitcherModule {
 const native: ClipStitcherModule | undefined = NativeModules.ClipStitcher;
 
 /**
+ * Both entry points are `async`, so a throw here reaches the caller as the same
+ * rejected promise the two hand-rolled `Promise.reject`s produced — with one
+ * copy of the message instead of two.
+ */
+function requireStitcher(): ClipStitcherModule {
+  if (!native) {
+    throw new Error(
+      'ClipStitcher native module not linked — rebuild the app (pod install / gradle sync).',
+    );
+  }
+  return native;
+}
+
+/**
  * @param trimEndSec seconds to cut off the end of the final segment — used to
  *   end a wake-word clip on the trigger word rather than at the segment
  *   boundary. 0 keeps the whole thing.
  */
-export function stitchSegments(
+export async function stitchSegments(
   segmentPaths: string[],
   outputPath: string,
   trimEndSec = 0,
 ): Promise<StitchResult> {
-  if (!native) {
-    return Promise.reject(
-      new Error(
-        'ClipStitcher native module not linked — rebuild the app (pod install / gradle sync).',
-      ),
-    );
-  }
-  return native.stitch(segmentPaths, outputPath, trimEndSec);
+  return requireStitcher().stitch(segmentPaths, outputPath, trimEndSec);
 }
 
 /**
@@ -86,18 +93,11 @@ export function stitchSegments(
  * undo the entire reason for importing the original rather than using the
  * Bluetooth stream.
  */
-export function extractRange(
+export async function extractRange(
   sourcePath: string,
   startSec: number,
   endSec: number,
   outputPath: string,
 ): Promise<StitchResult> {
-  if (!native) {
-    return Promise.reject(
-      new Error(
-        'ClipStitcher native module not linked — rebuild the app (pod install / gradle sync).',
-      ),
-    );
-  }
-  return native.extractRange(sourcePath, startSec, endSec, outputPath);
+  return requireStitcher().extractRange(sourcePath, startSec, endSec, outputPath);
 }

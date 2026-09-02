@@ -1,6 +1,5 @@
 import RNFS from 'react-native-fs';
 import {
-  FREE_RETENTION_HOURS,
   MAX_CLIP_RECORDING_SECONDS,
   WAKE_TRIM_PADDING_SECONDS,
 } from '../config';
@@ -9,7 +8,8 @@ import type { AvSkew } from '../native/ClipStitcher';
 import { stitchSegments } from '../native/ClipStitcher';
 import type { Clip, Segment } from '../types';
 import type { WakeDetection, WakeWordProvider } from '../wakeword/WakeWordProvider';
-import { clipStore } from './ClipStore';
+import { clipStore, newClip, newClipId } from './ClipStore';
+import { Emitter } from './Emitter';
 import { entitlementStore } from './EntitlementStore';
 import { createLogger } from './Logger';
 import { AppError, ErrorCode } from './errors';
@@ -42,14 +42,14 @@ function reportAvSkew(skew: AvSkew | undefined): void {
   if (worstMs < AV_SKEW_REPORT_MS) {
     return;
   }
+  // Flat, because `warn(message, context)` is the whole signature — the
+  // nested `{ code, context }` this used to pass was a shape the logger has no
+  // idea about, so it reached the diagnostics file as a literal `"context"` key.
   log.warn('audio and video segment ends disagree', {
-    code: 'av_skew',
-    context: {
-      segments: skew.segments,
-      meanMs: Math.round(skew.meanMs * 10) / 10,
-      minMs: Math.round(skew.minMs * 10) / 10,
-      maxMs: Math.round(skew.maxMs * 10) / 10,
-    },
+    segments: skew.segments,
+    meanMs: Math.round(skew.meanMs * 10) / 10,
+    minMs: Math.round(skew.minMs * 10) / 10,
+    maxMs: Math.round(skew.maxMs * 10) / 10,
   });
 }
 
@@ -110,7 +110,7 @@ export class CaptureController {
     bufferedSeconds: 0,
     bufferedAsOf: Date.now(),
   };
-  private listeners = new Set<(s: CaptureStatus) => void>();
+  private changes = new Emitter<CaptureStatus>();
   private saving = false;
   private sessionClipCount = 0;
   private armedSince: number | null = null;
@@ -139,9 +139,9 @@ export class CaptureController {
   }
 
   subscribe(listener: (s: CaptureStatus) => void): () => void {
-    this.listeners.add(listener);
+    const unsubscribe = this.changes.subscribe(listener);
     listener(this.status);
-    return () => this.listeners.delete(listener);
+    return unsubscribe;
   }
 
   async arm(): Promise<void> {
@@ -239,69 +239,41 @@ export class CaptureController {
    * cut and the whole window saved, as before.
    */
   async captureNow(detection?: WakeDetection): Promise<Clip | null> {
-    if (this.status.state !== 'armed' || this.saving) {
+    if (this.status.state !== 'armed') {
       return null;
     }
-    this.saving = true;
-    this.chime();
-    this.setStatus({ ...this.status, state: 'saving' });
-    try {
-      let segments: Segment[] = [];
-      let trimEndSec = 0;
-      if (detection) {
-        segments = this.buffer.flushEndingAt(detection.segmentPath);
-        if (segments.length > 0) {
-          const last = segments[segments.length - 1];
-          trimEndSec = Math.max(
-            0,
-            last.durationSec - (detection.endOffsetSec + WAKE_TRIM_PADDING_SECONDS),
+    return this.save({
+      // Segments recorded after the wake word are kept as the next clip's
+      // look-back, so the counter does not necessarily fall back to zero.
+      bufferedAfter: () => this.buffer.totalBufferedSeconds,
+      failure: 'could not save clip',
+      collect: async () => {
+        let segments: Segment[] = [];
+        let trimEndSec = 0;
+        if (detection) {
+          segments = this.buffer.flushEndingAt(detection.segmentPath);
+          if (segments.length > 0) {
+            const last = segments[segments.length - 1];
+            trimEndSec = Math.max(
+              0,
+              last.durationSec - (detection.endOffsetSec + WAKE_TRIM_PADDING_SECONDS),
+            );
+          }
+        }
+        if (segments.length === 0) {
+          await this.source.cut();
+          segments = this.buffer.flush();
+        }
+        if (segments.length === 0) {
+          throw new AppError(
+            ErrorCode.CaptureBufferEmpty,
+            'buffer empty at trigger — nothing to clip yet',
+            { context: { triggeredBy: detection ? 'wake-word' : 'manual' } },
           );
         }
-      }
-      if (segments.length === 0) {
-        await this.source.cut();
-        segments = this.buffer.flush();
-      }
-      if (segments.length === 0) {
-        throw new AppError(
-          ErrorCode.CaptureBufferEmpty,
-          'buffer empty at trigger — nothing to clip yet',
-          { context: { triggeredBy: detection ? 'wake-word' : 'manual' } },
-        );
-      }
-      const clip = await this.stitch(segments, trimEndSec);
-      await clipStore.add(clip);
-      this.announceSaved(clip);
-      await this.releaseSegments(segments);
-      this.sessionClipCount += 1;
-      log.info('clip saved', {
-        id: clip.id,
-        durationSec: clip.durationSec,
-        segments: segments.length,
-        endedOnWakeWord: trimEndSec > 0,
-      });
-      this.setStatus({
-        state: 'armed',
-        // Segments recorded after the wake word are kept as the next clip's
-        // look-back, so the counter does not necessarily fall back to zero.
-        bufferedSeconds: this.buffer.totalBufferedSeconds,
-        lastClip: clip,
-        sessionClipCount: this.sessionClipCount,
-      });
-      return clip;
-    } catch (err) {
-      // Back to `armed`, not `error`: capture is still running and the next
-      // trigger will work. Only the save that just failed is lost.
-      const wrapped = log.error('could not save clip', err, ErrorCode.CaptureStitchFailed);
-      this.setStatus({
-        ...this.status,
-        state: 'armed',
-        lastError: wrapped.userMessage,
-      });
-      return null;
-    } finally {
-      this.saving = false;
-    }
+        return { segments, trimEndSec, logMessage: 'clip saved' };
+      },
+    });
   }
 
   /**
@@ -334,49 +306,89 @@ export class CaptureController {
 
   /** Stop recording and save [trigger − window … now] as one clip. */
   async stopClip(): Promise<Clip | null> {
-    if (this.status.state !== 'recording' || this.saving) {
+    if (this.status.state !== 'recording') {
+      return null;
+    }
+    this.clearMaxRecordingTimer();
+    return this.save({
+      // The pin held everything from the trigger onwards, so the whole buffer
+      // is this clip and nothing is left over as the next one's look-back.
+      bufferedAfter: () => 0,
+      failure: 'could not save extended clip',
+      // A failed extended save is no longer recording, so the clock the UI
+      // draws from that field has to stop. The look-back save has no such
+      // clock to clear.
+      clearRecordingSinceOnFailure: true,
+      collect: async () => {
+        await this.source.cut();
+        const segments = this.buffer.flushFromPin();
+        if (segments.length === 0) {
+          throw new AppError(
+            ErrorCode.CaptureBufferEmpty,
+            'extended recording ended with an empty buffer',
+          );
+        }
+        return { segments, trimEndSec: 0, logMessage: 'extended clip saved' };
+      },
+    });
+  }
+
+  /**
+   * Trigger to library, for both ways of getting there.
+   *
+   * The look-back save and the extended save differ only in how they choose
+   * their segments and what the buffer holds afterwards. Everything around
+   * that — the re-entrancy latch, the two chimes, the `saving` transition, the
+   * stitch, the store write, the segment cleanup, the session counter and the
+   * failure handling that returns to `armed` rather than `error` — was written
+   * out twice, and the copies had already diverged in whether they cleared
+   * `recordingSince`.
+   */
+  private async save(plan: {
+    collect: () => Promise<{
+      segments: Segment[];
+      trimEndSec: number;
+      logMessage: string;
+    }>;
+    /** Look-back left in the buffer once this clip has taken its share. */
+    bufferedAfter: () => number;
+    failure: string;
+    clearRecordingSinceOnFailure?: boolean;
+  }): Promise<Clip | null> {
+    if (this.saving) {
       return null;
     }
     this.saving = true;
     this.chime();
-    this.clearMaxRecordingTimer();
     this.setStatus({ ...this.status, state: 'saving' });
     try {
-      await this.source.cut();
-      const segments = this.buffer.flushFromPin();
-      if (segments.length === 0) {
-        throw new AppError(
-          ErrorCode.CaptureBufferEmpty,
-          'extended recording ended with an empty buffer',
-        );
-      }
-      const clip = await this.stitch(segments);
+      const { segments, trimEndSec, logMessage } = await plan.collect();
+      const clip = await this.stitch(segments, trimEndSec);
       await clipStore.add(clip);
       this.announceSaved(clip);
       await this.releaseSegments(segments);
       this.sessionClipCount += 1;
-      log.info('extended clip saved', {
+      log.info(logMessage, {
         id: clip.id,
         durationSec: clip.durationSec,
         segments: segments.length,
+        endedOnWakeWord: trimEndSec > 0,
       });
       this.setStatus({
         state: 'armed',
-        bufferedSeconds: 0,
+        bufferedSeconds: plan.bufferedAfter(),
         lastClip: clip,
         sessionClipCount: this.sessionClipCount,
       });
       return clip;
     } catch (err) {
-      const wrapped = log.error(
-        'could not save extended clip',
-        err,
-        ErrorCode.CaptureStitchFailed,
-      );
+      // Back to `armed`, not `error`: capture is still running and the next
+      // trigger will work. Only the save that just failed is lost.
+      const wrapped = log.error(plan.failure, err, ErrorCode.CaptureStitchFailed);
       this.setStatus({
         ...this.status,
         state: 'armed',
-        recordingSince: undefined,
+        ...(plan.clearRecordingSinceOnFailure ? { recordingSince: undefined } : {}),
         lastError: wrapped.userMessage,
       });
       return null;
@@ -406,7 +418,7 @@ export class CaptureController {
 
   private async stitch(segments: Segment[], trimEndSec = 0): Promise<Clip> {
     const capturedAt = Date.now();
-    const id = `clip_${capturedAt}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = newClipId(capturedAt);
     const dir = await clipStore.ensureDir();
     const outputPath = `${dir}/${id}.mp4`;
     const result = await stitchSegments(
@@ -415,26 +427,17 @@ export class CaptureController {
       trimEndSec,
     );
     reportAvSkew(result.avSkew);
-    // Free clips are temporary and start counting down immediately; Pro clips
-    // are kept until the wearer deletes them.
-    const isPro = await entitlementStore.isPro();
-    return {
+    return newClip({
       id,
-      name: defaultClipName(capturedAt),
+      capturedAt,
       filePath: result.outputPath,
       thumbnailPath: result.thumbnailPath,
-      capturedAt,
       durationSec: result.durationSec,
       sourceKind: this.source.kind,
-      savedAt: isPro ? capturedAt : null,
-      expiresAt: isPro ? null : capturedAt + FREE_RETENTION_HOURS * 3600_000,
-    };
+      isPro: await entitlementStore.isPro(),
+    });
   }
 
-  /**
-   * Post-capture work is never allowed to fail a capture that already
-   * succeeded — the clip is on disk and in the library either way.
-   */
   /**
    * Sound the glasses so the wearer knows a trigger landed without looking at
    * the phone. Fired twice per clip: once the instant the trigger registers,
@@ -503,12 +506,7 @@ export class CaptureController {
       bufferedAsOf: measured,
       armedSince: this.armedSince ?? undefined,
     };
-    this.listeners.forEach(l => l(this.status));
+    this.changes.emit(this.status);
   }
 }
 
-export function defaultClipName(capturedAt: number): string {
-  const d = new Date(capturedAt);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `Clip ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}.${pad(d.getMinutes())}.${pad(d.getSeconds())}`;
-}

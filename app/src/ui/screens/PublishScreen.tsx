@@ -11,6 +11,8 @@ import {
   View,
 } from 'react-native';
 import Video from 'react-native-video';
+import { createLogger } from '../../core/Logger';
+import { ErrorCode, describe } from '../../core/errors';
 import { publishService } from '../../publishing/PublishService';
 import type {
   PublishPrivacy,
@@ -23,6 +25,8 @@ import { useClipActions } from '../hooks/useClipActions';
 import { useClip } from '../hooks/useClips';
 import type { RootStackParamList } from '../navigation';
 import { colors, radius, spacing, type } from '../theme';
+
+const log = createLogger('publish');
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Publish'>;
 
@@ -68,7 +72,14 @@ export function PublishScreen({ route }: Props) {
           })),
         ),
       )
-      .then(setTargets);
+      .then(setTargets)
+      .catch(err =>
+        log.error(
+          'could not list publish targets',
+          err,
+          ErrorCode.PublishNotConfigured,
+        ),
+      );
     return () => {
       if (pollTimer.current) {
         clearInterval(pollTimer.current);
@@ -118,7 +129,7 @@ export function PublishScreen({ route }: Props) {
       }, 2000);
     } catch (err) {
       setPhase({ step: 'compose' });
-      Alert.alert('Publish failed', err instanceof Error ? err.message : String(err));
+      Alert.alert('Publish failed', describe(err));
     }
   };
 

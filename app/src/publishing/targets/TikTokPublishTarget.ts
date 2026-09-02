@@ -6,6 +6,7 @@ import type {
   PublishStatus,
   PublishTarget,
 } from '../PublishTarget';
+import { publishFailure } from '../PublishTarget';
 
 /**
  * TikTok connector — Content Posting API, Direct Post via PULL_FROM_URL.
@@ -116,10 +117,7 @@ export class TikTokPublishTarget implements PublishTarget {
         error: status === 'FAILED' ? readString(data, 'fail_reason') : undefined,
       };
     } catch (err) {
-      return {
-        state: 'failed',
-        error: err instanceof Error ? err.message : String(err),
-      };
+      return publishFailure(err);
     }
   }
 }

@@ -26,10 +26,6 @@ interface LiveActivityNative {
 const native: LiveActivityNative | undefined =
   Platform.OS === 'ios' ? NativeModules.LiveActivityBridge : undefined;
 
-export function liveActivityAvailable(): boolean {
-  return native != null;
-}
-
 export const LiveActivity = {
   isSupported: (): Promise<boolean> =>
     native?.isSupported().catch(() => false) ?? Promise.resolve(false),

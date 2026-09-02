@@ -53,17 +53,6 @@ function findPhraseEndSec(words: TranscriptWord[]): number | null {
   return null;
 }
 
-/**
- * Keyless "Clypso" detection with the OS's own speech
- * recognition — no vendor, no API key, on-device where supported.
- *
- * iOS: rolling segment files are transcribed as they land (the audio is
- * already ours, so there is no microphone contention with the camera).
- * Detection trails the spoken phrase by one segment (~2–6s); the look-back
- * window still contains the moment, so nothing is lost.
- *
- * Android: continuous mic recognition with transcript events.
- */
 /** How the provider gets audio to listen to. */
 export interface SpeechWakeWordOptions {
   /**
@@ -83,6 +72,17 @@ export interface SpeechWakeWordOptions {
   ownMicrophone?: boolean;
 }
 
+/**
+ * Keyless "Clypso" detection with the OS's own speech
+ * recognition — no vendor, no API key, on-device where supported.
+ *
+ * iOS: rolling segment files are transcribed as they land (the audio is
+ * already ours, so there is no microphone contention with the camera).
+ * Detection trails the spoken phrase by one segment (~2–6s); the look-back
+ * window still contains the moment, so nothing is lost.
+ *
+ * Android: continuous mic recognition with transcript events.
+ */
 export class SpeechWakeWord implements WakeWordProvider {
   readonly name = 'speech';
 
@@ -135,8 +135,11 @@ export class SpeechWakeWord implements WakeWordProvider {
     }
 
     this.subscriptions.push(
+      // Self-listening: the segment arrives with a wall-clock stamp, so a hit
+      // can be reported as a moment in time rather than an offset into a
+      // buffer this provider does not own.
       emitter.addListener(WAKE_SEGMENT_EVENT, (event: WakeSegmentEvent) =>
-        this.handleSegment(event),
+        this.transcribe(event.path, event.startedAtMs),
       ),
       // A recorder that stopped is indistinguishable from a silent room, so
       // the failure has to announce itself or the trigger just quietly ends.
@@ -188,39 +191,32 @@ export class SpeechWakeWord implements WakeWordProvider {
   }
 
   /**
-   * iOS self-listening path: a segment the recorder just closed.
-   *
-   * Same transcription as the fed path — the only difference is that the
-   * segment arrived with a wall-clock stamp, so a hit can be reported as a
-   * moment in time rather than an offset into a buffer.
-   */
-  private handleSegment(event: WakeSegmentEvent): void {
-    if (!this.onDetected) {
-      return;
-    }
-    SpeechWakeWordNative.transcribeFile(event.path)
-      .then(({ transcript, words }) => {
-        this.failureStreak = 0;
-        if (transcript) {
-          this.handleTranscript(transcript, words, event.path, event.startedAtMs);
-        }
-      })
-      .catch(err => this.noteTranscribeFailure(err));
-  }
-
-  /**
    * iOS path: the capture controller feeds each recorded segment file here.
    * Fire-and-forget — transcription latency must never block the buffer.
    */
   feedSegment(path: string): void {
-    if (Platform.OS !== 'ios' || !this.onDetected) {
+    if (Platform.OS !== 'ios') {
+      return;
+    }
+    this.transcribe(path);
+  }
+
+  /**
+   * Transcribe one closed segment and act on what it says.
+   *
+   * Both paths do exactly this; they differ only in whether a wall-clock start
+   * time came with the file. Fire-and-forget on purpose — transcription
+   * latency must never hold up the buffer that produced the segment.
+   */
+  private transcribe(path: string, startedAtMs?: number): void {
+    if (!this.onDetected) {
       return;
     }
     SpeechWakeWordNative.transcribeFile(path)
       .then(({ transcript, words }) => {
         this.failureStreak = 0;
         if (transcript) {
-          this.handleTranscript(transcript, words, path);
+          this.handleTranscript(transcript, words, path, startedAtMs);
         }
       })
       .catch(err => this.noteTranscribeFailure(err));
