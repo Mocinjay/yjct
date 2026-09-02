@@ -41,8 +41,24 @@
 - **Caption timing lives in TypeScript** (`captionTimeline.ts`), not in the native module: the rules that are easy to get subtly wrong (chunking, per-word highlight spans, the non-overlap clamp, line layout) belong somewhere testable without a device. Native draws what it is told. `server/captioning/captions.py` is the same logic for the Android path, and `captionTimeline.test.ts` asserts the constants match so the two cannot drift silently.
 - `CaptionEngine` (iOS): `transcribeClip` windows recognition at 45s with 1s overlap — Speech caps how much audio one request may carry, and clips run to `MAX_CLIP_RECORDING_SECONDS`. It deliberately does **not** reuse `SpeechWakeWord`: that path biases the recognizer toward "Clypso" via `contextualStrings` and falls back to Apple's servers, both wrong for captioning ordinary speech privately. `burnCaptions` composes one container layer per cue with two text layers per word (base + highlight), because a `CATextLayer`'s attributed string is not animatable — the highlight is a second copy faded in over the first.
 - `CaptionQueue`: every captured clip is auto-captioned (Pro). One job at a time; progress is persisted **on the clip** (`captionState`) rather than in memory, so the library renders "Captioning…" from data it already reads and `resume()` can re-arm jobs that the app was killed mid-way through. `deliverablePath(clip)` is the single place that decides captioned-vs-raw, so play, share and publish cannot disagree.
-- `ClipHosting`: presign-endpoint implementation (`PresignedUrlClipHosting`, vendor-neutral) + mock. IG/TikTok require a public HTTPS URL; a local path is never sufficient.
-- `PublishTarget` connectors, one isolated module each (`src/phase2/targets/`):
+- **`ClipStore` mutations happen one turn at a time.** Every change goes through
+  `mutate()`, which reads, applies and writes without anything interleaved.
+  Capture's `add()` and `CaptionQueue`'s `setCaptionState()` run on independent
+  schedules and genuinely overlap, and overlapping used to cost the store twice:
+  the two persists shared one `.tmp` path so the second move rejected *after*
+  the live index had been moved aside (leaving none on disk), and each mutator
+  built its new array from a base another had already superseded, so one of the
+  two changes was silently dropped. `list()` likewise shares one in-flight read,
+  so concurrent callers get the same array rather than divergent copies.
+- `ClipHosting`: presign-endpoint implementation (`PresignedUrlClipHosting`, vendor-neutral) + mock. IG/TikTok require a public HTTPS URL; a local path is never sufficient. Both the URL the user types and the `uploadUrl` the presign endpoint hands back are scheme-checked before a clip is sent to either — the second one is a destination chosen by a server, and the thing being protected is the footage.
+- `PublishTarget` connectors, one isolated module each (`src/publishing/targets/`).
+  All four talk to their platform through `src/core/http.ts`, which is where the
+  timeout, the guarded JSON parse and the typed transport failure live — every
+  connector had hand-rolled its own `fetch`/`res.json()` pair and every one of
+  them was missing the same three things. The Meta pair additionally share
+  `targets/metaGraph.ts`, which sends the access token as a Bearer header rather
+  than in the query string, where it used to end up in every proxy log the URL
+  touched:
   - **YouTube Shorts** — direct resumable upload, OAuth injected via `GoogleTokenProvider` (null until a Google OAuth client exists; needs Google API verification before release).
   - **Instagram Reels** — Graph API container flow (`media_type=REELS` → poll `status_code` → `media_publish`). Needs Business/Creator account + Meta App Review.
   - **Facebook** — `/{page-id}/videos` with `file_url`. Same Meta app, SAME App Review submission as Instagram (bundled, never filed separately).
