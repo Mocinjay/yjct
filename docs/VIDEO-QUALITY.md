@@ -205,7 +205,15 @@ model turns out to be.
 
 Ranked by (visible gain) / (cost + risk).
 
-### 6.1 Render the caption pass at 1080x1920 — IN PROGRESS
+### 6.1 Render the caption pass at 1080x1920 — SUPERSEDED BY 8
+
+> Kept as written, because 8 is a response to it. Two things below have since
+> been settled and one has been contradicted: the two wins listed here are
+> independent claims and only the second is measured (8.4); the "open risk"
+> about an oversized `renderSize` does not reproduce on the host (8.8); and the
+> guard admits a stitched asset whose real samples are 504x896 (8.2), which is
+> a prerequisite to fix before any of this ships.
+
 
 Change `CaptionEngine.renderEdit` to set `videoComposition.renderSize` to a
 1080 short edge when the source is smaller, concat the scale onto the layer
@@ -330,3 +338,325 @@ xcrun devicectl device process launch --console --terminate-existing com.mocinja
 > The console connection reliably drops during long *capture* runs, which is why
 > `MWDATSegmentWriter` also mirrors to `clypso-diagnostics.log`. A caption export
 > is short enough that the live console is fine.
+
+---
+
+## 8. Canvas promotion: claim A and claim B, separated
+
+Status: 2026-08-29. `CECanvasPromotionEnabled` is still `NO`. The hypothesis in
+§6.1 has been split into its two independent claims, one of them has been
+measured, the harness has been fixed so the other one can be, and the guard
+defect this audit found has been closed — so the flag is now safe to flip the
+day claim A comes back positive, and unsafe to flip before then only because
+claim A is still unmeasured.
+
+§6.1 argued for promotion on two grounds at once. They are not one argument:
+
+- **Claim A** — publish targets allocate a better transcode ladder to a
+  1080-labelled upload. This is about someone else's transcoder. It can only be
+  settled by uploading. It is **not measured**.
+- **Claim B** — captions rasterise sharper at `renderSize` 1080x1920, because
+  unlike the footage the text genuinely carries detail at that resolution. This
+  is about our own pixels and is deterministic. It is **measured below**.
+
+They fail independently, and claim B is worth much less if claim A fails —
+see §8.5.
+
+### 8.1 The guard: what it actually reads
+
+`CEPromotedRenderSize` (`CaptionEngine.m:92`) is fed from `CaptionEngine.m:549`:
+
+```objc
+CGAffineTransform transform = videoTrack.preferredTransform;
+CGSize natural = videoTrack.naturalSize;
+CGSize sourceSize = CGSizeApplyAffineTransform(natural, transform);
+sourceSize = CGSizeMake(fabs(sourceSize.width), fabs(sourceSize.height));
+```
+
+**It applies `preferredTransform`; it does not read `naturalSize` raw.** A
+rotated 1280x720 asset is measured as portrait 720x1280 and passes, in both
+rotation directions. Verified on real files rather than on synthetic transforms
+— an MP4's display matrix is stored as exact fixed-point, so `preferredTransform`
+comes back with exact `0.0`/`±1.0` components and the product is exactly
+720x1280:
+
+```
+rotA.mp4  transform exactly [0x0p+0 -0x1p+0 0x1p+0 0x0p+0]  guard sees 720x1280  -> PROMOTED
+rotB.mp4  transform exactly [0x0p+0  0x1p+0 -0x1p+0 0x0p+0] guard sees 720x1280  -> PROMOTED
+```
+
+The size guards compare against exact boundaries — 720 is now the ceiling and
+the floor at once (§8.2) — so they were sensitive to a size arriving as
+`719.99999999992`. A display matrix read from a container carries exact
+`0`/`±1` entries and never does that, but a transform composed in code does:
+`CGAffineTransformMakeRotation(-M_PI_2)` leaves a `6.1e-17` cosine, which was
+enough to flip a rotated proxy's verdict. Sizes are now normalised through
+`CEPixelSize` before any comparison. Frame dimensions are counts of samples, so
+rounding is not a tolerance — it restores the type the numbers always had.
+
+### 8.2 The stitched mixed-resolution case — the worst case, found and closed
+
+**It was real: a 504x896-sourced stitch passed all three guards, and promotion
+would have scaled those frames 2.14x. There is now a fourth guard that refuses
+it.** The code path, traced and then run:
+
+1. The SDK's ABR ladder steps down mid-session, so the ring buffer holds
+   720x1280 segments and 504x896 segments.
+2. `ClipStitcher` inserts them all into one `AVMutableCompositionTrack`
+   (`ClipStitcher.m:147–155`). The composition track takes its `naturalSize`
+   from the **first** segment inserted and never revises it:
+
+   ```
+   inserted seg720.mp4  (720x1280) -> composition track naturalSize now 720x1280
+   inserted seg504.mp4  (504x896)  -> composition track naturalSize now 720x1280
+   ```
+
+3. `AVAssetExportPresetPassthrough` **succeeds** across the resolution change on
+   iOS 26 / macOS 26. The comment at `ClipStitcher.m:246` — "the one thing
+   passthrough cannot do is join segments whose formats differ" — no longer
+   holds. The written file carries **two `stsd` sample descriptions**:
+
+   ```
+   stsd entry count: 2
+     entry 0: avc1 720x1280
+     entry 1: avc1 504x896
+   ```
+
+   with the track header reporting 720x1280 and 180 of 240 frames actually coded
+   at 504x896.
+4. `CaptionEngine` opens that file and reads `naturalSize` = **720x1280**. Every
+   guard passes.
+
+The stitched container has laundered the resolution drop, and promotion would
+have taken genuinely 504p frames to a 1080x1920 canvas: **2.14x on footage §4.3
+already showed carries almost nothing above 504p.**
+
+The transcode fallback reaches the same place by a different road: it sizes its
+writer from `readerVideoTrack.naturalSize` (`ClipStitcher.m:502`), which is the
+same 720x1280.
+
+#### The fix
+
+The guard was not wrong about what it read — `naturalSize` is the only thing the
+track header offers. It was wrong to ask the header. `CESmallestCodedSize` now
+walks **every** `formatDescription` on the track, takes
+`CMVideoFormatDescriptionGetDimensions` from each, applies `preferredTransform`,
+and returns the componentwise minimum: the resolution the softest part of the
+clip was actually coded at. Coded dimensions rather than presentation
+dimensions, because the question is how many samples the encoder was given.
+
+A fourth guard compares that against a floor of `720x1280` — the same numbers as
+the ceiling, so the window is exactly one rung wide. Promotion was argued for
+the proxy at its top rung, where the resample is 1.5x; every other rung the
+ladder delivers is a bigger resample on softer footage for the same caption
+benefit.
+
+That one line closes two holes at once, and the second was not in the original
+report:
+
+| source | before | after |
+|---|---|---|
+| 720x1280 throughout | promoted | **promoted** — unchanged |
+| rotated 1280x720 + display matrix | promoted | **promoted** — unchanged |
+| 720x1280 header over 504x896 samples | promoted (2.14x) | **refused** |
+| 504x896 throughout | promoted (2.14x) | **refused** |
+| 700x1280 drifted sensor mode | refused, warns | refused, warns — unchanged |
+| Path B 1520x2032 | refused | refused — unchanged |
+
+The floor is checked **last**, after the aspect guard, on purpose: `700x1280` and
+`504x896` both fail a size floor, but only the first is a changed sensor mode,
+and the near-miss warning added in `86f841c` says so in those words. A size check
+running first would have swallowed that message.
+
+Unreadable format descriptions return `CGSizeZero`, which fails the floor. A
+guard whose failure mode is degrading footage fails closed.
+
+The refusal is logged whether or not the flag is on, matching the near-miss
+warning's rationale — and since G6 in `ground-truth.md` records that nothing in
+the app tracks which rung a session negotiated, this line is currently the only
+field evidence of how often the ladder drops.
+
+> **Adjacent finding, not fixed here and not part of this task.** The
+> two-`stsd` file decodes cleanly in AVFoundation and produces 32 decode errors
+> in libavcodec — `Reference 2 >= 2`, `left block unavailable` — because
+> non-Apple decoders bind one `avcC` for the track. Every publish target ingests
+> with something ffmpeg-shaped. This is worth its own investigation and is
+> unrelated to the canvas question.
+
+### 8.3 The invocation path: promotion is Pro-only
+
+**The free-tier share flow does not route through `CaptionEngine` at all.**
+
+- `CaptionQueue.enqueue()` returns immediately for non-Pro
+  (`CaptionQueue.ts:43–48`); so do `retry()` and `resume()`.
+- With nothing queued, `captionState` stays `'none'`.
+- `deliverablePath()` returns `captionedFilePath` only when `captionState` is
+  `'ready'` (`ClipStore.ts:228`), so it returns the raw stitched `filePath`.
+- `LibraryScreen.tsx:347` hands that path to `Share.open`.
+
+Stage 5 is skipped entirely. Promotion is a **Pro-only** change, and since Phase
+2 credentials are still pending, no clip shipping today would be affected by
+flipping the flag.
+
+There is a second skip inside the Pro path. `renderEdit` copies the file instead
+of composing when there is nothing to draw and nothing to rearrange
+(`CaptionEngine.m:505–521`): `cues.count == 0 && !restructures`. A silent clip
+reaches `captionState: 'ready'` having been byte-copied, never promoted. So even
+for a Pro user, promotion applies to *captioned* clips only — which is
+consistent with claim B being the real motivation, and leaves claim A's
+population smaller than §6.1 implied.
+
+### 8.4 Claim B, measured
+
+Measured with `tools/measure/canvas/` — a host tool carrying a verbatim copy of
+`CEPromotedRenderSize` and a line-for-line port of `-addCaptionLayers:`, using
+the shipping `Montserrat-ExtraBold` and the shipping `classic` burn style.
+
+Source: a 20s 720x1280 H.264 High clip at 8.5 Mbit built to match §4.3's
+finding — detail generated at 720, resampled through 504x896, and returned to
+720. Its 504 round-trip SSIM Y is **0.9930**, i.e. slightly *sharper* than the
+real feed's 0.9978, which biases the test conservatively: a crisper source is a
+better case for the 720 arm, so it cannot inflate a 1080 win.
+
+Scoring is on the **glyph band only** — the mask is built from the reference, so
+both arms are scored over identical pixels. Whole-frame SSIM was not used, for
+the reason §4.3 gives: the soft footage dominates it and would bury the effect.
+Each arm is compared against an **8x-supersampled rasterisation of the same
+glyphs at the same geometry** — the reference an ideal, resolution-independent
+rasteriser would have produced.
+
+**Scenario `return720` — the platform hands both arms back at 720:**
+
+| arm | SSIM vs ideal | PSNR | edge \|grad\| | 10–90% rise (of frame height) |
+|---|---|---|---|---|
+| 720 render (ships today) | 0.96616 | 23.35 dB | 1.00618 | 0.3052% |
+| 1080 render → 720 | **0.99099** | **29.78 dB** | 1.00794 | 0.2864% |
+
+Δ SSIM **+0.0248**, Δ PSNR **+6.4 dB**.
+
+**Scenario `native` — each arm served at the resolution it was sent:**
+
+| arm | SSIM vs ideal | PSNR | edge \|grad\| | 10–90% rise |
+|---|---|---|---|---|
+| 720 render → 1080 | 0.88886 | 18.90 dB | 0.78159 | 0.1866% |
+| 1080 render (native) | **0.99463** | **32.34 dB** | 0.77969 | 0.1921% |
+
+Δ SSIM **+0.1058**, Δ PSNR **+13.4 dB**.
+
+**Claim B is true, in both scenarios, and it is much larger when the platform
+keeps the 1080.** Three readings worth keeping:
+
+- **The gain is edge *accuracy*, not edge *contrast*.** Mean gradient magnitude
+  is within 0.3% across every arm; it is SSIM and PSNR against the ideal that
+  move. Rendering at 1.5x and downsampling is supersampling, and it lands the
+  glyph edges closer to the true outline than direct rasterisation at 720 does.
+  An edge-acuity number on its own would have said nothing — in the `native`
+  scenario it points the *wrong* way, because Lanczos-upscaling the 720 render
+  adds ringing that steepens edges while being far less accurate.
+- **The `return720` gain is filter-dependent and small.** Re-run with three
+  downsamplers: Lanczos +0.0248 SSIM / +6.4 dB, Bicubic +0.0247 / +6.2 dB,
+  Box/area **+0.0134 / +2.7 dB**. Direction is consistent; take +0.013 SSIM as
+  the floor.
+- **"Closer to the geometric ideal" is not the same as "a viewer prefers it."**
+  Ink is equal to within 0.2% (9214 vs 9199), so the 720 raster is not fatter or
+  thinner — it is grid-fit differently. Hinting at these sizes exists to make
+  small text crisper on-grid, and a supersampled glyph can measure closer to the
+  outline while reading marginally softer. At 720 delivery the difference is
+  visible only under magnification.
+
+### 8.5 Why claim A being false erases most of claim B
+
+If the platform returns the 1080 arm at 720, the promoted render is downsampled
+back and the whole benefit collapses from +0.106 SSIM to at best +0.025 —
+bought at the costs in §8.6. That is why returned resolution, not bitrate, is
+the decisive measurement, and why the harness now records and judges it.
+
+### 8.6 The cost side
+
+Measured on the same 20s clip, both arms exported through
+`AVAssetExportPresetHighestQuality`:
+
+| | 720x1280 | 1080x1920 | delta |
+|---|---|---|---|
+| export wall clock | 1.40 s | 2.85 s | **+104%** |
+| peak footprint | 169 MB | 286 MB | **+69%** |
+| output size | 18.37 MB | 26.26 MB | **+43%** |
+| output bitrate | 7.35 Mbit | 10.51 Mbit | +43% |
+
+> These are host numbers on an Apple Silicon Mac, and they **understate** the
+> promoted arm. `AVVideoCompositionCoreAnimationTool` drops any tree containing
+> a `CATextLayer` in this macOS CLI (see `canvas/README.md`), so the measured
+> exports carry the upscale and the encode but not the Core Animation pass —
+> which is per-frame and would be running over 2.25x the pixels. Ratios
+> transfer; absolute times do not. Confirm on device before deciding.
+
+Upload cost, from the measured sizes:
+
+| clip | 720p | 1080p | on 8 Mbit LTE up | on 3 Mbit LTE up |
+|---|---|---|---|---|
+| 20 s | 18.4 MB | 26.3 MB | 18 s → 26 s | 49 s → 70 s |
+| 30 s | 27.6 MB | 39.4 MB | 28 s → 39 s | 73 s → **105 s** |
+
+A 30s clip on a weak cellular uplink goes from 73 to 105 seconds. For an app
+whose loop is "clip it and send it," that is the number to weigh against
++0.013 SSIM on the glyph band.
+
+### 8.7 Exact criteria for flipping `CECanvasPromotionEnabled`
+
+All of the following, or it stays `NO`.
+
+**Prerequisite — DONE.** The laundering hole in §8.2 is closed: promotion now
+refuses any clip whose smallest sample description falls below 720x1280.
+Re-check it before flipping, with one command:
+
+```bash
+tools/measure/canvas/fixtures.sh
+```
+
+It builds the fixtures and runs `canvas_probe verify`, which asserts the whole
+decision table in §8.2 — including the stsd case against a real stitched file —
+and exits non-zero on any regression. `ladder.sh prepare` runs the same check
+before it builds the native arm, on the grounds that an arm built by a
+misbehaving guard is not worth uploading.
+
+**Claim A — from `tools/measure/ladder.sh`, per platform:**
+
+1. The `1080p-native` arm returns **at 1080x1920** (`returned_as` = `same`).
+   Any `DOWNSCALED` return fails the platform outright.
+2. Mean returned bitrate at least **10% above** the 720p arm's.
+3. Mean returned SSIM **no worse** than the 720p arm's (tolerance 0.002).
+4. At least **three runs per platform**, same account, same network, arms
+   uploaded within minutes of each other.
+
+`ladder.sh report` applies exactly these and prints PASS / FAIL / HOLD. Judge on
+`1080p-native`, not `1080p-ffmpeg` — only the former is built by shipping code.
+
+**Claim B — already met, recorded here so it is not re-measured:** +0.0134 SSIM
+floor at 720 delivery, +0.1058 at 1080 delivery, on the glyph band.
+
+**Cost gate:** on-device export wall clock for a 30s clip must stay inside
+whatever the capture loop can absorb, measured on device rather than inferred
+from §8.6.
+
+**Verification after flipping**, per §6.1 and unchanged: a frame grab, not just
+`ffprobe`. Resolution alone does not prove the captions still render correctly
+at the new size.
+
+### 8.8 What this did not settle
+
+- Claim A. Nothing here uploaded anything. The harness is ready; the runs are not
+  done. This is now the **only** thing standing between the flag and `YES`.
+- Whether `AVAssetExportPresetHighestQuality` honours an oversized `renderSize`
+  **on iOS**. §6.1 listed this as the open risk. On the macOS host it does — the
+  promoted arm was written at 1080x1920 — which is evidence, not proof, for the
+  device.
+- Whether a viewer prefers the supersampled glyph to the hinted one at 720
+  delivery. The measurement says "closer to the ideal outline"; it does not say
+  "looks better."
+- How often the ladder actually drops in the field. The new refusal log is the
+  instrument; no session has been read back through it yet. If it turns out most
+  sessions are mixed-resolution, promotion applies to far fewer clips than
+  claim A's population assumes, and the whole question shrinks.
+- The two-`stsd` decode errors noted in §8.2. Still unexamined, still
+  unrelated to the canvas question, and still the more alarming of the two
+  findings — every publish target ingests with something ffmpeg-shaped.

@@ -10,10 +10,16 @@
 # behaviour. That is not something to reason about. It is something to upload.
 #
 # Usage:
-#   ./ladder.sh prepare <source.mp4>      build the two upload arms + reference
+#   ./ladder.sh prepare <source.mp4>      build the upload arms + reference
 #   ./ladder.sh probe <file>              resolution / codec / bitrate table
 #   ./ladder.sh compare <arm> <file>      probe a download + SSIM/PSNR vs reference
-#   ./ladder.sh report                    everything measured so far, as TSV
+#   ./ladder.sh report                    everything measured so far, plus a verdict
+#
+# The measurement that decides claim A is the RETURNED resolution, not the
+# bitrate: if the platform hands the 1080 arm back at 720 it never placed the
+# clip on a higher rung, and a bitrate difference is then about the platform's
+# own re-encode of an upscale, not about the ladder. `compare` records what was
+# sent alongside what came back so `report` can say so.
 #
 # Between `prepare` and `compare` there is a manual step that cannot be
 # automated honestly: upload both arms from the same account, on the same
@@ -26,6 +32,10 @@ readonly HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly WORK="${LADDER_WORK:-$HERE/out}"
 readonly REFERENCE="$WORK/reference.mp4"
 readonly RESULTS="$WORK/results.tsv"
+# What `prepare` built, so `compare` can score a return against what was
+# actually sent instead of against the arm's name.
+readonly MANIFEST="$WORK/arms.tsv"
+readonly RESULTS_HEADER=$'arm\tsent_w\tsent_h\tret_w\tret_h\treturned_as\tbitrate_bps\tssim\tpsnr_db\tmeasured_at'
 
 # 20s is long enough that the platform's encoder settles past its opening
 # ramp, and short enough to upload twice without the network becoming the
@@ -100,8 +110,31 @@ probe() {
   export LADDER_W LADDER_H LADDER_BR LADDER_BYTES
 }
 
+# Remembers what an arm was when it left, so a return can be scored against
+# what was actually uploaded. Without this the arm is only a label, and a 1080
+# arm that comes back at 720 is indistinguishable in the results from a 1080
+# arm that came back at 1080.
+record_arm() {
+  local arm="$1" file="$2"
+  local w h
+  w="$(probe_field "$file" width nothing)"
+  h="$(probe_field "$file" height nothing)"
+  printf '%s\t%s\t%s\t%s\n' "$arm" "$file" "$w" "$h" >> "$MANIFEST"
+}
+
+# The dimensions `prepare` recorded for an arm, or "unknown unknown".
+sent_dimensions() {
+  local arm="$1"
+  if [ -f "$MANIFEST" ]; then
+    awk -F'\t' -v a="$arm" '$1 == a { print $3, $4; found = 1; exit }
+                            END { if (!found) print "unknown", "unknown" }' "$MANIFEST"
+  else
+    printf 'unknown unknown\n'
+  fi
+}
+
 # ---------------------------------------------------------------------------
-# prepare — build the reference and the two upload arms
+# prepare — build the reference and the upload arms
 # ---------------------------------------------------------------------------
 
 prepare() {
@@ -129,9 +162,12 @@ prepare() {
   # Arm 1: what we upload today. Stream-copied, so the arm is bit-for-bit the
   # reference and any difference measured after the round trip belongs
   # entirely to the platform.
+  : > "$MANIFEST"
+
   note "Arm 1 — source_720p.mp4 (passthrough, what ships today)"
   ffmpeg -y -v error -i "$REFERENCE" -c copy "$WORK/source_720p.mp4"
   probe "$WORK/source_720p.mp4"
+  record_arm 720p "$WORK/source_720p.mp4"
 
   # Arm 2: the hypothesis. Lanczos because it is the sharpest of ffmpeg's
   # general-purpose kernels and this test should give the upscale its best
@@ -149,16 +185,46 @@ prepare() {
     -c:a copy -movflags +faststart \
     "$WORK/upscaled_1080p.mp4"
   probe "$WORK/upscaled_1080p.mp4"
+  record_arm 1080p-ffmpeg "$WORK/upscaled_1080p.mp4"
+
+  # Arm 3: the same canvas built the way CaptionEngine would build it.
+  #
+  # Arm 2 is a best-case upscale and a deliberately generous encode; it is the
+  # right arm for asking whether the platform rewards 1080 *at all*. It is the
+  # wrong arm for deciding whether to flip CECanvasPromotionEnabled, because
+  # the shipping path resamples with AVFoundation's composition scaler off a
+  # CGAffineTransform, encodes with AVAssetExportPresetHighestQuality, and
+  # burns the captions at the promoted size. A result measured on arm 2 does
+  # not transfer to code that does none of those things the same way.
+  local probe_bin="$HERE/canvas/canvas_probe"
+  if [ -x "$probe_bin" ]; then
+    # The arm is only worth uploading if the guard that would build it in the
+    # app still behaves. This is the same check as `canvas/fixtures.sh`, minus
+    # the fixtures, and it is cheap.
+    note "Arm 3 — checking the promotion guard first"
+    "$probe_bin" verify | sed 's/^/  /' || \
+      die "the promotion guard failed its own checks — fix that before measuring anything"
+
+    note "Arm 3 — promoted_1080p.mp4 (CaptionEngine's own promotion path)"
+    "$probe_bin" render "$WORK/source_720p.mp4" "$WORK/promoted_1080p.mp4" 1 \
+      "$HERE/../../app/ios/Clypso/Montserrat-ExtraBold.ttf" || \
+      die "canvas_probe render failed"
+    probe "$WORK/promoted_1080p.mp4"
+    record_arm 1080p-native "$WORK/promoted_1080p.mp4"
+  else
+    printf '\n  note: %s is not built, so the shipping-path arm is missing.\n' "$probe_bin"
+    printf '        Build it (see canvas/README) before treating an arm-2 result\n'
+    printf '        as a decision about CECanvasPromotionEnabled.\n'
+  fi
 
   note "Next"
   cat <<EOF
-  1. Upload both arms from the SAME account, same network, minutes apart:
-       $WORK/source_720p.mp4
-       $WORK/upscaled_1080p.mp4
+  1. Upload every arm from the SAME account, same network, minutes apart:
+$(sed 's/^/       /' "$MANIFEST" | cut -f1,2 | tr '\t' ' ')
   2. Download each back at the highest quality the platform offers.
-  3. Measure each return:
-       ./ladder.sh compare 720p    <downloaded-720p-arm.mp4>
-       ./ladder.sh compare 1080p   <downloaded-1080p-arm.mp4>
+  3. Measure each return, naming the arm exactly as listed above:
+       ./ladder.sh compare 720p         <downloaded-720p-arm.mp4>
+       ./ladder.sh compare 1080p-native <downloaded-1080p-arm.mp4>
   4. ./ladder.sh report
 
   Read the caveats in README.md before treating one run as an answer.
@@ -201,6 +267,36 @@ compare() {
   probe "$file"
   local ret_w="$LADDER_W" ret_h="$LADDER_H" ret_br="$LADDER_BR"
 
+  # The decisive measurement. A platform that re-encodes the 1080 arm back down
+  # to 720 never put it on a higher rung, so whatever the bitrate did, claim A
+  # did not happen — and the sharper caption rasterisation the 1080 canvas buys
+  # has been resampled away on the way back.
+  local sent_w sent_h returned_as
+  read -r sent_w sent_h <<EOF
+$(sent_dimensions "$arm")
+EOF
+  returned_as='unknown'
+  if [ "$sent_w" != "unknown" ] && [ "$ret_w" != "unknown" ]; then
+    if [ "$ret_w" -eq "$sent_w" ] && [ "$ret_h" -eq "$sent_h" ]; then
+      returned_as='same'
+    elif [ "$ret_w" -lt "$sent_w" ] || [ "$ret_h" -lt "$sent_h" ]; then
+      returned_as='DOWNSCALED'
+    else
+      returned_as='upscaled'
+    fi
+  fi
+  printf '  sent as       %sx%s\n' "$sent_w" "$sent_h"
+  printf '  came back     %sx%s  [%s]\n' "$ret_w" "$ret_h" "$returned_as"
+  if [ "$returned_as" = 'DOWNSCALED' ]; then
+    printf '  ^ the platform did not keep this arm at the resolution it was sent.\n'
+    printf '    For a 1080 arm that is claim A failing outright, whatever the\n'
+    printf '    bitrate column says.\n'
+  fi
+  if [ "$sent_w" = 'unknown' ]; then
+    printf '  ^ no manifest entry for arm "%s" — run prepare first, and name the\n' "$arm"
+    printf '    arm exactly as prepare listed it, or the verdict cannot be formed.\n'
+  fi
+
   note "Quality preserved vs reference (both sampled at reference geometry)"
   local ssim psnr ssim_all psnr_all
   ssim="$(score_against_reference "$file" ssim)"
@@ -213,12 +309,20 @@ compare() {
   printf '  PSNR average  %s dB\n' "$psnr_all"
 
   mkdir -p "$WORK"
-  if [ ! -f "$RESULTS" ]; then
-    printf 'arm\twidth\theight\tbitrate_bps\tssim\tpsnr_db\tmeasured_at\n' > "$RESULTS"
+  # Results written under the old 7-column schema have no sent_* columns and
+  # cannot be given one after the fact, so they are set aside rather than
+  # appended to under a header that would misdescribe them.
+  if [ -f "$RESULTS" ] && [ "$(head -1 "$RESULTS")" != "$RESULTS_HEADER" ]; then
+    mv "$RESULTS" "$RESULTS.pre-resolution-columns"
+    printf '\n  note: previous results used the old schema and were moved to\n'
+    printf '        %s\n' "$RESULTS.pre-resolution-columns"
   fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$arm" "$ret_w" "$ret_h" "$ret_br" "$ssim_all" "$psnr_all" \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$RESULTS"
+  if [ ! -f "$RESULTS" ]; then
+    printf '%s\n' "$RESULTS_HEADER" > "$RESULTS"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$arm" "$sent_w" "$sent_h" "$ret_w" "$ret_h" "$returned_as" "$ret_br" \
+    "$ssim_all" "$psnr_all" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$RESULTS"
   printf '\n  recorded in %s\n' "$RESULTS"
 }
 
@@ -226,14 +330,86 @@ report() {
   [ -f "$RESULTS" ] || die "nothing measured yet — run 'ladder.sh compare' first"
   note "All measurements"
   column -t -s "$(printf '\t')" < "$RESULTS"
+
+  note "Verdict"
+  # Applied here rather than left to the reader. The rule was agreed before any
+  # upload happened, and a rule that is only restated as prose next to the
+  # numbers is a rule that gets re-litigated once the numbers are in.
+  awk -F'\t' '
+    NR == 1 { next }
+    {
+      arm = $1; sent_w = $2; ret_w = $4; ret_h = $5; how = $6;
+      br = $7; ssim = $8;
+      runs[arm]++;
+      if (how == "DOWNSCALED") downscaled[arm]++;
+      if (how == "unknown") unverified[arm]++;
+      if (br + 0 > 0) { brsum[arm] += br; brn[arm]++ }
+      if (ssim + 0 > 0) { ssum[arm] += ssim; sn[arm]++ }
+      last[arm] = ret_w "x" ret_h;
+      sentw[arm] = sent_w;
+    }
+    END {
+      base = "720p";
+      if (!(base in runs)) {
+        print "  no 720p baseline measured — every comparison here is against nothing.";
+        exit;
+      }
+      basebr = brn[base] ? brsum[base] / brn[base] : 0;
+      basess = sn[base] ? ssum[base] / sn[base] : 0;
+      printf "  baseline  %-16s %d run(s)  mean %.0f bps  mean SSIM %.5f  last return %s\n",
+             base, runs[base], basebr, basess, last[base];
+      for (arm in runs) {
+        if (arm == base) continue;
+        br = brn[arm] ? brsum[arm] / brn[arm] : 0;
+        ss = sn[arm] ? ssum[arm] / sn[arm] : 0;
+        printf "\n  arm       %-16s %d run(s)  mean %.0f bps  mean SSIM %.5f  last return %s\n",
+               arm, runs[arm], br, ss, last[arm];
+        fail = 0;
+        if (downscaled[arm] > 0) {
+          printf "    FAIL  returned DOWNSCALED on %d of %d run(s) — the platform did not\n",
+                 downscaled[arm], runs[arm];
+          printf "          keep the rung it was sent. Claim A is not happening.\n";
+          fail = 1;
+        }
+        if (basebr > 0 && br <= basebr * 1.10) {
+          printf "    FAIL  mean bitrate %.0f is not materially above the 720p arm %.0f\n",
+                 br, basebr;
+          fail = 1;
+        }
+        if (basess > 0 && ss < basess - 0.002) {
+          printf "    FAIL  mean SSIM %.5f is below the 720p arm %.5f — the extra bits\n",
+                 ss, basess;
+          printf "          went into re-encoding invented pixels.\n";
+          fail = 1;
+        }
+        if (unverified[arm] > 0) {
+          printf "    FAIL  %d of %d run(s) have no sent-resolution on record, so it is\n",
+                 unverified[arm], runs[arm];
+          printf "          not established that the return kept the rung. Re-run those\n";
+          printf "          arms after a prepare, naming the arm as prepare listed it.\n";
+          fail = 1;
+        }
+        if (runs[arm] < 3) {
+          printf "    HOLD  %d run(s); the rule asks for at least 3 per platform.\n", runs[arm];
+          fail = 1;
+        }
+        if (!fail) printf "    PASS  on this platform, by the rule below.\n";
+      }
+    }
+  ' "$RESULTS"
+
   cat <<'EOF'
 
   The decision rule agreed before running this:
-    Promote to a 1080 canvas only if the 1080p arm comes back with BOTH a
-    materially higher bitrate AND an SSIM no worse than the 720p arm, on at
-    least three runs per platform. A bitrate win with an SSIM loss means the
-    platform spent the extra bits re-encoding invented pixels, which is worse
-    than shipping 720p.
+    Promote to a 1080 canvas only if the 1080p arm comes back AT 1080, with
+    BOTH a materially higher bitrate AND an SSIM no worse than the 720p arm, on
+    at least three runs per platform. A return at 720 means the platform never
+    used the rung, so there is nothing to buy. A bitrate win with an SSIM loss
+    means the platform spent the extra bits re-encoding invented pixels, which
+    is worse than shipping 720p.
+
+    Judge the flag on the `1080p-native` arm, not `1080p-ffmpeg`: only the
+    former is built by the code that would actually ship.
 EOF
 }
 

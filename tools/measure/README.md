@@ -9,11 +9,14 @@ Path A proxy wins back bitrate on the platform's side.
 
 ```sh
 ./ladder.sh prepare ~/Desktop/proxy-sample.mp4
-# upload both arms, download both back
-./ladder.sh compare 720p  ~/Downloads/tiktok-720-arm.mp4
-./ladder.sh compare 1080p ~/Downloads/tiktok-1080-arm.mp4
+# upload every arm, download each back
+./ladder.sh compare 720p         ~/Downloads/tiktok-720-arm.mp4
+./ladder.sh compare 1080p-native ~/Downloads/tiktok-1080-arm.mp4
 ./ladder.sh report
 ```
+
+Name the arm exactly as `prepare` listed it. The name is how `compare` looks up
+what was uploaded, and an unrecognised name loses the resolution check.
 
 Outputs land in `tools/measure/out/` (git-ignored).
 
@@ -23,7 +26,36 @@ Outputs land in `tools/measure/out/` (git-ignored).
 |-----|----------|---------|
 | `reference.mp4` | 20s stream-copy of the source | The control. Every SSIM is against this, including the 720p arm's. |
 | `source_720p.mp4` | stream-copy of the reference | What ships today. Bit-for-bit the reference, so anything measured after the round trip is the platform's doing. |
-| `upscaled_1080p.mp4` | lanczos → 1080x1920, x264 crf 16 preset slow | The hypothesis, given its best case so the resampler is not what loses. |
+| `upscaled_1080p.mp4` | lanczos → 1080x1920, x264 crf 16 preset slow | Whether the platform rewards a 1080 label *at all*, given the upscale its best case so the resampler is not what loses. |
+| `promoted_1080p.mp4` | `canvas/canvas_probe render` | The same canvas built by the code that would actually ship: AVFoundation's composition scaler off a `CGAffineTransform`, `AVAssetExportPresetHighestQuality`, captions laid out at the promoted size. |
+
+### Why there are two 1080 arms
+
+They answer different questions and only one of them decides the flag.
+
+`upscaled_1080p.mp4` is lanczos plus x264 crf 16 preset slow. Nothing in the app
+resamples with lanczos or encodes with x264, and the arm carries no captions at
+all — so a win on it says the platform likes 1080, not that promoting our clips
+would deliver that win. It is the sensitivity test.
+
+`promoted_1080p.mp4` runs `CEPromotedRenderSize`, the same `canvasScale` concat
+onto `preferredTransform`, the same `renderSize`, and the same export preset. It
+is the artifact the flag would actually produce. **Judge `CECanvasPromotionEnabled`
+on this arm.** It needs `canvas/canvas_probe` built; if it is missing, `prepare`
+says so and skips it rather than quietly leaving you with only the sensitivity
+test.
+
+### Returned resolution is the decisive column
+
+`compare` records what was sent alongside what came back and labels the return
+`same` / `DOWNSCALED` / `upscaled`. A platform that hands the 1080 arm back at
+720 never placed it on a higher rung — claim A did not happen, whatever the
+bitrate says, and the sharper caption rasterisation the canvas bought has been
+resampled away on the return trip. `report` fails the arm on that column alone.
+
+Results written before these columns existed are moved aside to
+`results.tsv.pre-resolution-columns` rather than appended to under a header that
+would misdescribe them.
 
 ### Why SSIM is measured at 720p
 
@@ -47,10 +79,22 @@ preserved detail.
 
 ### The decision rule, agreed before running
 
-Promote to a 1080 canvas only if the 1080p arm returns with **both** a materially
-higher bitrate **and** an SSIM no worse than the 720p arm, across at least three
-runs. A bitrate win with an SSIM loss means the platform spent the extra bits
-re-encoding invented pixels — strictly worse than shipping 720p.
+Promote to a 1080 canvas only if the `1080p-native` arm returns **at 1080**, with
+**both** a materially higher bitrate **and** an SSIM no worse than the 720p arm,
+across at least three runs per platform. A return at 720 means the platform never
+used the rung, so there is nothing to buy. A bitrate win with an SSIM loss means
+the platform spent the extra bits re-encoding invented pixels — strictly worse
+than shipping 720p.
+
+`report` applies this rule and prints PASS/FAIL/HOLD per arm rather than leaving
+it as prose beside the numbers.
 
 If the rule is met, the switch is `CECanvasPromotionEnabled` in
-`app/modules/clip-stitcher/ios/CaptionEngine.m`. It is `NO` until then.
+`app/modules/clip-stitcher/ios/CaptionEngine.m`. It is `NO` until then, and
+claim A is the only thing still holding it there — see `docs/VIDEO-QUALITY.md`
+8.7. Run `canvas/fixtures.sh` before flipping; `prepare` runs the same guard
+check before it builds the native arm.
+
+## canvas/ — caption rasterisation
+
+The other half of the hypothesis, which needs no upload. See `canvas/README.md`.

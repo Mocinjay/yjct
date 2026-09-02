@@ -1,1 +1,4 @@
 out/
+canvas/canvas_probe
+canvas/out/
+canvas/__pycache__/
