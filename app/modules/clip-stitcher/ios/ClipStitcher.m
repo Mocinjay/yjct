@@ -742,18 +742,43 @@ RCT_EXPORT_METHOD(extractRange:(NSString *)sourcePath
   generator.appliesPreferredTrackTransform = YES;
   generator.maximumSize = CGSizeMake(640, 640);
 
+  // A missing poster frame is not worth failing a clip that was written
+  // successfully over, so this still resolves. But it was resolving with a
+  // thumbnailPath that named a file nothing had created, and with `error:NULL`
+  // there was no record anywhere of why — the library just showed a blank
+  // tile. Report the reason, and hand back a path only if there is a file at
+  // the end of it.
+  NSError *thumbnailError = nil;
   CGImageRef cgImage = [generator copyCGImageAtTime:CMTimeMakeWithSeconds(0.0, 600)
                                          actualTime:NULL
-                                              error:NULL];
+                                              error:&thumbnailError];
+  BOOL wroteThumbnail = NO;
   if (cgImage != NULL) {
     UIImage *image = [UIImage imageWithCGImage:cgImage];
     CGImageRelease(cgImage);
-    [UIImageJPEGRepresentation(image, 0.8) writeToFile:thumbnailPath atomically:YES];
+    NSData *jpeg = UIImageJPEGRepresentation(image, 0.8);
+    if (jpeg == nil) {
+      JVSLog(@"could not encode the poster frame for %@ as JPEG",
+             outputPath.lastPathComponent);
+    } else {
+      NSError *writeError = nil;
+      wroteThumbnail = [jpeg writeToFile:thumbnailPath
+                                 options:NSDataWritingAtomic
+                                   error:&writeError];
+      if (!wroteThumbnail) {
+        JVSLog(@"could not write the thumbnail for %@ - %@",
+               outputPath.lastPathComponent, writeError.localizedDescription);
+      }
+    }
+  } else {
+    JVSLog(@"could not generate a poster frame for %@ - %@",
+           outputPath.lastPathComponent,
+           thumbnailError.localizedDescription ?: @"no error reported");
   }
 
   resolve(@{
     @"outputPath" : outputPath,
-    @"thumbnailPath" : thumbnailPath,
+    @"thumbnailPath" : wroteThumbnail ? thumbnailPath : @"",
     @"durationSec" : @(CMTimeGetSeconds(clipAsset.duration)),
   });
 }

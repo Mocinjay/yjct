@@ -227,10 +227,14 @@ function ClipCard({
     <Pressable
       onPress={onOpen}
       style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}>
-      <Image
-        source={{ uri: `file://${clip.thumbnailPath}` }}
-        style={styles.thumb}
-      />
+      {clip.thumbnailPath ? (
+        <Image source={{ uri: `file://${clip.thumbnailPath}` }} style={styles.thumb} />
+      ) : (
+        // The poster frame is written best-effort, so a clip can be perfectly
+        // playable with no thumbnail. Rendering `file://` for that case gave a
+        // broken image that read as a corrupt clip.
+        <View style={styles.thumb} />
+      )}
       <CaptionOverlay clip={clip} />
       <View style={styles.durationChip}>
         <Text style={styles.durationText}>{formatDuration(clip.durationSec)}</Text>
