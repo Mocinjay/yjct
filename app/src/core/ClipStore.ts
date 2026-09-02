@@ -27,6 +27,25 @@ const BACKUP_PATH = `${CLIPS_DIR}/index.bak.json`;
 export class ClipStore {
   private clips: Clip[] | null = null;
   private listeners = new Set<() => void>();
+  /**
+   * Serializes read-modify-write. Capture calls `add()` while CaptionQueue
+   * calls `setCaptionState()` on its own schedule, so two mutations really do
+   * overlap, and overlapping cost the store twice over:
+   *
+   * - **On disk:** both persists shared one `.tmp` path and both moved it. The
+   *   second move found nothing there and rejected — *after* the live index had
+   *   been moved aside, so the window with no index at all did not close.
+   * - **In memory:** each mutator did `const clips = await this.list()` and then
+   *   assigned a fresh array built from it. Two mutators reading the same base
+   *   array meant the second assignment discarded the first's change, so a
+   *   rename landing beside a caption update silently lost one of them.
+   *
+   * Both follow from the same gap, so both are closed in the same place:
+   * `mutate()` reads, applies and writes as one turn.
+   */
+  private writeChain: Promise<void> = Promise.resolve();
+  /** In-flight first read, so concurrent `list()` callers share one disk read. */
+  private loading: Promise<Clip[]> | null = null;
 
   async ensureDir(): Promise<string> {
     await RNFS.mkdir(CLIPS_DIR);
@@ -46,9 +65,24 @@ export class ClipStore {
     if (this.clips) {
       return this.clips;
     }
-    await this.ensureDir();
-    this.clips = await readIndex();
-    return this.clips;
+    // Every screen calls this on mount, so the first launch fires several at
+    // once. Awaiting a shared promise rather than re-entering means one disk
+    // read, and — more importantly — one `this.clips` array: two reads racing
+    // produced two arrays, and whichever mutation landed on the loser was
+    // silently dropped.
+    if (!this.loading) {
+      this.loading = (async () => {
+        await this.ensureDir();
+        return readIndex();
+      })();
+    }
+    try {
+      const clips = await this.loading;
+      this.clips ??= clips;
+      return this.clips;
+    } finally {
+      this.loading = null;
+    }
   }
 
   /** Temporary clips, newest first — the "Recent" tab. */
@@ -62,36 +96,37 @@ export class ClipStore {
   }
 
   async add(clip: Clip): Promise<void> {
-    const clips = await this.list();
-    this.clips = [clip, ...clips];
-    await this.persist();
+    await this.mutate(clips => ({ next: [clip, ...clips], result: undefined }));
   }
 
   async rename(id: string, name: string): Promise<void> {
-    const clips = await this.list();
-    this.clips = clips.map(c => (c.id === id ? { ...c, name } : c));
-    await this.persist();
+    await this.mutate(clips => ({
+      next: clips.map(c => (c.id === id ? { ...c, name } : c)),
+      result: undefined,
+    }));
   }
 
   /** Keep this clip forever: clears the expiry clock. */
   async save(id: string): Promise<void> {
-    const clips = await this.list();
-    this.clips = clips.map(c =>
-      c.id === id ? { ...c, savedAt: c.savedAt ?? Date.now(), expiresAt: null } : c,
-    );
-    await this.persist();
+    await this.mutate(clips => ({
+      next: clips.map(c =>
+        c.id === id ? { ...c, savedAt: c.savedAt ?? Date.now(), expiresAt: null } : c,
+      ),
+      result: undefined,
+    }));
   }
 
   /** Back to temporary, with a fresh clock. No-op for a clip already pending. */
   async unsave(id: string, retentionHours = FREE_RETENTION_HOURS): Promise<void> {
-    const clips = await this.list();
     const now = Date.now();
-    this.clips = clips.map(c =>
-      c.id === id
-        ? { ...c, savedAt: null, expiresAt: now + retentionHours * 3600_000 }
-        : c,
-    );
-    await this.persist();
+    await this.mutate(clips => ({
+      next: clips.map(c =>
+        c.id === id
+          ? { ...c, savedAt: null, expiresAt: now + retentionHours * 3600_000 }
+          : c,
+      ),
+      result: undefined,
+    }));
   }
 
   /**
@@ -100,13 +135,18 @@ export class ClipStore {
    * unfinished on the next launch, and CaptionQueue can pick it back up.
    */
   async setCaptionState(id: string, patch: CaptionPatch): Promise<void> {
-    const clips = await this.list();
-    if (!clips.some(c => c.id === id)) {
-      // The clip was deleted or swept while its job was running.
-      return;
-    }
-    this.clips = clips.map(c => (c.id === id ? { ...c, ...patch } : c));
-    await this.persist();
+    await this.mutate(clips =>
+      // The clip may have been deleted or swept while its job was running, in
+      // which case there is nothing to patch — but the check has to happen
+      // inside the turn, or a delete could land between it and the write and
+      // resurrect the clip.
+      clips.some(c => c.id === id)
+        ? {
+            next: clips.map(c => (c.id === id ? { ...c, ...patch } : c)),
+            result: undefined,
+          }
+        : { next: clips, result: undefined },
+    );
   }
 
   /**
@@ -114,22 +154,23 @@ export class ClipStore {
    * user put on YouTube must not evaporate 24h later.
    */
   async markPublished(id: string, platform: string): Promise<void> {
-    const clips = await this.list();
-    this.clips = clips.map(c => {
-      if (c.id !== id) {
-        return c;
-      }
-      const publishedTo = c.publishedTo ?? [];
-      return {
-        ...c,
-        publishedTo: publishedTo.includes(platform)
-          ? publishedTo
-          : [...publishedTo, platform],
-        savedAt: c.savedAt ?? Date.now(),
-        expiresAt: null,
-      };
-    });
-    await this.persist();
+    await this.mutate(clips => ({
+      next: clips.map(c => {
+        if (c.id !== id) {
+          return c;
+        }
+        const publishedTo = c.publishedTo ?? [];
+        return {
+          ...c,
+          publishedTo: publishedTo.includes(platform)
+            ? publishedTo
+            : [...publishedTo, platform],
+          savedAt: c.savedAt ?? Date.now(),
+          expiresAt: null,
+        };
+      }),
+      result: undefined,
+    }));
   }
 
   /**
@@ -140,17 +181,16 @@ export class ClipStore {
    * clips alone and only newly captured ones get a clock again.
    */
   async rescueExpiring(): Promise<number> {
-    const clips = await this.list();
-    const pending = clips.filter(isPending);
-    if (pending.length === 0) {
-      return 0;
-    }
     const now = Date.now();
-    this.clips = clips.map(c =>
-      isPending(c) ? { ...c, savedAt: c.savedAt ?? now, expiresAt: null } : c,
-    );
-    await this.persist();
-    return pending.length;
+    return this.mutate(clips => {
+      const pending = clips.filter(isPending);
+      return {
+        next: clips.map(c =>
+          isPending(c) ? { ...c, savedAt: c.savedAt ?? now, expiresAt: null } : c,
+        ),
+        result: pending.length,
+      };
+    });
   }
 
   /**
@@ -159,14 +199,13 @@ export class ClipStore {
    * clips vanish silently.
    */
   async sweepExpired(now = Date.now()): Promise<Clip[]> {
-    const clips = await this.list();
-    const expired = clips.filter(c => c.expiresAt !== null && c.expiresAt <= now);
-    if (expired.length === 0) {
-      return [];
-    }
-    const expiredIds = new Set(expired.map(c => c.id));
-    this.clips = clips.filter(c => !expiredIds.has(c.id));
-    await this.persist();
+    const expired = await this.mutate(clips => {
+      const gone = clips.filter(c => c.expiresAt !== null && c.expiresAt <= now);
+      const goneIds = new Set(gone.map(c => c.id));
+      return { next: clips.filter(c => !goneIds.has(c.id)), result: gone };
+    });
+    // Files are deleted after the index no longer references them, and outside
+    // the turn: a slow unlink must not hold up the next capture's write.
     for (const clip of expired) {
       await deleteClipFiles(clip);
     }
@@ -174,10 +213,10 @@ export class ClipStore {
   }
 
   async remove(id: string): Promise<void> {
-    const clips = await this.list();
-    const clip = clips.find(c => c.id === id);
-    this.clips = clips.filter(c => c.id !== id);
-    await this.persist();
+    const clip = await this.mutate(clips => ({
+      next: clips.filter(c => c.id !== id),
+      result: clips.find(c => c.id === id),
+    }));
     if (clip) {
       await deleteClipFiles(clip);
     }
@@ -186,11 +225,40 @@ export class ClipStore {
   /** Test seam — drops the in-memory cache so the next list() re-reads disk. */
   resetCache(): void {
     this.clips = null;
+    this.loading = null;
   }
 
-  private async persist(): Promise<void> {
+  /**
+   * Applies one change to the library, start to finish, with nothing else
+   * interleaved.
+   *
+   * `apply` is deliberately synchronous: it runs against the array this turn
+   * just read, so there is no point at which it could observe a state some
+   * other mutator is halfway through producing. Callers still await their own
+   * turn, so an `add()` that resolves has really reached the disk.
+   *
+   * A failed write does not poison the chain — the next mutation is a fresh
+   * read-apply-write, and its state is the newer truth anyway.
+   */
+  private mutate<T>(apply: (clips: Clip[]) => { next: Clip[]; result: T }): Promise<T> {
+    const run = async (): Promise<T> => {
+      const { next, result } = apply(await this.list());
+      this.clips = next;
+      await this.writeIndex();
+      return result;
+    };
+    const chained = this.writeChain.then(run, run);
+    this.writeChain = chained.then(
+      () => undefined,
+      () => undefined,
+    );
+    return chained;
+  }
+
+  private async writeIndex(): Promise<void> {
+    const snapshot = JSON.stringify(this.clips ?? []);
     const tmp = `${INDEX_PATH}.tmp`;
-    await RNFS.writeFile(tmp, JSON.stringify(this.clips ?? []), 'utf8');
+    await RNFS.writeFile(tmp, snapshot, 'utf8');
     // Move the live index aside rather than deleting it: between here and the
     // move below there is no index on disk, and that is exactly the window
     // where a kill used to lose the entire library.
@@ -318,7 +386,10 @@ async function deleteIfExists(path: string): Promise<void> {
   try {
     await RNFS.unlink(path);
   } catch (err) {
-    log.expected(`nothing to delete at ${path}`, err, ErrorCode.StorageDeleteFailed);
+    // The path goes in the detail, not the message: the logger dedupes on the
+    // message, so interpolating a unique path here would mint a new dedupe key
+    // per call and defeat the rate limiter this line most needs.
+    log.expected('nothing to delete', err, ErrorCode.StorageDeleteFailed);
   }
 }
 
