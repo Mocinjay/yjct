@@ -41,6 +41,11 @@ final class MWDATBridge: RCTEventEmitter {
   /// Internal, not private: read by the MWDATBridge+Setup extension, which
   /// Swift scopes to a different file.
   var stream: MWDATCamera.Stream?
+  /// 0.9.0 hands back a `Camera` that OWNS the stream (`let stream: Stream`).
+  /// Retained alongside it: keeping only the stream would leave the owner
+  /// unreferenced and let ARC tear the feed down underneath us. 0.8.0 returned
+  /// the stream directly and had nothing to hold.
+  private var camera: MWDATCamera.Camera?
 
   /// In-flight pipeline open so concurrent callers coalesce onto one attempt.
   /// `openPipelineIfNeeded()` is reachable from `startPreview()`, `start()`,
@@ -183,6 +188,23 @@ final class MWDATBridge: RCTEventEmitter {
   override init() {
     super.init()
     MWDATBridge.current = self
+
+    // Truncate once per bridge, which is once per app session. Doing it per
+    // operation is what erased the evidence twice: startPreview() wiped
+    // prepare()'s Meta AI round trip, and moving it to prepare() would then
+    // have wiped startRegistration()'s. There is no per-operation entry point
+    // that is not somebody else's middle. The 2 MB cap handles growth.
+    DiagnosticLog.reset()
+
+    // Stated up front, every session, because these two strings are the app's
+    // identity to Meta and a mismatch is invisible from our side — it surfaces
+    // only as Meta AI's own "Internal error" alert, in another app. Working out
+    // which scheme a build was actually carrying cost more than one debugging
+    // round. See docs/KNOWN-ISSUES.md issue 0.
+    Self.log(
+      "bridge init: bundle=\(Bundle.main.bundleIdentifier ?? "?") "
+        + "appLinkScheme=\(Self.appLinkScheme.isEmpty ? "MISSING" : Self.appLinkScheme)://"
+    )
   }
 
   /// True while segments are actually being written — i.e. the wearer is armed
@@ -218,33 +240,99 @@ final class MWDATBridge: RCTEventEmitter {
     )
   }
 
-  // MARK: - App-level URL callback (Meta AI hands control back via clypso://)
+  // MARK: - App-level URL callback (Meta AI hands control back on our scheme)
+
+  /// The scheme Meta AI calls back on, read from `MWDAT.AppLinkURLScheme`
+  /// rather than repeated as a literal.
+  ///
+  /// These were two independent copies of the same string — one in Info.plist,
+  /// one in the guard below — and they drifted: the Clipso -> Clypso rename
+  /// moved the plist and left the guard on the old value. Deriving it means a
+  /// future rename cannot half-apply, and there is exactly one place to change.
+  /// Internal, not private: `startRegistration` in the +Setup extension logs
+  /// it, and Swift scopes `private` to the file.
+  static let appLinkScheme: String = {
+    let mwdat = Bundle.main.object(forInfoDictionaryKey: "MWDAT") as? [String: Any]
+    let raw = mwdat?["AppLinkURLScheme"] as? String
+    let scheme = (raw ?? "").replacingOccurrences(of: "://", with: "")
+      .trimmingCharacters(in: .whitespaces)
+      .lowercased()
+    if scheme.isEmpty {
+      log("MWDAT.AppLinkURLScheme missing from Info.plist — no callback can be accepted")
+    }
+    return scheme
+  }()
 
   @objc static func handleOpenURL(_ url: URL) -> Bool {
     // Query carries the registration authority key — keep it out of the log.
     let redacted = "\(url.scheme ?? "?")://\(url.host ?? "")\(url.path)"
 
+    // Logged BEFORE any filtering, including schemes this app never claimed.
+    // Meta AI calling back on a scheme we do not handle is indistinguishable
+    // from Meta AI never calling back at all — both leave the app silent — and
+    // only an unfiltered line here can tell them apart.
+    log("openURL received (pre-filter): \(redacted) [expecting \(appLinkScheme)://]")
+
     guard case .success = configureResult else {
       log("handleOpenURL(\(redacted)): MWDAT not configured — callback dropped")
       return false
     }
-    guard url.scheme?.lowercased() == "clypso" else { return false }
+    guard !appLinkScheme.isEmpty, url.scheme?.lowercased() == appLinkScheme else {
+      return false
+    }
 
     // Meta AI reports link failures back through this callback. Swallowing the
     // error leaves "internal error" on the Meta AI side as the only symptom,
     // with nothing on ours, so surface the typed error and the state it left.
     Task {
+      var failure: String?
       do {
         let handled = try await Wearables.shared.handleUrl(url)
         log(
           "handleOpenURL(\(redacted)): handled=\(handled) "
             + "state=\(Wearables.shared.registrationState.description)"
         )
+        // The SDK took the callback but did not treat it as a completed
+        // registration. Rarer than the throw and just as silent.
+        if !handled {
+          failure = "Meta AI handed control back without completing the link."
+        }
       } catch {
         log("handleOpenURL(\(redacted)) FAILED: \(error)")
+        failure = error.localizedDescription
       }
+
+      // A registration that fails changes no state, so no registration-state
+      // listener fires and the Connect screen's poll keeps reporting the same
+      // `notRegistered` it reported before the bounce. `startRegistration()`
+      // has already resolved by now — it resolves when Meta AI is handed
+      // control, not when Meta AI is done — so its rejection path cannot cover
+      // this either. If the failure is not reported here it is reported
+      // nowhere: the wearer sees Meta AI's own "internal error", comes back,
+      // and finds Connect exactly as they left it, with the same button.
+      let state = Wearables.shared.registrationState
+      guard state != .registered else { return }
+      reportRegistrationFailure(failure, state: state.description)
     }
     return true
+  }
+
+  /// Sends a wearer-facing failure to JS from a static context.
+  ///
+  /// `current` is the same weak handle the app-lifecycle hooks use. There is
+  /// no bridge only when JS has not started or has already torn down, and in
+  /// both cases there is no Connect screen to tell.
+  private static func reportRegistrationFailure(_ failure: String?, state: String) {
+    let message = "Meta AI did not finish linking"
+      + (failure.map { ": \($0)" } ?? ".")
+      + " Link state: \(state). Check that Clypso is enabled under"
+      + " Meta AI -> Settings -> App connections, and that Developer Mode is on."
+    log("registration callback did not register: \(message)")
+    guard let bridge = current else {
+      log("no live bridge to report the registration failure to")
+      return
+    }
+    bridge.sendEvent(withName: Event.error, body: ["message": message])
   }
 
   // MARK: - RCTEventEmitter
@@ -264,6 +352,11 @@ final class MWDATBridge: RCTEventEmitter {
     let wearables = Wearables.shared
     observerTokens.append(
       wearables.addRegistrationStateListener { [weak self] state in
+        // Timestamped by DiagnosticLog. A registration that fails produces no
+        // transition at all, so an absence of lines here between a
+        // startRegistration() and a return to the foreground is itself the
+        // finding.
+        Self.log("registrationState → \(state.description)")
         self?.sendEvent(withName: Event.registrationState, body: ["state": state.description])
       }
     )
@@ -276,7 +369,28 @@ final class MWDATBridge: RCTEventEmitter {
   }
 
   override func stopObserving() {
-    observerTokens = []
+    Self.cancel(&observerTokens)
+  }
+
+  /// Releasing a token does not detach its listener — `AnyListenerToken`'s only
+  /// member is `cancel() async`, and the SDK ships `ListenerTokenBag.cancelAll()`
+  /// precisely because dropping the reference is not enough. Emptying the array
+  /// on its own left every registration/devices observer and every stream
+  /// listener attached, so they accumulated one full set per session and each
+  /// surviving copy kept sending events against a dead session.
+  ///
+  /// The array is emptied synchronously so nothing can be cancelled twice, and
+  /// the awaits happen on a detached task: both callers are synchronous, and
+  /// teardown in particular must not start suspending.
+  private static func cancel(_ tokens: inout [any AnyListenerToken]) {
+    let doomed = tokens
+    tokens = []
+    guard !doomed.isEmpty else { return }
+    Task.detached {
+      for token in doomed {
+        await token.cancel()
+      }
+    }
   }
 
   func ensureConfigured() throws {
@@ -336,7 +450,12 @@ final class MWDATBridge: RCTEventEmitter {
   ) {
     Task { @MainActor in
       do {
-        DiagnosticLog.reset()
+        // NOT DiagnosticLog.reset() — see prepare(), which resets instead.
+        // Resetting here truncated the file that had just recorded the Meta AI
+        // permission round trip, because ConnectScreen always calls prepare()
+        // immediately before this. Every failure inside that round trip was
+        // erased by the next call in the same sequence, which is why a link
+        // that visibly failed left a log starting at "startPreview() called".
         Self.log("startPreview() called")
         try ensureConfigured()
         try await openPipelineIfNeeded()
@@ -541,17 +660,7 @@ final class MWDATBridge: RCTEventEmitter {
       Self.log("device list empty — waiting up to 20s…")
       let appeared = await Self.waitForDevice(wearables, timeoutSeconds: 20)
       Self.log("waitForDevice → \(appeared)")
-      guard appeared else {
-        throw NSError(
-          domain: "MWDATBridge", code: 12,
-          userInfo: [
-            NSLocalizedDescriptionKey:
-              "No glasses found. Unfold them, put them on, check they show "
-              + "as Connected in Meta AI, and that Clypso is enabled under "
-              + "Meta AI → Settings → App connections.",
-          ]
-        )
-      }
+      guard appeared else { throw Self.noEligibleDeviceError() }
     }
 
     // Surface incompatibility loudly — a firmware-outdated device sits in the
@@ -589,8 +698,25 @@ final class MWDATBridge: RCTEventEmitter {
         Self.log("auto-selector never resolved — pinning SpecificDeviceSelector(\(first))")
         selector = SpecificDeviceSelector(device: first)
       } else {
-        Self.log("auto-selector never resolved and device list empty")
-        selector = auto
+        // The list is re-read here rather than trusted from the top of this
+        // function. Ten seconds is long enough for the glasses to fold, sleep,
+        // or be taken over, and the field log shows exactly that: `devices=1`
+        // on entry, an empty list by the time this wait returned.
+        //
+        // This used to fall through to `selector = auto` and create a session
+        // on a selector it had just logged as unresolved. The SDK then failed
+        // with its own "No eligible device available", which names nothing the
+        // wearer can act on — while the actionable message for this exact
+        // state was already written thirty lines above. Wait for the glasses
+        // to come back, then say the useful thing.
+        Self.log("auto-selector never resolved and device list empty — waiting again")
+        let returned = await Self.waitForDevice(wearables, timeoutSeconds: 20)
+        Self.log("waitForDevice (after selector wait) → \(returned)")
+        guard returned, let first = wearables.devices.first else {
+          throw Self.noEligibleDeviceError()
+        }
+        Self.log("device returned — pinning SpecificDeviceSelector(\(first))")
+        selector = SpecificDeviceSelector(device: first)
       }
     }
 
@@ -657,13 +783,18 @@ final class MWDATBridge: RCTEventEmitter {
     // The delivered size per segment is logged by MWDATSegmentWriter
     // ("source video format: …"), which is where to check what we actually get.
     let config = StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: 30)
-    Self.log("addStream(codec: raw, resolution: high, fps: 30)…")
-    guard let newStream = try session.addStream(config: config) else {
+    // `addCamera` in 0.9.0; it was `addStream` returning the Stream directly in
+    // 0.8.0. The Stream's own surface did not change, so everything below this
+    // line is the same code it was — only the way we get hold of it moved.
+    Self.log("addCamera(codec: raw, resolution: high, fps: 30)…")
+    guard let newCamera = try session.addCamera(config: config) else {
       throw NSError(
         domain: "MWDATBridge", code: 11,
         userInfo: [NSLocalizedDescriptionKey: "Could not open the glasses camera stream."]
       )
     }
+    camera = newCamera
+    let newStream = newCamera.stream
     stream = newStream
     lastStreamError = nil
     streamHasLeftStopped = false
@@ -796,12 +927,14 @@ final class MWDATBridge: RCTEventEmitter {
     writer = nil
     stream?.stop()
     stream = nil
+    camera?.stop()
+    camera = nil
     deviceSession?.stop()
     deviceSession = nil
-    // Released LAST: clearing these first would detach the state/error
+    // Released LAST: cancelling these first would detach the state/error
     // listeners before stop(), silently swallowing whatever the SDK reports
     // on the way down — which is exactly the failure we need to see.
-    listenerTokens = []
+    Self.cancel(&listenerTokens)
     health.reset()
     preview.resetCounters()
     streamHasLeftStopped = false
@@ -864,7 +997,7 @@ final class MWDATBridge: RCTEventEmitter {
   ///
   /// `.stopped` must NOT be treated as terminal on its own. As of SDK 0.8.0
   /// `Stream.start()` is synchronous and fire-and-forget, and a stream created
-  /// by `addStream` sits in `.stopped` until the glasses answer and the SDK
+  /// by `addCamera` sits in `.stopped` until the glasses answer and the SDK
   /// walks it through `.waitingForDevice` → `.starting` → `.streaming`. So the
   /// very first reading after `start()` is virtually always `.stopped`, and
   /// bailing on it aborts every stream ~0 ms after it is asked to start —
@@ -916,6 +1049,21 @@ final class MWDATBridge: RCTEventEmitter {
         + "\(String(describing: stream.state)) (everLeftStopped=\(everLeftStopped))"
     )
     return stream.state == .streaming
+  }
+
+  /// The one wording for "the glasses are not in the list". Internal, not
+  /// private: `prepare()` in the +Setup extension raises it too, and Swift
+  /// scopes `private` to the file.
+  static func noEligibleDeviceError() -> NSError {
+    NSError(
+      domain: "MWDATBridge", code: 12,
+      userInfo: [
+        NSLocalizedDescriptionKey:
+          "No glasses found. Unfold them, put them on, check they show "
+          + "as Connected in Meta AI, and that Clypso is enabled under "
+          + "Meta AI → Settings → App connections.",
+      ]
+    )
   }
 
   private static func waitForActiveDevice(
