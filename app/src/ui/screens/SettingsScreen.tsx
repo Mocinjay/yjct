@@ -374,7 +374,8 @@ export function SettingsScreen({ navigation }: Props) {
 
 /**
  * One-time pairing of the app with Meta AI (Wearables Device Access Toolkit).
- * Registration bounces through the Meta AI app and returns via clypso://.
+ * Registration bounces through the Meta AI app and returns on the MWDAT
+ * AppLinkURLScheme from Info.plist.
  */
 function GlassesConnection() {
   const [regState, setRegState] = useState<string | null>(null);

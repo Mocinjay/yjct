@@ -13,6 +13,10 @@ RCT_EXTERN_METHOD(getRegistrationState:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(startRegistration:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject)
+// Exits a registration stalled in `.registering`, which otherwise has no way
+// back inside the app. See MWDATBridge+Setup.swift.
+RCT_EXTERN_METHOD(unregister:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(prepare:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve

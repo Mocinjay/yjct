@@ -53,6 +53,16 @@ export interface MWDATStreamHealthEvent {
 interface MWDATBridgeModule {
   getRegistrationState(): Promise<string>;
   startRegistration(): Promise<string>;
+  /**
+   * Tears the Meta AI link down so it can be built again.
+   *
+   * The SDK's registration has a `registering` state it enters when Meta AI is
+   * handed control and leaves only when the callback returns. An approval the
+   * wearer abandoned parks it there, and every further `startRegistration()`
+   * re-enters the pending request and comes back as Meta AI's own internal
+   * error. This is the only way out.
+   */
+  unregister(): Promise<string>;
   getDiagnostics(): Promise<MWDATDiagnostics>;
   mockEnable(): Promise<void>;
   prepare(): Promise<void>;
@@ -114,6 +124,7 @@ function requireNative(): MWDATBridgeModule {
 export const MWDATNative = {
   getRegistrationState: () => requireNative().getRegistrationState(),
   startRegistration: () => requireNative().startRegistration(),
+  unregister: () => requireNative().unregister(),
   getDiagnostics: () => requireNative().getDiagnostics(),
   mockEnable: () => requireNative().mockEnable(),
   prepare: () => requireNative().prepare(),

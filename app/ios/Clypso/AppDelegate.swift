@@ -50,7 +50,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     MWDATBridge.releaseGlassesForAppLifecycle("didEnterBackground")
   }
 
-  /// Meta AI returns control here (clypso:// scheme) after glasses
+  /// Meta AI returns control here (the MWDAT AppLinkURLScheme) after glasses
   /// registration; MWDATBridge forwards it into the Wearables SDK.
   func application(
     _ app: UIApplication,

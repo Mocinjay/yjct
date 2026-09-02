@@ -104,8 +104,43 @@ export function ConnectScreen({ navigation }: Props) {
   }, [refresh, setError]);
 
   const registered = diag?.registration === 'registered';
+  /**
+   * Meta AI was handed control and has not handed it back.
+   *
+   * The SDK enters this the moment `startRegistration()` returns and leaves it
+   * only on the callback, so a Meta AI that fails on its own side leaves the
+   * app here with nothing to time it out. Coming back to a screen that looks
+   * idle is the whole reported symptom, so it is named.
+   */
+  const registering = diag?.registration === 'registering';
   const device = diag?.devices[0] ?? null;
   const streaming = diag?.streamState === 'streaming';
+
+  // A failed link reports itself from the native URL callback and the message
+  // stays put on purpose — the wearer is coming back from the Meta AI app and
+  // needs to read it. Once the link actually completes it is contradicting the
+  // status rows above it, so it goes. Keyed on the transition, not on every
+  // render, so a genuine failure raised *while* registered still stands.
+  useEffect(() => {
+    if (registered) {
+      setError(null);
+    }
+  }, [registered, setError]);
+
+  // Returning to the app still in `registering` means Meta AI did not finish.
+  // Nothing else reports it: no state changed, so no listener fires, and the
+  // callback that would have carried the error never arrived.
+  useEffect(() => {
+    if (!registering) {
+      return;
+    }
+    setError(
+      'Meta AI did not finish linking — it never handed control back. ' +
+        'Open Meta AI → Settings → App connections and remove Clypso if it is ' +
+        'listed, check Developer Mode is on for your glasses, then tap ' +
+        '“Reset the Meta AI link” below and connect again.',
+    );
+  }, [registering, setError]);
 
   // Native tears the session down on background. When we come back, reopen.
   useEffect(() => {
@@ -176,6 +211,24 @@ export function ConnectScreen({ navigation }: Props) {
     setError(null);
     try {
       await MWDATNative.startRegistration();
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // The link can stall in `registering` — Meta AI was handed control and never
+  // handed it back. Nothing about that state expires, and "Connect through
+  // Meta AI" only re-enters it, so the wearer needs a way to start over. Kept
+  // next to Skip rather than in the main flow: it is a repair, not a step.
+  const resetLink = async () => {
+    setBusy('Resetting the Meta AI link…');
+    setError(null);
+    try {
+      await MWDATNative.unregister();
+      refresh();
+      setError('Link reset. Tap “Connect through Meta AI” to link again.');
     } catch (e: any) {
       setError(String(e?.message ?? e));
     } finally {
@@ -284,6 +337,12 @@ export function ConnectScreen({ navigation }: Props) {
         enabled under Meta AI → Settings → App connections.
         {streaming ? '\n\nOpening live view…' : ''}
       </Text>
+
+      {!registered ? (
+        <Pressable onPress={resetLink} disabled={busy != null}>
+          <Text style={styles.skip}>Reset the Meta AI link</Text>
+        </Pressable>
+      ) : null}
 
       <Pressable onPress={skipToLibrary}>
         <Text style={styles.skip}>Skip to library</Text>
