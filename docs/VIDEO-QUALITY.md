@@ -22,10 +22,13 @@ The core loop:
 
 Two facts shape every decision about picture quality:
 
-- **MWDAT 0.8.0 has no native recording API.** `MWDATCamera.Stream`'s entire
-  surface is `start()`, `stop()`, `capturePhoto(format:)`. "Ask the glasses to
-  record at full quality onto their own flash and fetch the file" is not
-  possible. Everything we ship is re-encoded from a live stream.
+- **MWDAT has no native recording API.** `MWDATCamera.Stream`'s entire surface
+  is `start()`, `stop()`, `capturePhoto(format:)`. "Ask the glasses to record at
+  full quality onto their own flash and fetch the file" is not possible.
+  Everything we ship is re-encoded from a live stream. Still true at **0.9.0**:
+  the release notes advertise "record video" in the Camera Access *sample*, but
+  that is the sample compositing a stream itself — no `startRecording`-shaped
+  symbol exists in any 0.9.0 `.swiftinterface`, which is how this was checked.
 - **The app is in Phase 1/2.** Phase 2 publish targets (YouTube Shorts,
   Instagram Reels, Facebook, TikTok) are code-complete behind `PublishTarget`
   but credentials are pending. That matters here because every one of those
@@ -72,16 +75,18 @@ bitrate key at all**, so AVFoundation picked a default. Now
 survives only as a fallback for mixed-format segments, which is a real case — the
 SDK's ABR ladder can change resolution mid-session.
 
-### 3.3 Stream resolution `.medium` → `.high` (UNCOMMITTED)
+### 3.3 Stream resolution `.medium` → `.high`
 
-`MWDATBridge.swift:942`. `.medium` was a hard 504x896 ceiling. The SDK's
-`VideoLadderedScaler` only ever steps *down* from the requested rung, so asking
-for `.high` is strictly better even when the link cannot sustain it.
+`MWDATBridge.swift`, in `makeStreamConfiguration`. `.medium` was a hard 504x896
+ceiling. The SDK's `VideoLadderedScaler` only ever steps *down* from the
+requested rung, so asking for `.high` is strictly better even when the link
+cannot sustain it.
 
 Confirmed working: clips now arrive at 720x1280.
 
-> **Not yet committed.** That file also holds ~33 lines of unrelated `chime()`
-> work, so it needs a hunk-level commit.
+> Landed in `5e25bfb`, swept in with the rename rather than hunk-committed as
+> planned. Named here because the earlier revision of this section cited a line
+> number, and the file has moved a long way since.
 
 ### 3.4 Verification that all three landed
 
@@ -237,10 +242,6 @@ honours a `renderSize` *larger* than the source. If it clamps, the fallback is a
 explicit preset, or the reader/writer path rejected in §5 — which would move this
 from "small change" to "significant rewrite".
 
-**Blocked:** `CaptionEngine.m` is currently open and being edited in Xcode
-(whisper.cpp transcription work). Applying edits against a moving file risks
-clobbering it.
-
 **Verification must include a frame grab, not just `ffprobe`.** Resolution alone
 does not prove the captions still render correctly at the new size.
 
@@ -250,10 +251,17 @@ This is the only remaining change that would add **actual information** rather
 than re-packaging what we have. Everything else in this document is cosmetics on
 a ~504p source.
 
-`.high` is gated on the WiFi Direct transport, new in MWDAT 0.8.0, which has no
-public API and is negotiated internally. Prior investigation found no lever.
-Worth one focused re-check of the 0.8.0 binaries, because the payoff dwarfs
-everything else here.
+Half of this has since been taken: the app now *asks* for `.high` (§3.3), which
+lifted the delivered rung from 504x896 to 720x1280 because the ladder only ever
+steps down from what is requested. That was the lever on the request side, and
+there is not another one there.
+
+What is left is the transport. The `.high` rung proper is gated on WiFi Direct,
+which has no public API and is negotiated internally — so over Bluetooth
+Classic the ladder still lands where it lands, and 720x1280 is the ceiling in
+practice. Worth one focused re-check of the **0.9.0** binaries (the SDK moved
+from 0.8.0 with the registration work, and `addStream` became `addCamera`, so
+the surface did change). The payoff still dwarfs everything else here.
 
 Relevant strings already found in `MWDATCamera`:
 `" requires medium (BTC) or high (WiFi) bandwidth link"`, `stepUpLadder`,
@@ -273,12 +281,6 @@ The footage is soft and probably noisy (small sensor, often low light). A modest
 unsharp mask genuinely helps perceived quality on soft material, and iOS 26 also
 ships `VTTemporalNoiseFilter`. Real but small, and it must not be applied *after*
 captions are burned or it will halo the text.
-
-### 6.5 Commit the `.high` hunk
-
-`MWDATBridge.swift:942` is confirmed working but uncommitted, in a file that also
-holds unrelated `chime()` work. Needs a hunk-level commit, attributed to the user
-only.
 
 ---
 
