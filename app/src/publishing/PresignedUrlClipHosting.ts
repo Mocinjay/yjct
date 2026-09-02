@@ -1,4 +1,11 @@
 import RNFS from 'react-native-fs';
+import { AppError, ErrorCode } from '../core/errors';
+import {
+  httpJson,
+  readString,
+  requireHttpsRedirectTarget,
+  requireHttpsUrl,
+} from '../core/http';
 import type { ClipHosting } from './ClipHosting';
 
 /**
@@ -17,25 +24,43 @@ export class PresignedUrlClipHosting implements ClipHosting {
   constructor(private presignUrl: string) {}
 
   async upload(localFilePath: string): Promise<{ hostedUrl: string }> {
+    // Validated per call rather than in the constructor: targets are rebuilt
+    // from stored config on every listTargets(), so a bad value pasted into
+    // Settings would otherwise throw while merely *listing* the connectors and
+    // take the whole publish screen down with it.
+    const presignUrl = requireHttpsUrl(
+      this.presignUrl,
+      ErrorCode.HostingNotConfigured,
+      'Clip hosting presign URL',
+    );
     const fileName = localFilePath.split('/').pop() ?? 'clip.mp4';
-    const res = await fetch(this.presignUrl, {
+    const { ok, status, body } = await httpJson(presignUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fileName, contentType: 'video/mp4' }),
+      networkCode: ErrorCode.HostingUploadFailed,
+      label: 'Presign request',
     });
-    if (!res.ok) {
-      throw new Error(`Presign request failed: HTTP ${res.status}`);
+    if (!ok) {
+      throw new AppError(
+        ErrorCode.HostingUploadFailed,
+        `Presign request failed: HTTP ${status}`,
+      );
     }
-    const { uploadUrl, publicUrl } = (await res.json()) as {
-      uploadUrl: string;
-      publicUrl: string;
-    };
+    const uploadUrl = readString(body, 'uploadUrl');
+    const publicUrl = readString(body, 'publicUrl');
     if (!uploadUrl || !publicUrl) {
-      throw new Error('Presign endpoint must return {uploadUrl, publicUrl}.');
+      throw new AppError(
+        ErrorCode.HostingUploadFailed,
+        'Presign endpoint must return {uploadUrl, publicUrl}.',
+        { context: { keys: Object.keys(body) } },
+      );
     }
 
     const upload = await RNFS.uploadFiles({
-      toUrl: uploadUrl,
+      // The server chose this destination and the clip is about to be sent
+      // there, so it gets the same scheme check a typed URL does.
+      toUrl: requireHttpsRedirectTarget(uploadUrl, 'Presigned upload URL'),
       files: [
         {
           name: 'file',
@@ -49,9 +74,14 @@ export class PresignedUrlClipHosting implements ClipHosting {
       headers: { 'Content-Type': 'video/mp4' },
     }).promise;
     if (upload.statusCode < 200 || upload.statusCode >= 300) {
-      throw new Error(`Clip upload failed: HTTP ${upload.statusCode}`);
+      throw new AppError(
+        ErrorCode.HostingUploadFailed,
+        `Clip upload failed: HTTP ${upload.statusCode}`,
+      );
     }
-    return { hostedUrl: publicUrl };
+    return {
+      hostedUrl: requireHttpsRedirectTarget(publicUrl, 'Hosted clip URL'),
+    };
   }
 
   async remove(_hostedUrl: string): Promise<void> {

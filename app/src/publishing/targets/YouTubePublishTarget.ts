@@ -1,4 +1,14 @@
 import RNFS from 'react-native-fs';
+import { AppError, ErrorCode } from '../../core/errors';
+import {
+  httpJson,
+  httpRequest,
+  parseJsonObject,
+  readObject,
+  readString,
+  requireId,
+  requireHttpsRedirectTarget,
+} from '../../core/http';
 import type {
   PublishableClip,
   PublishPrivacy,
@@ -42,15 +52,21 @@ export class YouTubePublishTarget implements PublishTarget {
     return this.tokens !== null;
   }
 
-  async authenticate(): Promise<void> {
+  private requireTokens(): GoogleTokenProvider {
     if (!this.tokens) {
-      throw new Error(
+      throw new AppError(
+        ErrorCode.PublishNotConfigured,
         'YouTube is not configured yet — a Google OAuth client (with the ' +
           'youtube.upload scope) has to be created and wired to a token provider.',
       );
     }
-    if (!(await this.tokens.isSignedIn())) {
-      await this.tokens.signIn();
+    return this.tokens;
+  }
+
+  async authenticate(): Promise<void> {
+    const tokens = this.requireTokens();
+    if (!(await tokens.isSignedIn())) {
+      await tokens.signIn();
     }
   }
 
@@ -59,14 +75,11 @@ export class YouTubePublishTarget implements PublishTarget {
     caption: string,
     privacy: PublishPrivacy,
   ): Promise<{ publishId: string }> {
-    if (!this.tokens) {
-      throw new Error('YouTube target not configured.');
-    }
-    const token = await this.tokens.getAccessToken();
+    const token = await this.requireTokens().getAccessToken();
     const stat = await RNFS.stat(clip.localFilePath);
 
     // 1. Open a resumable upload session with the metadata.
-    const init = await fetch(UPLOAD_ENDPOINT, {
+    const init = await httpRequest(UPLOAD_ENDPOINT, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -83,18 +96,29 @@ export class YouTubePublishTarget implements PublishTarget {
         },
         status: { privacyStatus: privacy, selfDeclaredMadeForKids: false },
       }),
+      label: 'YouTube upload init',
     });
     if (!init.ok) {
-      throw new Error(`YouTube upload init failed: ${init.status} ${await init.text()}`);
+      const detail = await init.text().catch(() => '');
+      throw new AppError(
+        init.status === 401 || init.status === 403
+          ? ErrorCode.PublishAuthFailed
+          : ErrorCode.PublishUploadFailed,
+        `YouTube upload init failed: ${init.status} ${detail}`,
+      );
     }
     const location = init.headers.get('location');
     if (!location) {
-      throw new Error('YouTube did not return a resumable upload URL.');
+      throw new AppError(
+        ErrorCode.PublishUploadFailed,
+        'YouTube did not return a resumable upload URL.',
+      );
     }
 
-    // 2. Stream the file bytes to the session URL.
+    // 2. Stream the file bytes to the session URL. The destination came off the
+    //    wire, so it is checked before the clip is sent to it.
     const upload = await RNFS.uploadFiles({
-      toUrl: location,
+      toUrl: requireHttpsRedirectTarget(location, 'YouTube resumable upload URL'),
       files: [
         {
           name: 'video',
@@ -108,39 +132,51 @@ export class YouTubePublishTarget implements PublishTarget {
       headers: { 'Content-Type': 'video/mp4' },
     }).promise;
     if (upload.statusCode !== 200 && upload.statusCode !== 201) {
-      throw new Error(`YouTube upload failed: HTTP ${upload.statusCode}`);
+      throw new AppError(
+        ErrorCode.PublishUploadFailed,
+        `YouTube upload failed: HTTP ${upload.statusCode}`,
+      );
     }
-    const video = JSON.parse(upload.body) as { id: string };
-    return { publishId: video.id };
+    // Was a bare `JSON.parse`, which threw a SyntaxError naming a character
+    // offset if YouTube answered with anything else.
+    return {
+      publishId: requireId(parseJsonObject(upload.body), 'id', 'YouTube upload'),
+    };
   }
 
   async checkStatus(publishId: string): Promise<PublishStatus> {
-    if (!this.tokens) {
-      return { state: 'failed', error: 'YouTube target not configured.' };
+    try {
+      const token = await this.requireTokens().getAccessToken();
+      const { ok, status, body } = await httpJson(
+        `${VIDEOS_ENDPOINT}?part=status,processingDetails&id=${encodeURIComponent(publishId)}`,
+        { headers: { Authorization: `Bearer ${token}` }, label: 'YouTube status' },
+      );
+      if (!ok) {
+        return { state: 'failed', error: `Status check failed: ${status}` };
+      }
+      const items = Array.isArray(body.items) ? body.items : [];
+      const item = items[0];
+      if (!item || typeof item !== 'object') {
+        return { state: 'failed', error: 'Video not found.' };
+      }
+      const record = item as Record<string, unknown>;
+      const processing = readString(
+        readObject(record, 'processingDetails'),
+        'processingStatus',
+      );
+      return {
+        state: processing === 'processing' ? 'processing' : 'published',
+        actualPrivacy: readString(
+          readObject(record, 'status'),
+          'privacyStatus',
+        ) as PublishStatus['actualPrivacy'],
+        url: `https://youtube.com/shorts/${publishId}`,
+      };
+    } catch (err) {
+      return {
+        state: 'failed',
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
-    const token = await this.tokens.getAccessToken();
-    const res = await fetch(
-      `${VIDEOS_ENDPOINT}?part=status,processingDetails&id=${publishId}`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    );
-    if (!res.ok) {
-      return { state: 'failed', error: `Status check failed: ${res.status}` };
-    }
-    const data = (await res.json()) as {
-      items?: Array<{
-        status?: { privacyStatus?: string; uploadStatus?: string };
-        processingDetails?: { processingStatus?: string };
-      }>;
-    };
-    const item = data.items?.[0];
-    if (!item) {
-      return { state: 'failed', error: 'Video not found.' };
-    }
-    const processing = item.processingDetails?.processingStatus;
-    return {
-      state: processing === 'processing' ? 'processing' : 'published',
-      actualPrivacy: (item.status?.privacyStatus as PublishStatus['actualPrivacy']) ?? undefined,
-      url: `https://youtube.com/shorts/${publishId}`,
-    };
   }
 }

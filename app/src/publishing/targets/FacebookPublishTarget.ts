@@ -1,3 +1,6 @@
+import { AppError, ErrorCode } from '../../core/errors';
+import { readObject, readString, requireId } from '../../core/http';
+import { GRAPH, GRAPH_VIDEO, graphGet, graphPost, graphUrl } from './metaGraph';
 import type {
   PublishableClip,
   PublishPrivacy,
@@ -12,9 +15,6 @@ import type {
  *
  * Publishes via /{page-id}/videos with a hosted file_url.
  */
-const GRAPH = 'https://graph-video.facebook.com/v23.0';
-const GRAPH_READ = 'https://graph.facebook.com/v23.0';
-
 export interface FacebookPageAuth {
   pageId?: string;
   pageAccessToken?: string;
@@ -31,14 +31,21 @@ export class FacebookPublishTarget implements PublishTarget {
     return Boolean(this.auth.pageId && this.auth.pageAccessToken);
   }
 
-  async authenticate(): Promise<void> {
-    if (!(await this.isConfigured())) {
-      throw new Error(
+  private requireAuth(): { pageId: string; pageAccessToken: string } {
+    const { pageId, pageAccessToken } = this.auth;
+    if (!pageId || !pageAccessToken) {
+      throw new AppError(
+        ErrorCode.PublishNotConfigured,
         'Facebook is not configured — add a Page id and Page access token ' +
           'in Settings → Connections (needs pages_manage_posts via the same ' +
           'Meta App Review as Instagram).',
       );
     }
+    return { pageId, pageAccessToken };
+  }
+
+  async authenticate(): Promise<void> {
+    this.requireAuth();
   }
 
   async uploadAndPublish(
@@ -46,43 +53,42 @@ export class FacebookPublishTarget implements PublishTarget {
     caption: string,
     privacy: PublishPrivacy,
   ): Promise<{ publishId: string }> {
+    const { pageId, pageAccessToken } = this.requireAuth();
     if (!clip.hostedUrl) {
-      throw new Error('Facebook publishing requires a hosted video URL.');
+      throw new AppError(
+        ErrorCode.PublishUploadFailed,
+        'Facebook publishing requires a hosted video URL.',
+      );
     }
-    const form: Record<string, string> = {
-      file_url: clip.hostedUrl,
-      description: caption,
-      title: clip.title,
-      published: privacy === 'private' ? 'false' : 'true',
-      access_token: this.auth.pageAccessToken!,
-    };
-    const res = await fetch(`${GRAPH}/${this.auth.pageId}/videos`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(form).toString(),
-    });
-    const json = await res.json();
-    if (!res.ok || json.error) {
-      throw new Error(`Facebook publish failed: ${json.error?.message ?? res.status}`);
-    }
-    return { publishId: json.id };
+    const body = await graphPost(
+      graphUrl(GRAPH_VIDEO, pageId, 'videos'),
+      pageAccessToken,
+      {
+        file_url: clip.hostedUrl,
+        description: caption,
+        title: clip.title,
+        published: privacy === 'private' ? 'false' : 'true',
+      },
+      'Facebook publish',
+    );
+    return { publishId: requireId(body, 'id', 'Facebook publish') };
   }
 
   async checkStatus(publishId: string): Promise<PublishStatus> {
     try {
-      const res = await fetch(
-        `${GRAPH_READ}/${publishId}?fields=status,permalink_url&access_token=${this.auth.pageAccessToken}`,
+      const { pageAccessToken } = this.requireAuth();
+      // Reads go to the plain Graph host: graph-video only serves uploads.
+      const body = await graphGet(
+        graphUrl(GRAPH, publishId),
+        pageAccessToken,
+        ['status', 'permalink_url'],
+        'Facebook status',
       );
-      const json = await res.json();
-      if (!res.ok || json.error) {
-        throw new Error(json.error?.message ?? `HTTP ${res.status}`);
-      }
-      const videoStatus = json.status?.video_status as string | undefined;
+      const videoStatus = readString(readObject(body, 'status'), 'video_status');
+      const permalink = readString(body, 'permalink_url');
       return {
         state: videoStatus === 'ready' ? 'published' : 'processing',
-        url: json.permalink_url
-          ? `https://facebook.com${json.permalink_url}`
-          : undefined,
+        url: permalink ? `https://facebook.com${permalink}` : undefined,
       };
     } catch (err) {
       return {

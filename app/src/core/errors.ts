@@ -52,6 +52,16 @@ export const ErrorCode = {
   CaptionResumeFailed: 'captioning/resume-failed',
   CaptionCleanupFailed: 'captioning/cleanup-failed',
 
+  // Publishing: the connectors and the hosting step they depend on.
+  PublishNotConfigured: 'publishing/not-configured',
+  PublishAuthFailed: 'publishing/auth-failed',
+  PublishUploadFailed: 'publishing/upload-failed',
+  PublishRejected: 'publishing/rejected',
+  PublishStatusUnknown: 'publishing/status-unknown',
+  PublishNetworkFailed: 'publishing/network-failed',
+  HostingUploadFailed: 'hosting/upload-failed',
+  HostingNotConfigured: 'hosting/not-configured',
+
   // UI: render-time crashes caught by an error boundary.
   RenderCrash: 'ui/render-crash',
   /** Last resort for a failure that reached a boundary without a code. */
@@ -66,6 +76,8 @@ export type ErrorDomain =
   | 'capture'
   | 'storage'
   | 'captioning'
+  | 'publishing'
+  | 'hosting'
   | 'ui';
 
 /**
@@ -98,6 +110,18 @@ const USER_MESSAGES: Record<ErrorCode, string> = {
   [ErrorCode.CaptionJobFailed]: 'Captioning failed. Tap retry on the clip.',
   [ErrorCode.CaptionResumeFailed]: 'Could not resume captioning.',
   [ErrorCode.CaptionCleanupFailed]: 'Some caption files were left behind.',
+  [ErrorCode.PublishNotConfigured]:
+    'That platform is not connected yet. Add its credentials in Settings → Connections.',
+  [ErrorCode.PublishAuthFailed]:
+    'That platform rejected your sign-in. Reconnect it in Settings → Connections.',
+  [ErrorCode.PublishUploadFailed]: 'Could not upload the clip. Try again.',
+  [ErrorCode.PublishRejected]: 'The platform rejected this clip.',
+  [ErrorCode.PublishStatusUnknown]:
+    'Could not confirm whether the post went live. Check the app for that platform.',
+  [ErrorCode.PublishNetworkFailed]: 'No response from the platform. Check your connection.',
+  [ErrorCode.HostingUploadFailed]: 'Could not stage the clip for upload. Try again.',
+  [ErrorCode.HostingNotConfigured]:
+    'Clip hosting is not set up. Add a presign URL in Settings → Connections.',
   [ErrorCode.RenderCrash]: 'Something went wrong on this screen.',
   [ErrorCode.Unexpected]: 'Something went wrong. Try again.',
 };
