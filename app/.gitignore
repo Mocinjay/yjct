@@ -36,6 +36,9 @@ local.properties
 *.keystore
 !debug.keystore
 .kotlin/
+# Release signing credentials. Copy android/keystore.properties.example to
+# create it.
+android/keystore.properties
 
 # node.js
 #

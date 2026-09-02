@@ -72,6 +72,74 @@ def enableProguardInReleaseBuilds = false
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+/**
+ * Release signing credentials, or null when none are configured.
+ *
+ * Mirrors how iOS keeps its identity out of the repo (ios/Config/Signing.xcconfig,
+ * gitignored, with a committed .example). Either put the four values in
+ * android/keystore.properties, or pass them as gradle properties / environment
+ * variables -- CI wants the latter, a workstation wants the former.
+ *
+ * Returns null rather than falling back to anything. A release signed with the
+ * wrong key is worse than a release that is not signed at all, because it looks
+ * finished.
+ */
+def loadReleaseSigning() {
+    def keys = ['storeFile', 'storePassword', 'keyAlias', 'keyPassword']
+    def props = new Properties()
+    def file = rootProject.file('keystore.properties')
+    if (file.exists()) {
+        file.withInputStream { props.load(it) }
+    }
+
+    // Gradle properties and the environment win over the file, so CI can inject
+    // secrets without writing them to disk.
+    def resolved = [:]
+    keys.each { key ->
+        def envName = 'CLYPSO_RELEASE_' + key.replaceAll(/([A-Z])/, '_$1').toUpperCase()
+        def value = System.getenv(envName)
+            ?: (project.hasProperty('clypsoRelease' + key.capitalize())
+                ? project.property('clypsoRelease' + key.capitalize())
+                : null)
+            ?: props.getProperty(key)
+        if (value != null && !value.toString().trim().isEmpty()) {
+            resolved[key] = value.toString().trim()
+        }
+    }
+
+    if (resolved.isEmpty()) {
+        return null
+    }
+    def missing = keys.findAll { !resolved.containsKey(it) }
+    if (!missing.isEmpty()) {
+        // Half-configured is a mistake, not a choice to build unsigned.
+        throw new GradleException(
+            "Release signing is partly configured: missing ${missing.join(', ')}. " +
+            "Set all of ${keys.join(', ')} in android/keystore.properties " +
+            "(see keystore.properties.example) or as CLYPSO_RELEASE_* environment variables."
+        )
+    }
+
+    def store = rootProject.file(resolved['storeFile'])
+    if (!store.exists()) {
+        throw new GradleException("Release keystore not found at ${store.absolutePath}")
+    }
+    resolved['storeFile'] = store.absolutePath
+    return resolved
+}
+
+def releaseSigning = loadReleaseSigning()
+
+gradle.taskGraph.whenReady { graph ->
+    if (releaseSigning == null && graph.allTasks.any { it.name.toLowerCase().contains('release') }) {
+        logger.warn(
+            "\nWARNING: no release keystore configured, so the release build will be UNSIGNED " +
+            "and cannot be installed or uploaded.\nCopy android/keystore.properties.example to " +
+            "android/keystore.properties and fill it in.\n"
+        )
+    }
+}
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -92,15 +160,28 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        if (releaseSigning != null) {
+            release {
+                storeFile file(releaseSigning['storeFile'])
+                storePassword releaseSigning['storePassword']
+                keyAlias releaseSigning['keyAlias']
+                keyPassword releaseSigning['keyPassword']
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // The release build used to be signed with the debug keystore that
+            // is committed to this repo -- a key every reader of the repo has.
+            // Anything signed with it can be replaced by anyone, and Play would
+            // reject it, so it is never a fallback: with no keystore configured
+            // the release build comes out unsigned and says so.
+            if (releaseSigning != null) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
