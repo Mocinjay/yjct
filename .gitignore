@@ -2,3 +2,7 @@
 .claude/scheduled_tasks.lock
 __pycache__/
 *.pyc
+
+# Server config and scratch. Copy server/.env.example to create the first.
+server/.env
+server/work/

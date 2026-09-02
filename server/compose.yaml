@@ -1,0 +1,42 @@
+# Local runtime for the two server-side pieces.
+#
+#   cp .env.example .env
+#   docker compose up captioning
+#   docker compose run --rm climax /data/clip.mp4 -o /data/out.mp4
+#
+# The model cache is a named volume shared by both services: they use the same
+# faster-whisper model, and downloading it twice is the difference between a
+# fast second start and another few hundred megabytes.
+name: clypso
+
+services:
+  captioning:
+    build:
+      context: ./captioning
+      dockerfile: Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "${PORT:-8787}:${PORT:-8787}"
+    volumes:
+      - whisper-models:/models
+    restart: unless-stopped
+
+  # A batch CLI, not a service: it exits when the run finishes. `up` would
+  # start it and immediately report it as stopped, so it is left out of the
+  # default profile and invoked with `compose run`.
+  climax:
+    build:
+      context: ./climax
+      dockerfile: Dockerfile
+    profiles: ["cli"]
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - whisper-models:/models
+      - ./work:/data
+
+volumes:
+  whisper-models:

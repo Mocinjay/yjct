@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+test_captions.py
+README.md
+.env
