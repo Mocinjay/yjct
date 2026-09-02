@@ -282,8 +282,15 @@ export class CaptureController {
       recordingSince: Date.now(),
     });
     this.maxRecordingTimer = setTimeout(() => {
+      // Through `fail()` like every other async path: inlining `setStatus` here
+      // put a raw `String(err)` — a native error string — straight into the
+      // wearer-facing banner, and logged nothing.
       this.stopClip().catch(err =>
-        this.setStatus({ ...this.status, state: 'error', lastError: String(err) }),
+        this.fail(
+          'the maximum-length auto-stop could not save the clip',
+          err,
+          ErrorCode.CaptureSaveFailed,
+        ),
       );
     }, MAX_CLIP_RECORDING_SECONDS * 1000);
   }

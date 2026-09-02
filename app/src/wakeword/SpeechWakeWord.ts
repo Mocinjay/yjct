@@ -126,7 +126,7 @@ export class SpeechWakeWord implements WakeWordProvider {
           this.handleTranscript(transcript),
         ),
       );
-      await SpeechWakeWordNative.startListening();
+      await this.startNative();
       return;
     }
 
@@ -142,21 +142,44 @@ export class SpeechWakeWord implements WakeWordProvider {
       // the failure has to announce itself or the trigger just quietly ends.
       emitter.addListener(WAKE_ERROR_EVENT, ({ message }: { message: string }) =>
         log.error(
-          `listening stopped: ${message}`,
+          'listening stopped',
           new Error(message),
           ErrorCode.WakeWordTranscribeFailed,
         ),
       ),
     );
-    await SpeechWakeWordNative.startListening();
+    await this.startNative();
   }
 
-  async stop(): Promise<void> {
-    this.onDetected = null;
+  /**
+   * Starts the recognizer, releasing the listeners if it will not start.
+   *
+   * The listeners are attached first because the native side can emit before
+   * `startListening()` resolves. That ordering means a failure leaves them
+   * attached to a recognizer that is not running — and since `start()` throws,
+   * nobody calls `stop()` to take them down, so the next arm adds a second set
+   * and every event fires twice.
+   */
+  private async startNative(): Promise<void> {
+    try {
+      await SpeechWakeWordNative.startListening();
+    } catch (err) {
+      this.clearSubscriptions();
+      this.onDetected = null;
+      throw AppError.from(err, ErrorCode.WakeWordStartFailed);
+    }
+  }
+
+  private clearSubscriptions(): void {
     for (const subscription of this.subscriptions) {
       subscription.remove();
     }
     this.subscriptions = [];
+  }
+
+  async stop(): Promise<void> {
+    this.onDetected = null;
+    this.clearSubscriptions();
     if (Platform.OS === 'android' || this.ownMicrophone) {
       await SpeechWakeWordNative.stopListening().catch(err =>
         log.expected('stopListening failed', err, ErrorCode.WakeWordStopFailed),
@@ -212,8 +235,11 @@ export class SpeechWakeWord implements WakeWordProvider {
   private noteTranscribeFailure(err: unknown): void {
     this.failureStreak += 1;
     if (this.failureStreak >= FAILURE_STREAK_ALARM) {
+      // The streak count belongs in the context, not the message: it climbs by
+      // one every 5s, so interpolating it makes every line a distinct dedupe
+      // key and the alarm out-spams the failure it is reporting.
       log.error(
-        `recognizer has rejected ${this.failureStreak} segments in a row — the wake word is not working`,
+        'recognizer is rejecting every segment — the wake word is not working',
         err,
         ErrorCode.WakeWordTranscribeFailed,
       );
@@ -233,7 +259,10 @@ export class SpeechWakeWord implements WakeWordProvider {
     segmentStartedAtMs?: number,
   ): void {
     const matched = matchesWakePhrase(transcript);
-    log.debug(`transcript "${transcript}" → ${matched ? 'HIT' : 'miss'}`);
+    // The transcript goes in the context. In the message it made every 5s
+    // segment a new dedupe key, which is what let this one line grow the
+    // logger's key set without bound across a long armed session.
+    log.debug(matched ? 'transcript HIT' : 'transcript miss', { transcript });
     if (!this.onDetected || !matched) {
       return;
     }
@@ -249,6 +278,7 @@ export class SpeechWakeWord implements WakeWordProvider {
     // the buffer boundary as before.
     const endOffsetSec = words ? findPhraseEndSec(words) : null;
     if (segmentPath === undefined || endOffsetSec === null) {
+      log.info('wake phrase detected');
       this.onDetected();
       return;
     }

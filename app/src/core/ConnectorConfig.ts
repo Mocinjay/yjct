@@ -1,4 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { createLogger } from './Logger';
+import { ErrorCode } from './errors';
+
+const log = createLogger('connectors');
 
 /**
  * PHASE 2 — sandbox/live credentials for the connectors, entered in
@@ -54,7 +58,15 @@ export class ConnectorConfigStore {
     try {
       const raw = await AsyncStorage.getItem(KEY);
       this.cached = raw ? (JSON.parse(raw) as ConnectorConfig) : {};
-    } catch {
+    } catch (err) {
+      // An empty config and an unreadable one look the same from the publish
+      // screen — every connector reports "needs setup" — so credentials that
+      // were entered and then lost presented as credentials never entered.
+      log.error(
+        'stored connector config could not be read — every connector will report unconfigured',
+        err,
+        ErrorCode.PublishNotConfigured,
+      );
       this.cached = {};
     }
     return this.cached;

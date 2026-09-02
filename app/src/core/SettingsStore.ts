@@ -5,6 +5,10 @@ import {
   DEFAULT_SETTINGS,
 } from '../config';
 import type { Settings } from '../types';
+import { createLogger } from './Logger';
+import { ErrorCode } from './errors';
+
+const log = createLogger('settings');
 
 const KEY = 'settings.v2';
 const LEGACY_KEY = 'settings.v1';
@@ -38,7 +42,15 @@ export class SettingsStore {
         this.cached = migrated;
         await AsyncStorage.setItem(KEY, JSON.stringify(migrated));
       }
-    } catch {
+    } catch (err) {
+      // Silently falling back looks identical to a first launch, so a corrupt
+      // record quietly reset the wearer's buffer length and device choice on
+      // every open with nothing anywhere to say so.
+      log.error(
+        'stored settings could not be read — falling back to defaults',
+        err,
+        ErrorCode.StorageIndexUnreadable,
+      );
       this.cached = DEFAULT_SETTINGS;
     }
     // Glasses-only: stored 'mock' choices from earlier builds are retired.
