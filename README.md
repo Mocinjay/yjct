@@ -17,7 +17,10 @@ The publish flow enforces a per-clip preview + explicit consent step before anyt
 ## Repo layout
 
 - `app/` — React Native (TypeScript) app. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-- `docs/` — architecture + phase notes.
+- `docs/` — architecture + phase notes. [KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) registers
+  failure modes that were expensive to diagnose, and the rules drawn from them — worth a
+  read before adding a native error path or a screen that reports device state.
+- `tools/` — measurement harnesses. Nothing here ships.
 
 ## Running (Phase 1, mock device)
 
