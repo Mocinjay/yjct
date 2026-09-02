@@ -21,12 +21,12 @@ Paths are relative to `app/` unless noted.
 
 | # | Question | Answer | Evidence |
 |---|---|---|---|
-| G1 | Which `VideoCodec` does `StreamConfiguration` request? Does the writer mux or re-encode? | **`.raw`**, and the writer **re-encodes** — H.264 High from decoded `CVPixelBuffer`s. `.hvc1` was tried and abandoned. | `ios/Clypso/MWDATBridge.swift:632`; codec choice rationale `:614–631`; encoder settings `ios/Clypso/MWDATSegmentWriter.swift:639`; the writer's own diagnostic `"…segment writer encodes raw frames. Set the stream's videoCodec to .raw."` at `MWDATSegmentWriter.swift:618` |
+| G1 | Which `VideoCodec` does `StreamConfiguration` request? Does the writer mux or re-encode? | **`.raw`**, and the writer **re-encodes** — H.264 High from decoded `CVPixelBuffer`s. `.hvc1` was tried and abandoned. | `ios/Clypso/MWDATBridge.swift:785`; codec choice rationale `:765–784`; encoder settings `ios/Clypso/MWDATSegmentWriter.swift:639`; the writer's own diagnostic `"…segment writer encodes raw frames. Set the stream's videoCodec to .raw."` at `MWDATSegmentWriter.swift:618` |
 | G2 | If `.hvc1` is available, what keyframe interval does the sender use? | **Unanswerable without implementing `.hvc1` capture.** No `.hvc1` sample has ever been written to a file, so no GOP has ever been observed. See the G1/G2 note below — the premise of W8 is materially different from what W8 assumes. | — |
-| G3 | Does the caption-burn composition set colour tags? What happens to an HLG asset? | **No colour tags anywhere.** The composition is built with the bare `[AVMutableVideoComposition videoComposition]` initialiser — no `colorPrimaries`, no `colorTransferFunction`, no `colorYCbCrMatrix`. Export preset is `AVAssetExportPresetHighestQuality`, which is H.264/AAC and cannot carry HLG. What an HLG master actually looks like afterwards is **unmeasured** — no path-B asset has been through the burn on device. | `modules/clip-stitcher/ios/CaptionEngine.m:519–523`, `:545–555`. `renderSize` is the source's natural size (`:440–442`), so a 1520×2032 master stays 1520×2032 |
+| G3 | Does the caption-burn composition set colour tags? What happens to an HLG asset? | **No colour tags anywhere.** The composition is built with the bare `[AVMutableVideoComposition videoComposition]` initialiser — no `colorPrimaries`, no `colorTransferFunction`, no `colorYCbCrMatrix`. Export preset is `AVAssetExportPresetHighestQuality`, which is H.264/AAC and cannot carry HLG. What an HLG master actually looks like afterwards is **unmeasured** — no path-B asset has been through the burn on device. | `modules/clip-stitcher/ios/CaptionEngine.m:826`, preset `:854`. `renderSize` (`:827`) comes from `CEPromotedRenderSize` (`:181`), which returns the source's own size unchanged while `CECanvasPromotionEnabled` is `NO`, so a 1520×2032 master stays 1520×2032 |
 | G4 | `AVAudioSession` category/options in `MicSegmentRecorder`? Bluetooth? `preferredInput`? | **Already correct.** Category `.record`, mode `.default`, options `mixWithOthers` only. **No Bluetooth option is set** — deliberately, with the HFP/link-renegotiation reasoning written down. `preferredInput` **is** pinned to `AVAudioSessionPortBuiltInMic`. Interruption and route-change observers both exist. | `modules/clip-stitcher/ios/MicSegmentRecorder.m:193–226`; observers `:467–472`; interruption handler `:482–500`; route-change handler `:503–506` |
 | G5 | Wake-word false-positive / false-negative rate on real worn audio? | **Unmeasured.** There is no corpus, no harness, and no `tools/measure/` directory in the repo. `__tests__/phraseMatch.test.ts` tests the regexes against hand-written strings, which says nothing about recogniser behaviour on worn audio. | absence of `tools/`; `__tests__/phraseMatch.test.ts` |
-| G6 | Which transport and resolution rung do real sessions negotiate? | **Not instrumented.** The only rung-adjacent evidence in the whole app is a per-segment log line of the *delivered* format; transport is never queried, never logged, and there is no aggregation anywhere. No field distribution exists. | request site `MWDATBridge.swift:632–633`; delivered-format logs `MWDATSegmentWriter.swift:606` and `:653` |
+| G6 | Which transport and resolution rung do real sessions negotiate? | **Not instrumented.** The only rung-adjacent evidence in the whole app is a per-segment log line of the *delivered* format; transport is never queried, never logged, and there is no aggregation anywhere. No field distribution exists. | request site `MWDATBridge.swift:785`; delivered-format logs `MWDATSegmentWriter.swift:606` and `:653`. The canvas-promotion refusal added since (`CaptionEngine.m`, `CESmallestCodedSize`) logs when a stitched clip's coded size is below 720×1280, which is the first rung-adjacent signal in the app — but it fires per caption render, not per session |
 | G7 | Marker after end-of-recording — anchored to the marker, or clamped to file end? | **Anchored to the file end, correctly, already.** `endSec = min(offset + leadOut, durationSec)` then `startSec = max(endSec - lookback, 0)`. A marker 15 s past the end of a recording yields the **full** lookback window ending at the file end, not a 5 s stub. **This contradicts W3's first bullet.** | `src/markers/markerMatching.ts:149–150` |
 | G8 | Marker lifetime, and is it coupled to clip expiry? | **7 days, and already decoupled.** `MarkerStore` owns its own `DEFAULT_RETENTION_MS = 7 days`, applied on `add()` and `all()`. Free-tier clip expiry is a separate `FREE_RETENTION_HOURS = 24`, used only when building a `Clip`. The two never reference each other. W3's "decouple" is already true; only the duration is short of the 30 days W3 asks for. | `src/markers/MarkerStore.ts:19`, `:66`, `:74`; `src/config.ts:27`; use site `src/markers/GlassesImportController.ts:294` |
 | G9 | Is `PHAuthorizationStatus.limited` detected, and does it gate the toggle? | **Detected, not gating.** Native returns `usable = (status == Authorized)`, so `.limited` is correctly reported as unusable, and `GlassesImportController.start()` throws an `AppError` with the right user message. But **the toggle is not gated**: `SettingsScreen` writes `glassesLibraryImport: true` unconditionally, `App.tsx` calls `syncWithSettings()` from a `.catch(log.error)`, and nothing writes the setting back. The switch stays on, the app is not listening, and the UI does not say so. There is also no re-check for a downgrade made in Settings later. | native `modules/clip-stitcher/ios/GlassesMediaLibrary.m:140–159`; throw site `src/markers/GlassesImportController.ts:67–79`; ungated toggle `src/ui/screens/SettingsScreen.tsx:166–177`; swallowed failure `App.tsx:97–108` |
@@ -53,38 +53,39 @@ change. And marker retention is 7 days where W3 wants ≥30 — a one-constant c
 a real one, and `GlassesImportController` never passes a retention override so the
 default is what ships.
 
-### 2. W4's cumulative-drift mechanism is not what the code does
+### 2. W4's cumulative-drift mechanism is not what the code does — and `take` has since been fixed
 
 W4's premise is that a per-segment A/V duration mismatch accumulates across a 60–90 s
-window. Reading `ClipStitcher.m:114–180`: `take = asset.duration` (the **max** of the
-two track durations), the *same* `CMTimeRange` is handed to both the video insert
-(`:140`) and the audio insert (`:174`), and — critically — `cursor` advances by `take`
-for both tracks (`:180`).
+window. When this was written, `take = asset.duration` (the **max** of the two track
+durations), the *same* `CMTimeRange` went to both the video and the audio insert, and —
+critically — `cursor` advanced by `take` for both tracks.
 
 Because `cursor` is shared, every segment is re-anchored to the correct wall position at
-its own boundary. A mismatch therefore does **not** accumulate. What it produces instead
-is a **gap of the mismatch size at each segment boundary**, in whichever track is
+its own boundary. A mismatch therefore does **not** accumulate. What it produced instead
+was a **gap of the mismatch size at each segment boundary**, in whichever track is
 shorter, with the next segment landing back on time. Twelve segments with a 40 ms
 mismatch is twelve 40 ms holes, not 480 ms of drift.
 
-That is still a real defect and still worth fixing, and the fix is close to what W4
-proposes — but it is `take` that is wrong, not just the audio range. Clamping only the
-audio range to the video duration fixes the audio-longer case and does nothing for the
-video-longer case, which is the one this pipeline is more likely to hit: audio is
-host-clock stamped and video is PTS-stamped, and the PTS upper clamp was removed
-precisely so real gaps stay honest.
+The conclusion this section reached — that it is `take` that is wrong, not the audio
+range — **has since been implemented.** `take` is now the video track's own end,
+`CMTimeRangeGetEnd(srcVideo.timeRange)`, falling back to `asset.duration` only when
+there is no video track (`ClipStitcher.m:141–150`). Anchoring on video rather than on
+the longer of the two means the composition's timeline is the picture's timeline, and
+`insertTimeRange` is never asked for audio that does not exist. `cursor` is still shared
+(`:123`, advanced at `:224`), which is what keeps segments re-anchored; the inserts are
+at `:174` and `:218`.
 
-I have not measured this. W4's synthetic-fixture test is the right instrument to settle
-it, and it should assert **gap position and size**, not only cumulative drift at 30/60/90 s
-— a test that only measures end-to-end drift will pass on this code while the glitches
-are still there.
+**Still not measured.** The fix is reasoned, not demonstrated. W4's synthetic-fixture
+test remains the right instrument and remains unwritten, and it should assert **gap
+position and size**, not only cumulative drift at 30/60/90 s — a test that only measures
+end-to-end drift would have passed on the old code too, while the glitches were there.
 
 ### 3. W8's `.hvc1` premise is right about the cost and wrong about the obstacle (G1, G2)
 
 W8 correctly identifies three generations of loss on path A. But the reason the writer
 consumes `.raw` is not that nobody tried `.hvc1` — it is that `.hvc1` was tried on device
 and the SDK hands back frames with a `dataBuffer` and **no `imageBuffer`**
-(`MWDATBridge.swift:614–619`, recording `imageBuffer=false makeUIImage=NIL`).
+(`MWDATBridge.swift:769–772`, recording `imageBuffer=false makeUIImage=NIL`).
 
 That does not kill W8 — muxing compressed samples is exactly what you do with a
 `dataBuffer`, and it is the right idea. But it surfaces a cost W8 does not account for:
@@ -105,11 +106,13 @@ trade-off depends on a GOP cadence that has never been observed.
   state — not building it.
 - **W10's 1080×1920 canvas is a path-A-only change.** `renderSize` follows the source's
   natural size, so path A renders 720×1280 and path B renders 1520×2032. Forcing
-  1080×1920 would *downscale* every path-B clip.
+  1080×1920 would *downscale* every path-B clip. The promotion path built since
+  (`CECanvasPromotionEnabled`, still `NO`) refuses path B for exactly this reason —
+  1520×2032 fails the size ceiling. See `docs/VIDEO-QUALITY.md` §8.
 - **W14's "hard AND" is confirmed**: `GMLIsGlassesAsset` requires the model string to
   contain both `"Meta"` and `"Glasses"`, with copyright `"Meta AI"` as the only fallback
-  (`GlassesMediaLibrary.m:75–77`, `:199–216`). Two string constants own the entire path-B
-  feature.
+  (constants `GlassesMediaLibrary.m:75–77`, `GMLIsGlassesAsset` at `:220`). Two string
+  constants own the entire path-B feature.
 - **Path B is not gated on Pro** and its lookback is a hard-coded 20 s
   (`src/services/glassesImport.ts:21`), independent of the rolling-buffer tier. W3's
   "clamp to tier length" has nothing to clamp against on this path today.
