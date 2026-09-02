@@ -124,6 +124,19 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
     NSUInteger srcAudioTrackTotal = 0;   // audio tracks seen across all segments
     NSUInteger srcAudioUsableTotal = 0;  // ...of those, ones with real content
     NSUInteger skippedEmptyAudio = 0;    // ...of those, ones skipped as empty
+
+    // Signed A/V skew per segment, in seconds: audio end MINUS video end.
+    // Positive means audio overhangs the picture and its tail is dropped;
+    // negative means audio falls short and that much silence lands at the
+    // boundary. MWDATSegmentWriter closes both inputs on the same wall-clock
+    // timer while video is stamped from frame PTS and audio from the host
+    // clock, so a ragged edge is structural, not exceptional. How big it is
+    // on real hardware has never been measured, and it is the number that
+    // decides whether the silence is worth correcting at the writer.
+    NSUInteger skewSegments = 0;
+    double skewSum = 0;
+    double skewMax = 0;  // most positive, meaningful only when skewSegments > 0
+    double skewMin = 0;  // most negative, likewise
     for (NSUInteger index = 0; index < segmentPaths.count; index++) {
       NSString *path = segmentPaths[index];
       NSURL *url = [NSURL fileURLWithPath:path];
@@ -146,8 +159,9 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
       // supplies what exists, which lands a hole of exactly that size at the
       // segment boundary. Anchoring on video means the composition's timeline
       // is the picture's timeline, which is the only one the viewer can see.
-      CMTime take = srcVideo != nil ? CMTimeRangeGetEnd(srcVideo.timeRange)
-                                    : asset.duration;
+      CMTime const videoEnd =
+          srcVideo != nil ? CMTimeRangeGetEnd(srcVideo.timeRange) : kCMTimeInvalid;
+      CMTime take = srcVideo != nil ? videoEnd : asset.duration;
       if (index == segmentPaths.count - 1 && trimEndSec > 0) {
         CMTime trimmed = CMTimeSubtract(
             take, CMTimeMakeWithSeconds(trimEndSec, take.timescale));
@@ -207,11 +221,36 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
         // the only remaining way the two tracks can disagree. Logged rather
         // than corrected because there are no samples to put there — the
         // number is what tells us whether it is worth correcting.
-        double const audioShortfall =
-            CMTimeGetSeconds(CMTimeSubtract(take, CMTimeRangeGetEnd(srcAudio.timeRange)));
-        if (audioShortfall > 0.001) {
-          JVSLog(@"A/V mismatch in %@: audio is %.0f ms short of video",
-                 path.lastPathComponent, audioShortfall * 1000.0);
+        //
+        // Measured against the video track's own end, NOT `take`: `take` has
+        // already been trimmed on the last segment, and a trim is an
+        // instruction from the caller, not a disagreement between the tracks.
+        if (srcVideo != nil) {
+          double const skew = CMTimeGetSeconds(
+              CMTimeSubtract(CMTimeRangeGetEnd(srcAudio.timeRange), videoEnd));
+          if (skewSegments == 0) {
+            skewMax = skew;
+            skewMin = skew;
+          } else {
+            skewMax = MAX(skewMax, skew);
+            skewMin = MIN(skewMin, skew);
+          }
+          skewSegments += 1;
+          skewSum += skew;
+
+          // Both directions. Reporting only the shortfall left us blind in
+          // exactly the direction the `take` anchor was changed to handle:
+          // when audio overhangs, the tail is dropped and nothing said so.
+          if (skew < -0.001) {
+            JVSLog(@"A/V mismatch in %@: audio is %.0f ms SHORT of video "
+                   @"(that much silence lands at this boundary)",
+                   path.lastPathComponent, -skew * 1000.0);
+          } else if (skew > 0.001) {
+            JVSLog(@"A/V mismatch in %@: audio OVERHANGS video by %.0f ms "
+                   @"(tail dropped; anchoring on video is what keeps the "
+                   @"picture whole here)",
+                   path.lastPathComponent, skew * 1000.0);
+          }
         }
         // Inserting at `cursor` keeps audio aligned when only some segments
         // carry it: the gap before it stays silent rather than shifting.
@@ -264,6 +303,36 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
     NSAssert(compositionAudioTracks != 1 || audioTrack != nil,
              @"composition audio track present without a usable source");
 
+    // Handed back to JS so one aggregate line per clip reaches the on-device
+    // diagnostics file. The per-segment JVSLog lines above only exist in a
+    // console nobody is attached to during field testing, and a distribution
+    // is what the "is this worth correcting" question needs anyway.
+    NSDictionary *avSkew = @{
+      @"segments" : @(skewSegments),
+      @"meanMs" : @(skewSegments > 0 ? (skewSum / (double)skewSegments) * 1000.0 : 0.0),
+      @"maxMs" : @(skewSegments > 0 ? skewMax * 1000.0 : 0.0),
+      @"minMs" : @(skewSegments > 0 ? skewMin * 1000.0 : 0.0),
+    };
+    JVSLog(@"A/V skew over %lu segment(s): mean %.1f ms, range %.1f..%.1f ms",
+           (unsigned long)skewSegments,
+           skewSegments > 0 ? (skewSum / (double)skewSegments) * 1000.0 : 0.0,
+           skewSegments > 0 ? skewMin * 1000.0 : 0.0,
+           skewSegments > 0 ? skewMax * 1000.0 : 0.0);
+
+    // Merging into whatever the export path resolves with, rather than
+    // threading a parameter through `transcodeComposition` and
+    // `finishWithOutputPath`, keeps both of those shared with `extractRange`
+    // — which stitches nothing and has no skew to report.
+    RCTPromiseResolveBlock resolveWithSkew = ^(id result) {
+      if (![result isKindOfClass:[NSDictionary class]]) {
+        resolve(result);
+        return;
+      }
+      NSMutableDictionary *merged = [(NSDictionary *)result mutableCopy];
+      merged[@"avSkew"] = avSkew;
+      resolve(merged);
+    };
+
     // Every segment leaves MWDATSegmentWriter with identical encoder settings,
     // so concatenating them needs no re-encode at all: passthrough copies the
     // exact bits the segment writer produced. The previous path decoded every
@@ -278,14 +347,14 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
                  completion:^(BOOL ok, NSError *passthroughError) {
       if (ok) {
         JVSLog(@"passthrough export succeeded (no re-encode)");
-        [self finishWithOutputPath:outputPath resolver:resolve rejecter:reject];
+        [self finishWithOutputPath:outputPath resolver:resolveWithSkew rejecter:reject];
         return;
       }
       JVSLog(@"passthrough export unavailable (%@); falling back to transcode",
              passthroughError.localizedDescription);
       [self transcodeComposition:composition
                       outputPath:outputPath
-                        resolver:resolve
+                        resolver:resolveWithSkew
                         rejecter:reject];
     }];
   });

@@ -5,6 +5,7 @@ import {
   WAKE_TRIM_PADDING_SECONDS,
 } from '../config';
 import type { DeviceVideoSource } from '../device/DeviceVideoSource';
+import type { AvSkew } from '../native/ClipStitcher';
 import { stitchSegments } from '../native/ClipStitcher';
 import type { Clip, Segment } from '../types';
 import type { WakeDetection, WakeWordProvider } from '../wakeword/WakeWordProvider';
@@ -15,6 +16,42 @@ import { AppError, ErrorCode } from './errors';
 import { SegmentRingBuffer } from './SegmentRingBuffer';
 
 const log = createLogger('capture');
+
+/**
+ * Below this, a hole between two runs of speech is not something a listener
+ * picks out, and one audio frame is ~21 ms anyway. Above it, the skew repeats
+ * at every segment boundary — 11 times in a 60 s clip at SEGMENT_SECONDS 5 —
+ * so it is a defect rather than an artefact.
+ */
+const AV_SKEW_REPORT_MS = 10;
+
+/**
+ * One aggregate line per clip, at `warn` so it reaches the on-device
+ * diagnostics file.
+ *
+ * The stitcher's own per-segment lines go to NSLog, which needs a console
+ * attached — and field testing is exactly when there is not one. Per-segment
+ * granularity would also blow the size cap the diagnostics file works under,
+ * and the open question is a distribution, not individual events.
+ */
+function reportAvSkew(skew: AvSkew | undefined): void {
+  if (!skew || skew.segments === 0) {
+    return;
+  }
+  const worstMs = Math.max(Math.abs(skew.minMs), Math.abs(skew.maxMs));
+  if (worstMs < AV_SKEW_REPORT_MS) {
+    return;
+  }
+  log.warn('audio and video segment ends disagree', {
+    code: 'av_skew',
+    context: {
+      segments: skew.segments,
+      meanMs: Math.round(skew.meanMs * 10) / 10,
+      minMs: Math.round(skew.minMs * 10) / 10,
+      maxMs: Math.round(skew.maxMs * 10) / 10,
+    },
+  });
+}
 
 export type CaptureState =
   | 'idle'
@@ -377,6 +414,7 @@ export class CaptureController {
       outputPath,
       trimEndSec,
     );
+    reportAvSkew(result.avSkew);
     // Free clips are temporary and start counting down immediately; Pro clips
     // are kept until the wearer deletes them.
     const isPro = await entitlementStore.isPro();

@@ -1,11 +1,37 @@
 import { NativeModules } from 'react-native';
 
+/**
+ * Per-segment audio-vs-video end skew, aggregated over one stitch.
+ *
+ * Signed: audio end minus video end, in milliseconds. Positive means audio
+ * overhung the picture and its tail was dropped; negative means audio fell
+ * short and that much silence landed at the boundary.
+ *
+ * `MWDATSegmentWriter` closes both writer inputs on the same wall-clock timer
+ * while video carries frame PTS and audio carries the host clock, so a ragged
+ * edge is structural. Its size on real hardware has never been measured, and
+ * that number is what decides whether the silence is worth correcting at the
+ * writer rather than logged at the stitcher.
+ *
+ * Absent on `extractRange`, which stitches nothing.
+ */
+export interface AvSkew {
+  /** Segments carrying both a video track and a usable audio track. */
+  segments: number;
+  meanMs: number;
+  /** Most positive skew seen (audio overhang). */
+  maxMs: number;
+  /** Most negative skew seen (audio shortfall). */
+  minMs: number;
+}
+
 export interface StitchResult {
   /** Absolute path of the stitched MP4. */
   outputPath: string;
   /** Absolute path of the poster-frame JPEG. */
   thumbnailPath: string;
   durationSec: number;
+  avSkew?: AvSkew;
 }
 
 interface ClipStitcherModule {
