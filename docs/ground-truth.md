@@ -25,7 +25,7 @@ Paths are relative to `app/` unless noted.
 | G2 | If `.hvc1` is available, what keyframe interval does the sender use? | **Unanswerable without implementing `.hvc1` capture.** No `.hvc1` sample has ever been written to a file, so no GOP has ever been observed. See the G1/G2 note below — the premise of W8 is materially different from what W8 assumes. | — |
 | G3 | Does the caption-burn composition set colour tags? What happens to an HLG asset? | **No colour tags anywhere.** The composition is built with the bare `[AVMutableVideoComposition videoComposition]` initialiser — no `colorPrimaries`, no `colorTransferFunction`, no `colorYCbCrMatrix`. Export preset is `AVAssetExportPresetHighestQuality`, which is H.264/AAC and cannot carry HLG. What an HLG master actually looks like afterwards is **unmeasured** — no path-B asset has been through the burn on device. | `modules/clip-stitcher/ios/CaptionEngine.m:826`, preset `:854`. `renderSize` (`:827`) comes from `CEPromotedRenderSize` (`:181`), which returns the source's own size unchanged while `CECanvasPromotionEnabled` is `NO`, so a 1520×2032 master stays 1520×2032 |
 | G4 | `AVAudioSession` category/options in `MicSegmentRecorder`? Bluetooth? `preferredInput`? | **Already correct.** Category `.record`, mode `.default`, options `mixWithOthers` only. **No Bluetooth option is set** — deliberately, with the HFP/link-renegotiation reasoning written down. `preferredInput` **is** pinned to `AVAudioSessionPortBuiltInMic`. Interruption and route-change observers both exist. | `modules/clip-stitcher/ios/MicSegmentRecorder.m:193–226`; observers `:467–472`; interruption handler `:482–500`; route-change handler `:503–506` |
-| G5 | Wake-word false-positive / false-negative rate on real worn audio? | **Unmeasured.** There is no corpus, no harness, and no `tools/measure/` directory in the repo. `__tests__/phraseMatch.test.ts` tests the regexes against hand-written strings, which says nothing about recogniser behaviour on worn audio. | absence of `tools/`; `__tests__/phraseMatch.test.ts` |
+| G5 | Wake-word false-positive / false-negative rate on real worn audio? | **Unmeasured.** There is no corpus and no harness. `tools/measure/` exists now, but it holds the canvas/ladder work and the stitch-gap probe — nothing points at the recogniser, and none of it takes audio in. `__tests__/phraseMatch.test.ts` tests the regexes against hand-written strings, which says nothing about recogniser behaviour on worn audio. | contents of `tools/measure/`; `__tests__/phraseMatch.test.ts` |
 | G6 | Which transport and resolution rung do real sessions negotiate? | **Not instrumented.** The only rung-adjacent evidence in the whole app is a per-segment log line of the *delivered* format; transport is never queried, never logged, and there is no aggregation anywhere. No field distribution exists. | request site `MWDATBridge.swift:785`; delivered-format logs `MWDATSegmentWriter.swift:606` and `:653`. The canvas-promotion refusal added since (`CaptionEngine.m`, `CESmallestCodedSize`) logs when a stitched clip's coded size is below 720×1280, which is the first rung-adjacent signal in the app — but it fires per caption render, not per session |
 | G7 | Marker after end-of-recording — anchored to the marker, or clamped to file end? | **Anchored to the file end, correctly, already.** `endSec = min(offset + leadOut, durationSec)` then `startSec = max(endSec - lookback, 0)`. A marker 15 s past the end of a recording yields the **full** lookback window ending at the file end, not a 5 s stub. **This contradicts W3's first bullet.** | `src/markers/markerMatching.ts:149–150` |
 | G8 | Marker lifetime, and is it coupled to clip expiry? | **7 days, and already decoupled.** `MarkerStore` owns its own `DEFAULT_RETENTION_MS = 7 days`, applied on `add()` and `all()`. Free-tier clip expiry is a separate `FREE_RETENTION_HOURS = 24`, used only when building a `Clip`. The two never reference each other. W3's "decouple" is already true; only the duration is short of the 30 days W3 asks for. | `src/markers/MarkerStore.ts:19`, `:66`, `:74`; `src/config.ts:27`; use site `src/markers/GlassesImportController.ts:294` |
@@ -75,10 +75,26 @@ the longer of the two means the composition's timeline is the picture's timeline
 (`:123`, advanced at `:224`), which is what keeps segments re-anchored; the inserts are
 at `:174` and `:218`.
 
-**Still not measured.** The fix is reasoned, not demonstrated. W4's synthetic-fixture
-test remains the right instrument and remains unwritten, and it should assert **gap
-position and size**, not only cumulative drift at 30/60/90 s — a test that only measures
-end-to-end drift would have passed on the old code too, while the glitches were there.
+**Now measured.** `tools/measure/stitch` builds the synthetic fixtures, runs both
+anchors over the same segments, and asserts gap position and size. With audio 40 ms
+longer than video and three segments, the old `asset.duration` anchor puts a **40.0 ms
+black frame at 2.0000 s and 4.0400 s** — `k * take + videoEnd`, sized `take - videoEnd`,
+exactly as reasoned — and the shipping `video-end` anchor puts none.
+
+Two things the run also settles:
+
+- **A/V drift is 0 ms under both anchors**, because `cursor` is shared. So the drift
+  test at 30/60/90 s would have passed the broken code. Asserting gap position and size
+  was not a refinement, it was the difference between a test and no test.
+- **The hole is not visible in the composition structure.** `insertTimeRange` asked for
+  more than the source holds is neither clamped nor marked empty — the segment reports
+  `source` and `target` durations equal to what was asked for, off a track that ends
+  earlier. The composition always claims to be dense, and the probe has to decode to
+  find the black frames AVFoundation synthesizes.
+
+The mirror case is unchanged by the fix and the run says so: when audio is the SHORT
+track both anchors pick the video's end, and the 34 ms of silence per boundary is there
+either way. That is the shortfall `ClipStitcher.m:210–215` logs.
 
 ### 3. W8's `.hvc1` premise is right about the cost and wrong about the obstacle (G1, G2)
 

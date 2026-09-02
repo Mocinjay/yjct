@@ -2,3 +2,5 @@ out/
 canvas/canvas_probe
 canvas/out/
 canvas/__pycache__/
+stitch/stitch_probe
+stitch/out/
