@@ -24,8 +24,13 @@ echo
 # package.json requires >= 22.11.0. Xcode's build script phases shell out to
 # node, so a node that only exists inside a shell rc file is not enough.
 command -v node >/dev/null 2>&1 || fail "node not found. Install Node >= 22.11.0."
-NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-if [ "$NODE_MAJOR" -lt 22 ]; then
+# All three components, not just the major. Checking the major alone accepted
+# 22.0 through 22.10 -- which is the range that actually fails the build, and
+# the only mistake anyone was realistically going to make. Anything below 22
+# was never the likely case.
+if ! node -e 'const [a, b, c] = process.versions.node.split(".").map(Number);
+const ok = a > 22 || (a === 22 && (b > 11 || (b === 11 && c >= 0)));
+process.exit(ok ? 0 : 1);'; then
   fail "node $(node --version) is too old; package.json requires >= 22.11.0."
 fi
 ok "node $(node --version)"

@@ -31,14 +31,27 @@
 			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 			<key>CFBundleURLSchemes</key>
 			<!--
-			  This scheme is ALSO registered on the Meta side as the MWDAT
-			  AppLinkURLScheme, and the two must match exactly or glasses
-			  registration bounces into the Meta AI app and never returns —
-			  silently, with no error.
+			  Must match MWDAT.AppLinkURLScheme below exactly: this is where
+			  Meta AI hands control back after registration and after a
+			  permission grant. MWDATBridge reads the scheme it accepts from
+			  AppLinkURLScheme rather than repeating the literal, so there are
+			  two copies here and no third.
 
-			  Renamed from "jarvis" to "clypso" here. Until the matching change
-			  lands in the Wearables Developer Center, registration WILL fail.
-			  Change these two together or not at all.
+			  History, because it has now bitten twice in opposite directions.
+			  The scheme was "jarvis" through the Jarvis -> Clipso rename and
+			  was changed to "clypso" by the Clipso -> Clypso rename (5e25bfb),
+			  whose comment predicted that would break registration until a
+			  matching change landed on the Meta side. It did not break it:
+			  with MWDAT.MetaAppID = 0 the scheme is only a callback target,
+			  not something pre-registered with Meta, and the device log shows
+			  `registration=registered` under "clypso". Reverting it to
+			  "jarvis" on the strength of that comment DID break registration —
+			  it stalled at `registering` with no callback. See
+			  docs/KNOWN-ISSUES.md issue 0.
+
+			  So: keep this equal to AppLinkURLScheme, and do not "restore" it
+			  to jarvis. The comment 5e25bfb replaced is describing a
+			  production MetaAppID setup, not this one.
 			-->
 			<array>
 				<string>clypso</string>
@@ -56,6 +69,7 @@
 	<key>MWDAT</key>
 	<dict>
 		<key>AppLinkURLScheme</key>
+		<!-- Must equal CFBundleURLSchemes above. See the comment there. -->
 		<string>clypso://</string>
 		<key>MetaAppID</key>
 		<string>0</string>
@@ -71,10 +85,16 @@
 	</dict>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Clypso connects to your Meta glasses over Bluetooth to buffer their camera feed.</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_bonjour._tcp</string>
-	</array>
+	<!--
+	  NSBonjourServices is deliberately absent. It declares the service types an
+	  app may BROWSE for, and nothing here browses: there is no NWBrowser and no
+	  NSNetServiceBrowser anywhere in the app or in MWDAT's public surface. It
+	  previously listed "_bonjour._tcp", which is not a real service type — a
+	  placeholder that was never replaced. Declaring it grants nothing and
+	  misdescribes the app to review. NSLocalNetworkUsageDescription below is
+	  the key that actually matters, and it stays: MWDAT's WiFi Direct transport
+	  needs local-network access even though it is negotiated internally.
+	-->
 	<key>NSCameraUsageDescription</key>
 	<string>Clypso buffers video from your camera while recording so saying “Clypso” can save the last moments as a clip.</string>
 	<key>NSLocalNetworkUsageDescription</key>
