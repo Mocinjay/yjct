@@ -27,12 +27,23 @@ static const int kCXHistogramBins = 64;
 
 #pragma mark - Helpers
 
+/// Ceiling on a local asset's key load - see ClipStitcher.m for why this is
+/// bounded rather than FOREVER.
+static const int64_t kCXAssetLoadTimeoutSec = 30;
+
 static BOOL CXLoadAssetKeys(AVAsset *asset, NSArray<NSString *> *keys)
 {
   dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
   [asset loadValuesAsynchronouslyForKeys:keys
                        completionHandler:^{ dispatch_semaphore_signal(semaphore); }];
-  dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+  if (dispatch_semaphore_wait(
+          semaphore,
+          dispatch_time(DISPATCH_TIME_NOW, kCXAssetLoadTimeoutSec * NSEC_PER_SEC)) != 0) {
+    [asset cancelLoading];
+    CXLog(@"timed out after %llds loading asset keys %@", kCXAssetLoadTimeoutSec,
+          [keys componentsJoinedByString:@", "]);
+    return NO;
+  }
   for (NSString *key in keys) {
     NSError *error = nil;
     if ([asset statusOfValueForKey:key error:&error] != AVKeyValueStatusLoaded) {

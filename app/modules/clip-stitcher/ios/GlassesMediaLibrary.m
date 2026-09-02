@@ -242,6 +242,10 @@ static BOOL GMLIsGlassesAsset(AVAsset *asset)
   return NO;
 }
 
+/// Ceiling on one Photos asset request. Local delivery is fast; this only has
+/// to be longer than the slowest healthy read.
+static const int64_t kGMLAssetRequestTimeoutSec = 30;
+
 /**
  * Load an asset without reaching for the network.
  *
@@ -257,17 +261,40 @@ static AVAsset *GMLLoadLocalAsset(PHAsset *phAsset)
   options.deliveryMode = PHVideoRequestOptionsDeliveryModeHighQualityFormat;
   options.version = PHVideoRequestOptionsVersionOriginal;
 
+  // Guards `result` against the handler still running after a timeout below.
+  NSLock *lock = [[NSLock alloc] init];
   __block AVAsset *result = nil;
+  __block BOOL abandoned = NO;
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
-  [[PHImageManager defaultManager]
+  PHImageRequestID request = [[PHImageManager defaultManager]
       requestAVAssetForVideo:phAsset
                      options:options
                resultHandler:^(AVAsset *avAsset, AVAudioMix *mix, NSDictionary *info) {
-                 result = avAsset;
+                 [lock lock];
+                 if (!abandoned) {
+                   result = avAsset;
+                 }
+                 [lock unlock];
                  dispatch_semaphore_signal(done);
                }];
-  dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
-  return result;
+  // Photos can leave a request outstanding indefinitely - a corrupt asset, or
+  // the media services daemon restarting under it. A scan walks the whole
+  // library on one thread, so a single such asset would hang the scan and
+  // every caller waiting on it rather than being reported as unreadable.
+  if (dispatch_semaphore_wait(
+          done, dispatch_time(DISPATCH_TIME_NOW, kGMLAssetRequestTimeoutSec * NSEC_PER_SEC)) != 0) {
+    [lock lock];
+    abandoned = YES;
+    [lock unlock];
+    [[PHImageManager defaultManager] cancelImageRequest:request];
+    GMLLog(@"timed out after %llds requesting asset %@ - treating as unreadable",
+           kGMLAssetRequestTimeoutSec, phAsset.localIdentifier);
+    return nil;
+  }
+  [lock lock];
+  AVAsset *const loaded = result;
+  [lock unlock];
+  return loaded;
 }
 
 #pragma mark - Scanning

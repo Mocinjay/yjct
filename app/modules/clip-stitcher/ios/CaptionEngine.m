@@ -18,6 +18,15 @@
 /// a minute). Clips run to MAX_CLIP_RECORDING_SECONDS, so recognition is
 /// windowed and the word timings are shifted back onto the clip's timeline.
 static const double kCEWindowSeconds = 45.0;
+/// Ceiling on one window's recognition. On-device recognition of a 45s window
+/// runs in a few seconds; this is loose enough never to cut a healthy pass
+/// short and tight enough that a wedged recognizer does not hold the queue.
+static const int64_t kCERecognitionTimeoutSec = 120;
+/// Caption burn budget: a fixed allowance plus this much per second of clip.
+/// Measured burns run well under 1x realtime, so 10x is a stall detector, not
+/// a performance limit.
+static const double kCEExportTimeoutBaseSec = 60.0;
+static const double kCEExportTimeoutPerSec = 10.0;
 /// Windows overlap so a word straddling a seam is heard whole by one of them.
 /// The duplicate is dropped when the results are merged.
 static const double kCEWindowOverlapSeconds = 1.0;
@@ -59,6 +68,22 @@ static CGFloat const CECanvasPromotionMaxWidth = 720.0;
 static CGFloat const CECanvasPromotionMaxHeight = 1280.0;
 
 /**
+ * The smallest frame the track may actually carry and still be promoted.
+ *
+ * The same numbers as the ceiling, deliberately: the window this opens is
+ * exactly one rung wide. Promotion was argued for the proxy at its top rung,
+ * where the upscale to the canvas is 1.5x. The SDK's ladder also delivers
+ * 504x896, and 1080/504 is 2.14x — a bigger resample, on softer footage, for
+ * the same caption benefit. That trade is worse everywhere, so it is refused
+ * rather than left to a judgement call.
+ *
+ * Checked against every sample description rather than the track header. See
+ * CESmallestCodedSize for why the header is not enough.
+ */
+static CGFloat const CECanvasPromotionMinWidth = 720.0;
+static CGFloat const CECanvasPromotionMinHeight = 1280.0;
+
+/**
  * How far a source's aspect ratio may drift from 9:16 and still be promoted.
  *
  * 1% admits 720x1280 exactly and rejects anything genuinely differently
@@ -81,15 +106,91 @@ static CGFloat const CECanvasPromotionAspectTolerance = 0.01;
 static CGFloat const CECanvasPromotionNearMiss = 0.05;
 
 /**
+ * A size in whole pixels, orientation-normalised.
+ *
+ * Frame dimensions are counts of samples, so they are integers. The only way
+ * one arrives here as 719.99999999992 is accumulated error from multiplying by
+ * a transform — and both of the size guards below compare against an exact
+ * boundary, with 720 serving as the ceiling and the floor at once, so a size a
+ * millionth of a pixel off decides them the wrong way round. Rounding is not a
+ * fudge; it restores the type these numbers always had.
+ *
+ * A display matrix read from a container carries exact 0 / +/-1 entries and
+ * needs none of this. A transform composed in code does: rotating by
+ * -M_PI_2 leaves a 6.1e-17 cosine, which is enough.
+ */
+static CGSize CEPixelSize(CGSize size)
+{
+  return CGSizeMake(round(fabs(size.width)), round(fabs(size.height)));
+}
+
+/**
+ * The smallest frame the track actually carries, in the orientation the viewer
+ * sees, or CGSizeZero when that cannot be established.
+ *
+ * `naturalSize` is a property of the track header, and the header can be
+ * truthful about the first frame while saying nothing about the rest. A clip
+ * stitched from segments that changed resolution mid-session — which is
+ * precisely what the SDK's ABR ladder produces — leaves ClipStitcher's
+ * passthrough export with TWO sample descriptions and a header describing only
+ * the first:
+ *
+ *     stsd entry count: 2
+ *       entry 0: avc1 720x1280     <- naturalSize reports this
+ *       entry 1: avc1 504x896      <- and most of the frames are this
+ *
+ * Asking the header alone would let that clip through as a 720x1280 proxy. So
+ * every format description is consulted and the minimum on each axis is
+ * returned: the resolution the softest part of the clip was really coded at.
+ *
+ * CGSizeZero on anything unreadable, which the caller treats as a refusal. A
+ * guard whose failure mode is degrading footage should fail closed.
+ */
+static CGSize CESmallestCodedSize(AVAssetTrack *track, CGAffineTransform transform)
+{
+  NSArray *descriptions = track.formatDescriptions;
+  if (descriptions.count == 0) {
+    return CGSizeZero;
+  }
+  CGSize smallest = CGSizeZero;
+  for (id description in descriptions) {
+    CMFormatDescriptionRef format = (__bridge CMFormatDescriptionRef)description;
+    if (CMFormatDescriptionGetMediaType(format) != kCMMediaType_Video) {
+      continue;
+    }
+    // Coded dimensions, not presentation dimensions: the question is how many
+    // samples the encoder was actually given, not how large the container asks
+    // for them to be drawn.
+    CMVideoDimensions coded = CMVideoFormatDescriptionGetDimensions(format);
+    if (coded.width < 1 || coded.height < 1) {
+      return CGSizeZero;
+    }
+    CGSize shown = CEPixelSize(
+        CGSizeApplyAffineTransform(CGSizeMake(coded.width, coded.height), transform));
+    if (smallest.width < 1 || shown.width < smallest.width) {
+      smallest.width = shown.width;
+    }
+    if (smallest.height < 1 || shown.height < smallest.height) {
+      smallest.height = shown.height;
+    }
+  }
+  return smallest;
+}
+
+/**
  * The promoted render size for a source, or the source's own size unchanged.
  *
- * Four things have to hold before a frame is resampled, and all four are
+ * Five things have to hold before a frame is resampled, and all five are
  * checked against the asset itself rather than against a flag passed down from
  * JS. A flag can be wrong; the pixels cannot. The failure this guards against
  * is silently downscaling a 1520x2032 master, which would take the one path
  * that can actually ship and make it worse.
+ *
+ * `smallest` is CESmallestCodedSize's answer for the same track. It is passed
+ * in rather than derived here so that the whole decision stays a pure function
+ * of two sizes, which is what makes it checkable from outside the app.
  */
-static CGSize CEPromotedRenderSize(CGSize source)
+static CGSize CEPromotedRenderSize(CGSize source, CGSize smallest)
 {
   if (source.width < 1 || source.height < 1) {
     return source;
@@ -126,6 +227,28 @@ static CGSize CEPromotedRenderSize(CGSize source)
     }
     return source;
   }
+  // 4. Only footage as large as the header claims. Deliberately last of the
+  //    four: 700x1280 and 504x896 both fail here, but only the first is a
+  //    changed sensor mode, and the aspect guard above says so in those words.
+  //    A size check running first would have swallowed that message.
+  //
+  //    `source` is the track header's word; `smallest` is every sample
+  //    description's. They disagree exactly when the ABR ladder stepped down
+  //    mid-session, and taking the header's word there would scale genuinely
+  //    504x896 frames to 1080x1920 — 2.14x on the softest footage in the
+  //    system, which is the opposite of what promotion is for. A clip that is
+  //    504x896 throughout is refused by the same line, for the same reason.
+  if (smallest.width < CECanvasPromotionMinWidth ||
+      smallest.height < CECanvasPromotionMinHeight) {
+    // Logged whether or not promotion is switched on. Nothing else in the app
+    // records which rung a session negotiated, so this line is also the only
+    // field evidence of how often the ladder drops.
+    CELog(@"canvas promotion refused: header says %.0fx%.0f but the smallest "
+          @"coded frame is %.0fx%.0f (floor %.0fx%.0f)",
+          source.width, source.height, smallest.width, smallest.height,
+          CECanvasPromotionMinWidth, CECanvasPromotionMinHeight);
+    return source;
+  }
 
   // Checked last on purpose. Every guard above is a fact about the footage and
   // is worth evaluating whether or not promotion is switched on — the whole
@@ -151,12 +274,23 @@ static BOOL CETrackHasContent(AVAssetTrack *track)
   return CMTimeCompare(range.duration, kCMTimeZero) > 0;
 }
 
+/// Ceiling on a local asset's key load - see ClipStitcher.m for why this is
+/// bounded rather than FOREVER.
+static const int64_t kCEAssetLoadTimeoutSec = 30;
+
 static BOOL CELoadAssetKeys(AVAsset *asset, NSArray<NSString *> *keys)
 {
   dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
   [asset loadValuesAsynchronouslyForKeys:keys
                        completionHandler:^{ dispatch_semaphore_signal(semaphore); }];
-  dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+  if (dispatch_semaphore_wait(
+          semaphore,
+          dispatch_time(DISPATCH_TIME_NOW, kCEAssetLoadTimeoutSec * NSEC_PER_SEC)) != 0) {
+    [asset cancelLoading];
+    CELog(@"timed out after %llds loading asset keys %@", kCEAssetLoadTimeoutSec,
+          [keys componentsJoinedByString:@", "]);
+    return NO;
+  }
   for (NSString *key in keys) {
     NSError *error = nil;
     if ([asset statusOfValueForKey:key error:&error] != AVKeyValueStatusLoaded) {
@@ -182,46 +316,79 @@ static BOOL CELoadAssetKeys(AVAsset *asset, NSArray<NSString *> *keys)
  * end-of-task, so it is what we use.
  */
 @interface CERecognitionCollector : NSObject <SFSpeechRecognitionTaskDelegate>
-@property(nonatomic, strong) NSMutableArray<SFTranscription *> *finals;
-@property(nonatomic, strong) SFTranscription *lastHypothesis;
 @property(nonatomic, strong) dispatch_semaphore_t done;
+/// Snapshot of everything recognised so far. After this is called the collector
+/// ignores further callbacks, so the array it hands back cannot be mutated
+/// underneath the caller.
+- (NSArray<SFTranscription *> *)drain;
 @end
 
 @implementation CERecognitionCollector {
+  /// Guards `_finals`, `_lastHypothesis` and `_settled`. Speech delivers the
+  /// delegate callbacks on its own queue, and `drain` may be called from the
+  /// recognising thread after a timeout while a callback is still in flight.
+  NSLock *_lock;
+  NSMutableArray<SFTranscription *> *_finals;
+  SFTranscription *_lastHypothesis;
   BOOL _settled;
+  BOOL _drained;
 }
 
 - (instancetype)init
 {
   self = [super init];
   if (self != nil) {
+    _lock = [[NSLock alloc] init];
     _finals = [NSMutableArray array];
     _done = dispatch_semaphore_create(0);
   }
   return self;
 }
 
+- (NSArray<SFTranscription *> *)drain
+{
+  [_lock lock];
+  _drained = YES;
+  NSArray<SFTranscription *> *result = [_finals copy];
+  if (result.count == 0 && _lastHypothesis != nil) {
+    result = @[ _lastHypothesis ];
+  }
+  [_lock unlock];
+  return result;
+}
+
 - (void)finish
 {
-  if (_settled) {
-    return;
-  }
+  [_lock lock];
+  BOOL const alreadySettled = _settled;
   _settled = YES;
-  dispatch_semaphore_signal(self.done);
+  [_lock unlock];
+  if (!alreadySettled) {
+    dispatch_semaphore_signal(self.done);
+  }
 }
 
 - (void)speechRecognitionTask:(SFSpeechRecognitionTask *)task
          didFinishRecognition:(SFSpeechRecognitionResult *)result
 {
-  if (result.bestTranscription != nil) {
-    [self.finals addObject:result.bestTranscription];
+  if (result.bestTranscription == nil) {
+    return;
   }
+  [_lock lock];
+  if (!_drained) {
+    [_finals addObject:result.bestTranscription];
+  }
+  [_lock unlock];
 }
 
 - (void)speechRecognitionTask:(SFSpeechRecognitionTask *)task
   didHypothesizeTranscription:(SFTranscription *)transcription
 {
-  self.lastHypothesis = transcription;
+  [_lock lock];
+  if (!_drained) {
+    _lastHypothesis = transcription;
+  }
+  [_lock unlock];
 }
 
 - (void)speechRecognitionTask:(SFSpeechRecognitionTask *)task
@@ -415,13 +582,21 @@ RCT_EXPORT_METHOD(transcribeClip:(NSString *)path
   CERecognitionCollector *collector = [[CERecognitionCollector alloc] init];
   SFSpeechRecognitionTask *task = [self.recognizer recognitionTaskWithRequest:request
                                                                      delegate:collector];
-  dispatch_semaphore_wait(collector.done, DISPATCH_TIME_FOREVER);
-  (void)task;  // held only so it outlives the wait
-
-  NSArray<SFTranscription *> *transcriptions = collector.finals;
-  if (transcriptions.count == 0 && collector.lastHypothesis != nil) {
-    transcriptions = @[ collector.lastHypothesis ];
+  // The collector is signalled from `didFinishSuccessfully:`, which a wedged
+  // recognizer never calls — and captioning runs on a serial queue, so one
+  // such window would stall every job queued behind it for the life of the
+  // process. Cancelling drives the delegate to a terminal state; whatever was
+  // finalised before the stall is still read below.
+  if (dispatch_semaphore_wait(
+          collector.done,
+          dispatch_time(DISPATCH_TIME_NOW, kCERecognitionTimeoutSec * NSEC_PER_SEC)) != 0) {
+    CELog(@"recognition timed out after %llds on the window at %.1fs - keeping "
+          @"whatever was finalised before the stall",
+          kCERecognitionTimeoutSec, offset);
+    [task cancel];
   }
+
+  NSArray<SFTranscription *> *transcriptions = [collector drain];
 
   NSMutableArray<NSDictionary *> *words = [NSMutableArray array];
   NSMutableArray<NSString *> *spoken = [NSMutableArray array];
@@ -548,15 +723,16 @@ RCT_EXPORT_METHOD(renderEdit:(NSString *)sourcePath
   // captions laid out along the wrong axis.
   CGAffineTransform transform = videoTrack.preferredTransform;
   CGSize natural = videoTrack.naturalSize;
-  CGSize sourceSize = CGSizeApplyAffineTransform(natural, transform);
-  sourceSize = CGSizeMake(fabs(sourceSize.width), fabs(sourceSize.height));
+  CGSize sourceSize = CEPixelSize(CGSizeApplyAffineTransform(natural, transform));
   if (sourceSize.width < 1 || sourceSize.height < 1) {
-    sourceSize = natural;
+    sourceSize = CEPixelSize(natural);
   }
 
-  // Normally identical to the source. Larger only for a Path A proxy, and only
-  // once the ladder measurement has justified it — see CEPromotedRenderSize.
-  CGSize const render = CEPromotedRenderSize(sourceSize);
+  // Normally identical to the source. Larger only for a Path A proxy that is
+  // genuinely 720x1280 in every sample it carries, and only once the ladder
+  // measurement has justified it — see CEPromotedRenderSize.
+  CGSize const render =
+      CEPromotedRenderSize(sourceSize, CESmallestCodedSize(videoTrack, transform));
 
   // The scale that carries the source into the promoted canvas. Uniform by
   // construction: promotion refuses any source whose aspect ratio does not
@@ -687,7 +863,18 @@ RCT_EXPORT_METHOD(renderEdit:(NSString *)sourcePath
 
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
   [export exportAsynchronouslyWithCompletionHandler:^{ dispatch_semaphore_signal(done); }];
-  dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+  // Scaled to the clip: burning captions runs a Core Animation pass per frame,
+  // so a long clip legitimately takes long, and a flat ceiling would either
+  // abort real work or be no ceiling at all for short ones.
+  int64_t const exportBudgetSec = (int64_t)(kCEExportTimeoutBaseSec + total * kCEExportTimeoutPerSec);
+  if (dispatch_semaphore_wait(
+          done, dispatch_time(DISPATCH_TIME_NOW, exportBudgetSec * NSEC_PER_SEC)) != 0) {
+    CELog(@"export timed out after %llds on a %.1fs clip - cancelling", exportBudgetSec, total);
+    [export cancelExport];
+    // cancelExport drives the session to .cancelled and fires the completion
+    // handler, so wait for it rather than racing the status read below.
+    dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
+  }
 
   if (export.status != AVAssetExportSessionStatusCompleted) {
     CELog(@"export failed (status=%ld) - %@", (long)export.status,

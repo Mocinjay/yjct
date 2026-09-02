@@ -72,14 +72,26 @@ static BOOL SWWTrackHasContent(AVAssetTrack *track)
   return CMTimeCompare(range.duration, kCMTimeZero) > 0;
 }
 
-/// Synchronously load `keys`; returns NO if any fails to load.
+/// Ceiling on a local asset's key load - see ClipStitcher.m for why this is
+/// bounded rather than FOREVER. This one runs on every finished segment, so a
+/// single stuck load would wedge the wake word for the rest of the session.
+static const int64_t kSWWAssetLoadTimeoutSec = 15;
+
+/// Synchronously load `keys`; returns NO if any fails to load or times out.
 static BOOL SWWLoadAssetKeys(AVAsset *asset, NSArray<NSString *> *keys)
 {
   dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
   [asset loadValuesAsynchronouslyForKeys:keys completionHandler:^{
     dispatch_semaphore_signal(semaphore);
   }];
-  dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+  if (dispatch_semaphore_wait(
+          semaphore,
+          dispatch_time(DISPATCH_TIME_NOW, kSWWAssetLoadTimeoutSec * NSEC_PER_SEC)) != 0) {
+    [asset cancelLoading];
+    SWWLog(@"timed out after %llds loading asset keys %@", kSWWAssetLoadTimeoutSec,
+           [keys componentsJoinedByString:@", "]);
+    return NO;
+  }
 
   for (NSString *key in keys) {
     if ([asset statusOfValueForKey:key error:NULL] != AVKeyValueStatusLoaded) {

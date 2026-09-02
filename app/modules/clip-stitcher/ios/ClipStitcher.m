@@ -27,13 +27,37 @@ static BOOL JVSTrackHasContent(AVAssetTrack *track)
   return CMTimeCompare(range.duration, kCMTimeZero) > 0;
 }
 
+/// Ceiling on a local asset's key load. These are files in our own container,
+/// so a load that has not landed by now is not slow, it is stuck — and waiting
+/// FOREVER on it parks the calling thread for the life of the process.
+static const int64_t kJVSAssetLoadTimeoutSec = 30;
+
 static BOOL JVSLoadAssetKeys(AVAsset *asset, NSArray<NSString *> *keys, NSError **error)
 {
   dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
   [asset loadValuesAsynchronouslyForKeys:keys completionHandler:^{
     dispatch_semaphore_signal(semaphore);
   }];
-  dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+  if (dispatch_semaphore_wait(
+          semaphore,
+          dispatch_time(DISPATCH_TIME_NOW, kJVSAssetLoadTimeoutSec * NSEC_PER_SEC)) != 0) {
+    // `cancelLoading` releases the callback, so the completion handler above
+    // still fires and signals a semaphore nobody is waiting on. That is fine:
+    // the block owns the only strong reference left to it.
+    [asset cancelLoading];
+    JVSLog(@"timed out after %llds loading asset keys %@",
+           kJVSAssetLoadTimeoutSec, [keys componentsJoinedByString:@", "]);
+    if (error != nil) {
+      *error = [NSError errorWithDomain:@"ClipStitcher"
+                                   code:2
+                               userInfo:@{
+                                 NSLocalizedDescriptionKey : [NSString
+                                     stringWithFormat:@"Timed out loading asset keys after %llds",
+                                                      kJVSAssetLoadTimeoutSec]
+                               }];
+    }
+    return NO;
+  }
 
   for (NSString *key in keys) {
     NSError *keyError = nil;
