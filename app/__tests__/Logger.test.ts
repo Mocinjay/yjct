@@ -210,3 +210,46 @@ describe('expected()', () => {
     expect(entries[0].code).toBe(ErrorCode.StorageDeleteFailed);
   });
 });
+
+describe('dedupe key retention', () => {
+  it('does not grow without bound when every message is distinct', () => {
+    // The dedupe key includes the message, and the wake word logged one line
+    // per 5s segment with the transcript interpolated into it. Nothing removed
+    // a key, so an armed session grew this map for as long as it ran.
+    //
+    // Date.now is frozen by the suite setup, so nothing here can expire — this
+    // exercises the size cap, which is the backstop for the case expiry cannot
+    // help with.
+    const { sink } = captureSink();
+    removeSink = logger.addSink(sink);
+
+    for (let i = 0; i < 5000; i++) {
+      logger.scope('wakeword').warn(`transcript ${i}`);
+    }
+
+    expect(dedupeSize()).toBeLessThanOrEqual(512);
+  });
+
+  it('still suppresses a repeat inside the window after pruning', () => {
+    const { entries, sink } = captureSink();
+    removeSink = logger.addSink(sink);
+
+    // Push the map well past its cap with keys that will never repeat...
+    for (let i = 0; i < 5000; i++) {
+      logger.scope('wakeword').warn(`transcript ${i}`);
+    }
+    entries.length = 0;
+
+    // ...then check the thing the map exists for still works. Eviction drops
+    // the coldest keys, so one just written has to survive.
+    logger.scope('hardware').warn('link dropped');
+    logger.scope('hardware').warn('link dropped');
+
+    expect(entries).toHaveLength(1);
+  });
+});
+
+/** Reaches the private map — its size is the whole point of these two tests. */
+function dedupeSize(): number {
+  return (logger as unknown as { dedupe: Map<string, unknown> }).dedupe.size;
+}

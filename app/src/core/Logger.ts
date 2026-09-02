@@ -53,6 +53,17 @@ const DEDUPE_WINDOW_MS = 5000;
 /** How many entries stay in memory for diagnostics. */
 const RETAINED_ENTRIES = 200;
 
+/**
+ * Ceiling on distinct dedupe keys held at once.
+ *
+ * The key includes the message, and messages interpolate volatile detail at
+ * enough call sites that the set is effectively unbounded — a session armed for
+ * an hour mints one key per 5s segment transcript and never drops any of them.
+ * Anything older than the dedupe window can no longer suppress a thing, so
+ * evicting the coldest keys costs nothing but a possible extra duplicate line.
+ */
+const MAX_DEDUPE_KEYS = 512;
+
 const isDev = typeof __DEV__ !== 'undefined' && __DEV__;
 
 /**
@@ -163,7 +174,11 @@ class Logger {
       context,
       suppressed: seen?.suppressed ?? 0,
     };
+    // Re-inserting rather than mutating keeps Map iteration order equal to
+    // recency, which is what makes the eviction below drop the coldest keys.
+    this.dedupe.delete(key);
     this.dedupe.set(key, { lastEmittedAt: now, suppressed: 0 });
+    this.pruneDedupe(now);
 
     this.entries.push(entry);
     if (this.entries.length > RETAINED_ENTRIES) {
@@ -176,6 +191,31 @@ class Logger {
       } catch {
         // A logger that can throw is a logger that takes the app down with it.
       }
+    }
+  }
+
+  /**
+   * Drops keys that can no longer suppress anything.
+   *
+   * Expiry first, because it is exact: a key older than the window is dead
+   * whatever the map size. The size cap is the backstop for the case expiry
+   * cannot help with — many distinct keys all minted inside one window.
+   */
+  private pruneDedupe(now: number): void {
+    if (this.dedupe.size <= MAX_DEDUPE_KEYS) {
+      return;
+    }
+    for (const [key, state] of this.dedupe) {
+      if (now - state.lastEmittedAt >= DEDUPE_WINDOW_MS) {
+        this.dedupe.delete(key);
+      }
+    }
+    // Insertion order is recency, so the head of the map is the coldest.
+    for (const key of this.dedupe.keys()) {
+      if (this.dedupe.size <= MAX_DEDUPE_KEYS) {
+        break;
+      }
+      this.dedupe.delete(key);
     }
   }
 }
