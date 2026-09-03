@@ -54,7 +54,7 @@ export class MockPublishTarget implements PublishTarget {
       state: 'published',
       // Audit-mode behavior: requested privacy is not honored.
       actualPrivacy: 'private',
-      url: `https://mock.fadeaway.invalid/${publishId}`,
+      url: `https://mock.clypso.invalid/${publishId}`,
     };
   }
 }

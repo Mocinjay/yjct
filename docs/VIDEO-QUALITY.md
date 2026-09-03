@@ -10,7 +10,7 @@ iOS 26.5.2), not estimated. Reproduction commands are at the bottom.
 
 ## 1. Project context
 
-**Clypso** (repo `yjct`, local folder `~/Desktop/jarvis`) is a React Native
+**Clypso** (repo `yjct`, local folder `~/Desktop/clypso`) is a React Native
 companion app for Meta smart glasses — Ray-Ban Meta, Oakley Meta HSTN, Ray-Ban
 Display — aimed at clippers and streamers.
 

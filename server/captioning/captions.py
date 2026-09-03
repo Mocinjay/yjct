@@ -6,7 +6,7 @@ here so it can be tested without a GPU or a model download (see
 test_captions.py). `main.py` is transport only.
 
 The app sends a style key; the registry below is the single source of truth
-for what that key means. Keep `app/src/phase2/captionStyles.ts` in step with
+for what that key means. Keep `app/src/captions/captionStyles.ts` in step with
 it — that file only mirrors these for the Settings preview.
 """
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Exports a scoring fixture the iOS port is tested against.
 
-`app/src/phase2/climaxScoring.ts` is a port of `scoring_algorithm.py`. Ports
+`app/src/editing/climaxScoring.ts` is a port of `scoring_algorithm.py`. Ports
 drift. This writes a deterministic feature grid, a word list, and the scores
 *this* implementation produces for them, so `climaxScoring.test.ts` can assert
 the TypeScript agrees to 6 decimal places.

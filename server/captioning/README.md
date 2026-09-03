@@ -8,7 +8,7 @@ replaced by any vendor without app changes.
 > `OnDeviceCaptioningProvider` plus the `CaptionEngine` native module. This
 > service is the **Android** path, and the iOS fallback when a locale has no
 > offline dictation. The timing rules here are mirrored in
-> `app/src/phase2/captionTimeline.ts`; `captionTimeline.test.ts` asserts the
+> `app/src/captions/captionTimeline.ts`; `captionTimeline.test.ts` asserts the
 > chunking constants match, so change one and change the other.
 
 ## Run
@@ -42,7 +42,7 @@ shown the wearer which style they picked.
 | `clean` | Arial, sentence case, soft shadow, whole phrase at once |
 | `boxed` | Arial bold, uppercase, solid black bar, gold on the live word |
 
-Defined in `captions.py` (`CAPTION_STYLES`). `app/src/phase2/captionStyles.ts`
+Defined in `captions.py` (`CAPTION_STYLES`). `app/src/captions/captionStyles.ts`
 mirrors the keys and an approximation of each look for the Settings preview —
 change one, change the other.
 

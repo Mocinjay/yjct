@@ -29,7 +29,7 @@ export class MockClipHosting implements ClipHosting {
   async upload(localFilePath: string): Promise<{ hostedUrl: string }> {
     await sleep(600);
     const file = localFilePath.split('/').pop();
-    return { hostedUrl: `https://cdn.fadeaway.invalid/${file}` };
+    return { hostedUrl: `https://cdn.clypso.invalid/${file}` };
   }
 
   async remove(_hostedUrl: string): Promise<void> {
