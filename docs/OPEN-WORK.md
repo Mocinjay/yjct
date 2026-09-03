@@ -99,19 +99,47 @@ audio level, not the regex, and the fix (`SpeechWakeWord.m`
 `SWWRenderBoostedAudio()`) is tuned by constants — `kSWWTargetRMS`,
 `kSWWPeakCeiling`, `kSWWMaxGain` — that nothing currently validates.
 
-### O7 — Which transport and resolution rung real sessions negotiate is not instrumented
+### O7 — Rung instrumented; transport is not observable at all — INSTRUMENT BUILT, NO FIELD DATA
 
-Transport is never queried and never logged. The only rung-adjacent signal in
-the app is the per-segment source-format line
-(`MWDATSegmentWriter.swift:606`, paired with the encoder's own settings at
-`:653`) and the canvas-promotion refusal log, which fires per caption render
-rather than per session. No aggregation exists, so there is no field
-distribution.
+**Transport cannot be answered.** `MWDATCore.swiftinterface` (SDK 0.9.0,
+`exactVersion`) exposes no transport, bandwidth or link-quality surface —
+searching it for those terms returns only `noDeviceWithConnection` and
+`connectionError`, both error cases. Whether a session ran over Bluetooth
+Classic or Wi-Fi is therefore not readable from the app, and the sentence in
+`MWDATBridge.swift:779-782` reasoning about which link the ladder will land on
+is inference from MWDATCamera's documentation, not something the code can
+confirm. Do not go looking again without a new SDK version.
 
-§8.8 notes the consequence: if most sessions turn out to be mixed-resolution,
-promotion applies to far fewer clips than O1's population assumes, and the
-canvas question shrinks. That makes this cheap instrumentation worth doing
-*before* O1, not after.
+**The rung is now tallied per session.** `MWDATSegmentWriter` counts segments
+by delivered resolution (`rungSegments` / `rungOrder`, recorded at the existing
+format-detection site) and emits one line per session from both stop paths:
+
+```
+[MWDATWriter] session rungs: 504x896=11 720x1280=3 segments=14 path=504x896>720x1280
+```
+
+Two decisions worth keeping:
+
+- **The 504x896 fallback is never counted.** It is a guess that keeps the
+  encoder configurable when `CMVideoFormatDescriptionGetDimensions` returns
+  nothing; tallying it would put invented rungs in the distribution this exists
+  to measure. That case counts as `unknown` instead.
+- **The summary is emitted on the discard path too**, not only on a clean stop.
+  A session that dropped a rung and was then abandoned is the case most worth
+  seeing, and it is the one most likely to end by discarding.
+
+**Still unmeasured: everything.** No session has been read back through this.
+The point of §8.8's concern is the population question — if most sessions are
+mixed-resolution, promotion applies to far fewer clips than O1's claim-A
+population assumes, and the canvas question shrinks. Answering that needs
+worn-session logs, which needs hardware:
+
+```bash
+xcrun devicectl device copy from --device <UDID> --domain-type appDataContainer \
+  --domain-identifier com.mocinjay.clypso \
+  --source Documents/clypso-diagnostics.log --destination /tmp/
+grep "session rungs" /tmp/clypso-diagnostics.log
+```
 
 ### O8 — Two `stsd` decode errors, still unexamined
 

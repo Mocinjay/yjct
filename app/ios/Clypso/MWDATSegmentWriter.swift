@@ -126,6 +126,22 @@ final class MWDATSegmentWriter {
   private var current: Segment?
   private var rotateTimer: DispatchSourceTimer?
 
+  /// Segments delivered at each resolution, keyed "WxH", plus the order the
+  /// rungs were first seen.
+  ///
+  /// The SDK's quality ladder is not observable directly: MWDATCore exposes no
+  /// transport, bandwidth or link-quality API, so which physical link a session
+  /// negotiated cannot be read at all. What it does expose is the consequence —
+  /// the size of the frames it hands us. Tallying those per session is the only
+  /// honest answer available to "which rung do real sessions actually get", and
+  /// one session can hold several, because the ladder steps down mid-stream.
+  ///
+  /// The per-segment format is already logged in `startSegment`. That line says
+  /// what a segment was, never what a session was, and nothing reads a whole
+  /// log back to count. This is the aggregate that line could not be.
+  private var rungSegments: [String: Int] = [:]
+  private var rungOrder: [String] = []
+
   private final class Segment {
     let writer: AVAssetWriter
     let videoInput: AVAssetWriterInput
@@ -515,6 +531,7 @@ final class MWDATSegmentWriter {
       } catch {
         running = false
         Self.log("could not start segment writer — \(Self.describe(error))")
+        logRungSummary()
         onError("Could not start segment writer: \(error.localizedDescription)")
         return
       }
@@ -576,7 +593,32 @@ final class MWDATSegmentWriter {
         segment.writer.cancelWriting()
         try? FileManager.default.removeItem(atPath: segment.path)
       }
+      self.logRungSummary()
     }
+  }
+
+  // MARK: - Rung tally (queue-only)
+
+  private func recordRung(_ rung: String) {
+    if rungSegments[rung] == nil {
+      rungOrder.append(rung)
+    }
+    rungSegments[rung, default: 0] += 1
+  }
+
+  /// One line per session naming every rung it ran at, in the order they
+  /// appeared. Emitted from both stop paths so an abandoned session is counted
+  /// the same as a clean one — a session that dropped a rung and was then given
+  /// up on is precisely the case worth seeing, and it is the one most likely to
+  /// end by discarding.
+  private func logRungSummary() {
+    guard !rungOrder.isEmpty else { return }
+    let total = rungSegments.values.reduce(0, +)
+    let tally = rungOrder.map { "\($0)=\(rungSegments[$0] ?? 0)" }.joined(separator: " ")
+    let path = rungOrder.count > 1 ? " path=\(rungOrder.joined(separator: ">"))" : ""
+    Self.log("session rungs: \(tally) segments=\(total)\(path)")
+    rungSegments.removeAll()
+    rungOrder.removeAll()
   }
 
   // MARK: - Segment lifecycle (queue-only)
@@ -606,6 +648,15 @@ final class MWDATSegmentWriter {
         "source video format: subtype='\(Self.fourCC(subType))' \(dims.width)x\(dims.height) "
           + "compressed=\(isCompressed)"
       )
+      // Tally what the SDK actually delivered, never the 504x896 fallback
+      // above — that is a guess used to keep the encoder configurable, and
+      // counting it as an observation would put invented rungs in the
+      // distribution this exists to measure.
+      if dims.width > 0, dims.height > 0 {
+        recordRung("\(dims.width)x\(dims.height)")
+      } else {
+        recordRung("unknown")
+      }
       if isCompressed {
         // The H.264 output settings below configure an ENCODER input, which
         // only accepts uncompressed samples. Fail loudly rather than let
