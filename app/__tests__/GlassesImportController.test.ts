@@ -72,7 +72,20 @@ jest.mock('../src/core/EntitlementStore', () => ({
   entitlementStore: { isPro: jest.fn(async () => false) },
 }));
 
-const RECORDING_START = Date.parse('2026-08-05T20:36:39Z');
+/**
+ * Yesterday, not a fixed date.
+ *
+ * `MarkerStore` drops markers older than its 30-day retention, so an absolute
+ * fixture quietly stops being importable 30 days after it is written: every
+ * marker here ages past the cutoff, `runSync` sees an empty list and returns
+ * before it ever confirms a video. That is exactly what happened — this suite
+ * was pinned to 2026-08-05 and began failing on 2026-09-04 with no code change
+ * behind it, which reads like a broken import pipeline and is not one.
+ *
+ * Anchored to `Date.now()` so the fixture stays inside retention forever. The
+ * offsets below are all relative to it, so the assertions are unaffected.
+ */
+const RECORDING_START = Date.now() - 24 * 60 * 60 * 1000;
 
 /** A recording that is not the glasses' — someone filming at the same time. */
 const OTHER_VIDEO = {
