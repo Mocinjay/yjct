@@ -56,7 +56,16 @@ export const DEFAULT_SETTINGS: Settings = {
   // than something every clip silently gets.
   climaxEdit: false,
   glassesChime: true,
-  // Off until the wearer turns it on: it holds a microphone for as long as it
-  // is armed, which is not something to start doing on their behalf.
-  glassesLibraryImport: false,
+  // On by default, because it is the only path that reaches the quality the
+  // product promises: the glasses record 1520x2032 HDR to their own storage,
+  // where the live stream is capped at 720x1280 by `StreamingResolution` and
+  // cannot be raised (see docs/LEECH-ARCHITECTURE.md §2). Leaving this off
+  // meant the app shipped with its best footage unreachable behind a switch
+  // nobody found.
+  //
+  // It does hold a microphone whenever it is armed, which is why this was
+  // originally off. That cost is now paid explicitly: turning it on prompts
+  // for photo access at the moment of arming rather than silently at launch,
+  // and the settings screen still says plainly what is being held.
+  glassesLibraryImport: true,
 };

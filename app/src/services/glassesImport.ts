@@ -95,16 +95,25 @@ class GlassesImportService {
     }
 
     const access = await GlassesMediaLibraryNative.currentAccess();
-    const blocker = photoAccessBlocker(access.status);
+    // `undetermined` means iOS has never asked. Treating it as a blocker and
+    // stopping — which is what this did — was safe while the setting defaulted
+    // off, because the only way to switch it on went through the settings
+    // screen, which prompts. Now that it defaults on, that same path leaves a
+    // fresh install switched on and permanently inert: nothing prompts, the
+    // scan never runs, and the wearer gets a library that never fills with no
+    // indication why. Ask once, here, and act on the real answer.
+    const status =
+      access.status === 'undetermined'
+        ? (await GlassesMediaLibraryNative.requestAccess()).status
+        : access.status;
+    const blocker = photoAccessBlocker(status);
     this.setBlocker(blocker);
     if (blocker !== null) {
       // Switched on, but it cannot hear anything useful. Stopping is the honest
       // move: a microphone held open for markers that can never be matched
       // costs battery and buys nothing.
       if (this.controller) {
-        log.info('photo access no longer usable — stopping', {
-          status: access.status,
-        });
+        log.info('photo access no longer usable — stopping', { status });
       }
       await this.stop();
       return;

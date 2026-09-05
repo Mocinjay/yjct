@@ -11,8 +11,9 @@ import { ErrorCode } from './errors';
 
 const log = createLogger('settings');
 
-const KEY = 'settings.v2';
-const LEGACY_KEY = 'settings.v1';
+const KEY = 'settings.v3';
+/** Newest first: the first one that exists is the record to migrate from. */
+const LEGACY_KEYS = ['settings.v2', 'settings.v1'];
 
 export class SettingsStore {
   private cached: Settings | null = null;
@@ -30,16 +31,35 @@ export class SettingsStore {
           ...(JSON.parse(raw) as Partial<Settings>),
         };
       } else {
-        // One-time v1 → v2 migration: old defaults were the mock trigger
-        // and the "fade away" phrase; the product default is now keyless
-        // speech recognition for "clypso". Explicit v2 choices stick.
-        const legacy = await AsyncStorage.getItem(LEGACY_KEY);
+        // Newest first, so a v2 record wins over a v1 one left beside it.
+        let legacy: string | null = null;
+        let legacyKey: string | null = null;
+        for (const candidate of LEGACY_KEYS) {
+          legacy = await AsyncStorage.getItem(candidate);
+          if (legacy) {
+            legacyKey = candidate;
+            break;
+          }
+        }
         const migrated: Settings = legacy
           ? { ...DEFAULT_SETTINGS, ...(JSON.parse(legacy) as Partial<Settings>) }
           : DEFAULT_SETTINGS;
-        if (migrated.wakeWord.provider === 'mock') {
+        // One-time v1 → v2 migration, and v1 only: those defaults were the mock
+        // trigger and the "fade away" phrase, so a 'mock' stored there is the
+        // old default rather than a decision. In a v2 record it is an explicit
+        // choice — the wearer opened Settings and picked the manual trigger —
+        // and coercing that to speech silently takes their button away.
+        if (legacyKey === 'settings.v1' && migrated.wakeWord.provider === 'mock') {
           migrated.wakeWord = { ...migrated.wakeWord, provider: 'speech' };
         }
+        // v2 → v3: glasses-library import is on by default now, and the stored
+        // `false` every v2 install carries is not a decision — the switch
+        // defaulted off and was buried in Settings, so almost nobody ever saw
+        // it. Since it is the only path to 1520x2032 (config.ts), a stored
+        // `false` here is far more likely to be "never found it" than "tried
+        // it and said no". Forced on exactly once, at the version boundary;
+        // turning it off afterwards is a v3 choice and sticks like any other.
+        migrated.glassesLibraryImport = true;
         this.cached = migrated;
         await AsyncStorage.setItem(KEY, JSON.stringify(migrated));
       }
