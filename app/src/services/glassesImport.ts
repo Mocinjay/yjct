@@ -5,6 +5,7 @@ import { BUFFER_SECONDS_MAX, FREE_BUFFER_SECONDS_MAX } from '../config';
 import { Emitter } from '../core/Emitter';
 import { entitlementStore } from '../core/EntitlementStore';
 import { createLogger } from '../core/Logger';
+import { microphone } from '../core/microphone';
 import { ErrorCode } from '../core/errors';
 import { settingsStore } from '../core/SettingsStore';
 import { GlassesImportController } from '../markers/GlassesImportController';
@@ -147,8 +148,23 @@ class GlassesImportService {
             ),
       },
     );
-    await controller.start();
+    // One microphone, one owner — see `core/microphone.ts` for why capture wins
+    // and why standing down costs nothing that is not already covered.
+    //
+    // The holder is consulted before `start()` as well as registered with
+    // afterwards, and the two do different jobs. Asking first means a service
+    // that starts mid-session never opens a microphone it is about to be told
+    // to close, which would reconfigure the shared audio session underneath a
+    // live capture for no purpose. Registering after means the controller
+    // exists to be stood down — and `register` does exactly that on the spot
+    // when capture is already armed, which is what marks it owed a resume.
+    await controller.start({ listen: microphone.heldBy === null });
     this.controller = controller;
+
+    await microphone.register({
+      standDown: () => controller.suspendListening(),
+      standUp: () => controller.resumeListening(),
+    });
 
     // The library observer only fires while the app is running. Coming back to
     // the foreground is the other moment worth checking, because that is when
@@ -180,6 +196,7 @@ class GlassesImportService {
   async stop(): Promise<void> {
     this.appStateSub?.remove();
     this.appStateSub = null;
+    microphone.unregister();
     if (!this.controller) {
       return;
     }

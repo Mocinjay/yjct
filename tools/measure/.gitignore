@@ -4,3 +4,9 @@ canvas/out/
 canvas/__pycache__/
 stitch/stitch_probe
 stitch/out/
+
+# hdr/: the compiled probe and the function it lifts out of ClipStitcher.m.
+# Both are build products — `build.sh` and `sync.sh` regenerate them, and a
+# checked-in lifted.h is a copy that can drift from the code it claims to be.
+hdr/hdr_probe
+hdr/lifted.h

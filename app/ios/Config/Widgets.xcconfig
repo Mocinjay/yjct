@@ -22,6 +22,8 @@ CURRENT_PROJECT_VERSION = 1
 MARKETING_VERSION = 1.0
 
 // Live Activities need 16.2 for the ActivityContent API the bridge uses. The
-// app itself stays on 15.1; everything Live-Activity-shaped is availability
-// gated so older devices simply run without the widget.
+// app itself moved to 17.2 in 9e5b15d, when MWDAT 0.9.0 raised its floor, so
+// nothing actually installs below that and this is now only a lower bound the
+// extension is never offered at. Everything Live-Activity-shaped stays
+// availability gated regardless.
 IPHONEOS_DEPLOYMENT_TARGET = 16.2

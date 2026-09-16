@@ -30,5 +30,39 @@ target 'Clypso' do
       :mac_catalyst_enabled => false,
       # :ccache_enabled => true
     )
+
+    installer.pods_project.targets.each do |target|
+      # ClipStitcher is our own source; it only travels through CocoaPods
+      # because that is how a React Native native module gets built. It keeps
+      # its warnings.
+      unless target.name == 'ClipStitcher'
+        target.build_configurations.each do |config|
+          # Everything else here belongs to React Native and its ecosystem, and
+          # emits warnings we cannot act on without patching node_modules:
+          # `@deprecated` doc comments in React-Fabric headers, `@frozen` on
+          # non-public enums in VisionCamera, an NSInteger format argument in
+          # RNScreens. Roughly 150 lines per build. Silencing them is what makes
+          # a warning from our own code visible when one appears.
+          config.build_settings['GCC_WARN_INHIBIT_ALL_WARNINGS'] = 'YES'
+          config.build_settings['SWIFT_SUPPRESS_WARNINGS'] = 'YES'
+
+          # Compiler flags never reach libtool, which complains separately that
+          # RNScreens' category-only translation units export no symbols. That
+          # is the intended shape of those files.
+          config.build_settings['OTHER_LIBTOOLFLAGS'] = '-no_warning_for_no_symbols'
+        end
+      end
+
+      # A script phase with no declared outputs makes Xcode warn on every build
+      # that it will run on every build. The Hermes and ReactNativeDependencies
+      # phases genuinely must; say so explicitly rather than inventing output
+      # paths that would be lies.
+      target.build_phases.each do |phase|
+        next unless phase.is_a?(Xcodeproj::Project::Object::PBXShellScriptBuildPhase)
+        next unless phase.output_paths.to_a.empty? && phase.output_file_list_paths.to_a.empty?
+
+        phase.always_out_of_date = '1'
+      end
+    end
   end
 end

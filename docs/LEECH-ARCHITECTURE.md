@@ -78,9 +78,13 @@ supplies the master, and the proxy is replaced by the master when it lands. The
 
 ## 3. Two gating unknowns
 
-Hybrid requires both paths to be alive at the same moment. Neither half of that
-has been demonstrated. **No code should be written against §5 until §4 answers
-both.**
+Hybrid requires both paths to be alive at the same moment. **No code should be
+written against §5 until §4 answers U1.**
+
+U2 is closed — it turned out not to be gated on U1 at all, because the collision
+it describes stopped being hypothetical the moment Path B started defaulting on.
+It is resolved below in a way that deliberately assumes nothing about U1's
+verdict.
 
 ### U1 — Can the live stream survive while the glasses record natively?
 
@@ -113,43 +117,165 @@ only evidence.
 
 **Unmeasured.** `grep` across `docs/` finds no recorded verdict.
 
-### U2 — One microphone, two claimants
+### U2 — One microphone, two claimants — **RESOLVED**
 
-`glassesImport.ts:122-124` constructs its wake word as:
+`glassesImport.ts` constructs its wake word as
+`new SpeechWakeWord({ ownMicrophone: true })`, and the comment there stated the
+invariant precisely: Path B owned the mic *because* Path A was not running.
 
-```ts
-// The self-listening provider: with no stream running, nothing else is
-// recording audio, so the wake word has to hold its own microphone.
-new SpeechWakeWord({ ownMicrophone: true }),
-```
+That stopped being true before Hybrid ever arrived. `glassesLibraryImport` began
+defaulting on (`6f44a26`), so Path B now runs for everyone — including everyone
+who also opens the Armed screen. Two `AVAudioEngine` input taps on the one
+`AVAudioSession` a process gets is not sharing; it is a fight, and a silent one,
+because both halves are written to survive losing the input. Each restarts, each
+restart is itself a configuration change the other one sees, and
+`MicSegmentRecorder` additionally called `setActive:NO` on every teardown —
+pulling the session out from under `MWDATSegmentWriter` for a reason nothing in
+the writer's own logs could explain.
 
-That comment states the current invariant precisely: Path B owns the mic
-*because* Path A is not running. Hybrid runs both, so `ownMicrophone: true`
-collides with the writer's own `AVAudioSession` tap in `MicSegmentRecorder.m`
-(session config at `:193-226`, interruption handling at `:467-500`).
+**Resolved: `live-capture` holds it, `marker-listening` stands down.**
+`src/core/microphone.ts` is the arbiter; `CaptureController.arm()` claims it and
+`disarm()` releases it; `GlassesImportController.suspendListening()` /
+`resumeListening()` are the yielding half.
 
-There must be exactly one microphone owner and one audio session policy. Which
-half owns it is a design choice; having two is a defect. This is not
-speculative in the way U1 is — it is a known conflict visible in the source —
-but the correct resolution depends on U1's verdict, so it is sequenced after it.
+The rule turns on which participant can function without a microphone at all,
+**not** on which path produces better footage — U1 is still unanswered and this
+deliberately does not presuppose it:
+
+- Path A cannot. Its trigger is transcribed from the audio track of the segments
+  the writer records (`services/capture.ts` builds `new SpeechWakeWord()` with
+  no `ownMicrophone`), so with no microphone there is no trigger, and its clips
+  are silent besides.
+- Path B can wait. It writes wall-clock times and matches them against
+  recordings that turn up minutes or hours later. Only the microphone stands
+  down — the library observer, the pending markers and every import pass carry
+  on, so nothing already written is stranded. What is lost is a trigger spoken
+  *during* an arm, and during an arm Path A is already cutting a clip for that
+  same moment off its own trigger.
+
+`acquireExclusive()` resolves only once the other half reports itself closed, so
+the capture path no longer reaches the audio session while something else is
+still inside its teardown. The Settings screen reads the arbiter and says
+"Paused while you're armed" rather than continuing to claim it is listening.
+
+**This changed how U1 has to be measured**, and the change is easy to miss. A
+"clypso" spoken while Path A is armed is now heard by Path A, not Path B — no
+marker is written, so the native recording never becomes an import candidate and
+`probeConcurrency` never runs. §4b carries the corrected sequence: the trigger
+has to be spoken after disarming, inside the 15-second `graceAfterSec` window.
+
+Covered by `__tests__/microphone.test.ts` and the listening group in
+`__tests__/GlassesImportController.test.ts`.
 
 ---
 
-## 4. Phase 0 — run the experiment before designing further
+## 4. Phase 0 — two experiments, run them separately
 
-No new code. Existing instruments only.
+These are different sessions with different setups, and running them together
+gets neither. §4a needs Path B alone and answers the quality question. §4b needs
+both paths and answers U1. Do 4a first: it is simple, and if it fails there is
+nothing for 4b to be a proxy *of*.
 
-1. Enable `glassesLibraryImport` (Path B) **and** arm Path A on device, at once.
-2. Wear the glasses. Record natively — the capture button or "Hey Meta" — for a
-   realistic span, several times, including at least one long recording.
-3. Let Meta AI sync. Foreground the app so `onForeground()` runs
-   (`glassesImport.ts:166-169`).
-4. Pull the log and read the verdicts:
+Pull the log the same way for both:
 
 ```bash
 xcrun devicectl device copy from --device <UDID> --domain-type appDataContainer \
   --domain-identifier com.mocinjay.clypso \
   --source Documents/clypso-diagnostics.log --destination /tmp/
+```
+
+### 4a — Does a master survive the round trip? (O2)
+
+Path B only. Do **not** open the Armed screen — see §4b for why that changes
+what happens.
+
+1. Leave `glassesLibraryImport` on (it defaults on) and grant photos,
+   microphone and speech recognition.
+2. Wear the glasses. Record natively — capture button or "Hey Meta" — and say
+   "clypso" during the recording. Note roughly how far into it you spoke.
+3. Let Meta AI sync. Foreground the app.
+4. Read four lines, in this order:
+
+```bash
+grep "NOT glasses footage"  /tmp/clypso-diagnostics.log   # read this first
+grep "extracting "          /tmp/clypso-diagnostics.log
+grep -E "WROTE |burn:|burned " /tmp/clypso-diagnostics.log
+grep "marker alignment"     /tmp/clypso-diagnostics.log
+```
+
+**`NOT glasses footage` first, always.** If it is there, nothing else in this
+list will be, and the reason is `GMLIsGlassesAsset` — a hard AND of `Meta` and
+`Glasses` in the model string, with copyright `Meta AI` as the only fallback.
+The line prints the strings the file actually carried, so it says exactly which
+literal to widen. A silent empty log with markers piling up used to be
+indistinguishable from "Meta AI never synced" and from "the trigger was never
+heard"; it no longer is.
+
+Then, in order:
+
+- **`extracting … hevc HDR transfer=…`** followed by **`cut by passthrough`** —
+  the master reached the cutter and was cut without re-encoding. Anything but
+  `passthrough` here means it was transcoded, and the `WROTE` line says what
+  came out.
+- **`WROTE <clip>.mp4: 1520x2032 hevc HDR transfer=… rate=…Mbps`** — what
+  landed in the library. Resolution, colour and bit rate of the actual file.
+- **`burn:` then `burned …`** (Pro only — captioning is gated on entitlement).
+  Compare `inRate=` on the first against `outRate=` on the second, and check
+  `transfer=` survived. A `WARNING: an HDR master came out of the burn as SDR`
+  is the regression the colour tagging exists to prevent.
+- **`marker alignment`** — `offsetSec` is where the trigger landed inside the
+  recording. Play the clip: the gap between where "clypso" actually falls and
+  the clip's end is the phone-to-glasses clock skew, which `graceBeforeSec = 2`
+  has been absorbing without anyone measuring it.
+
+Two failures were worth naming in advance because neither would be a parameter
+fix. `tools/measure/hdr` has since put numbers on both, off-device, against a
+synthetic file tagged the way the glasses tag theirs — and both came back clean:
+
+- Captions burn through `AVVideoCompositionCoreAnimationTool`, and Core
+  Animation is SDR sRGB, so the overlay could have dragged the whole composition
+  back to BT.709. It does not — the captioned arm stays `hevc HDR
+  ITU_R_2100_HLG`, and caption white lands around 72% of the video range, which
+  is HLG diffuse white rather than clipped or crushed. **Still look at the
+  captions.** A code value is not a judgement, and this is the one thing in §4a
+  that no log line can answer.
+- `AVAssetExportPreset*` chooses its own bit rate with no way to ask for one, so
+  the burn could have come back correctly tagged and softer than it went in.
+  Both HDR arms came back *above* the source rate. Bit rate is scene-dependent,
+  so `outRate` against `inRate` is still worth reading on real footage; if it
+  ever does land materially under, the answer is moving the burn off presets
+  onto `AVAssetWriter` with explicit settings.
+
+`AVAssetExportPresetPassthrough` was confirmed on the same harness to serve an
+HLG HEVC cut into an MP4 container, so `cut by passthrough` is the expected
+outcome rather than a hopeful one.
+
+**Record what came back in `docs/OPEN-WORK.md` O2.**
+
+### 4b — Can the stream survive a native recording? (U1)
+
+Both paths, and the sequencing matters now in a way it did not when this was
+written.
+
+Arming Path A takes the microphone and stands Path B's listening down for the
+duration (§3 U2). So a "clypso" spoken while armed is heard by Path A and
+written to Path A's buffer — it does not become a Path B marker, the native
+recording is never a candidate, `probeConcurrency` never runs, and U1 stays
+unmeasured. The marker has to be spoken with the microphone back on Path B.
+
+`markersWithin` accepts a marker up to `graceAfterSec` — **15 seconds** — after
+a recording ends, which is the window this depends on:
+
+1. Arm Path A on device with the glasses connected.
+2. Record natively on the glasses for a realistic span, several times,
+   including one long recording.
+3. Stop the native recording, **disarm Path A, and say "clypso" within 15
+   seconds.** Path B resumes its microphone on disarm and the marker attaches to
+   the recording that just ended.
+4. Let Meta AI sync. Foreground the app so `onForeground()` runs.
+5. Read the verdicts:
+
+```bash
 grep "concurrency probe" /tmp/clypso-diagnostics.log
 grep "session rungs"     /tmp/clypso-diagnostics.log
 ```
@@ -159,8 +285,8 @@ same time — how often `.high` is actually delivered, which determines whether
 the proxy is 720x1280 or 504x896 in practice.
 
 **Record the verdict in this file.** The instrument is documented as temporary
-(`streamConcurrency.ts:5-7`, `GlassesImportController.ts:279`); it is deleted
-only once the answer is written down, not once it is observed.
+(`streamConcurrency.ts:5-7`, `GlassesImportController.probeConcurrency`); it is
+deleted only once the answer is written down, not once it is observed.
 
 ### Decision
 
@@ -317,13 +443,33 @@ Carried forward from `docs/OPEN-WORK.md` §"Not open" and `KNOWN-ISSUES.md`.
 ## 10. Open
 
 - **U1 unmeasured.** The gating question. §4.
-- **U2 undecided.** Which half owns the microphone, pending U1.
+- ~~**U2 undecided.**~~ **Resolved** — `live-capture` owns the microphone and
+  `marker-listening` stands down. §3.
 - **Master latency unmeasured.** How long Meta AI actually takes to sync a
   recording is not known, and it sets the entire felt quality of the product.
   Worth capturing during §4, since the same session produces it.
-- **HDR through the caption burn is unmeasured** and now matters far more. O2
-  already flags that the composition is built with no colour properties and
-  exports through an H.264 preset that cannot carry HLG
-  (`CaptionEngine.m:826/854`). At 720p that was a quality question; at
-  1520x2032 HDR it is the difference between shipping the master and shipping a
-  tone-mapped copy of it.
+- **HDR through the caption burn is now built for, and still unmeasured.** O2
+  flagged a composition built with no colour properties exporting through an
+  H.264 preset that cannot carry HLG. That was the last stage of the master
+  path and the only lossy one: `exportOriginal` copies the glasses' own bytes,
+  `extractRange` cuts them by passthrough, and then the burn re-encoded the
+  result as 8-bit BT.709 — on every Pro clip.
+
+  `CaptionEngine.m` now reads the source's format description, tags the
+  composition with its own primaries / transfer function / matrix so the
+  compositor works in the footage's colour space rather than sRGB, and exports
+  through `AVAssetExportPresetHEVCHighestQuality` when the source is HDR and the
+  preset is compatible with the composition. `ClipStitcher.m`'s transcode
+  fallback was given the same treatment — 10-bit decode, HEVC out, source colour
+  written through — so the one path documented as unreachable cannot silently
+  destroy a master if it is ever reached.
+
+  **No file has been through any of this on device.** The mechanism is in place;
+  the measurement O2 asks for is not made, and nothing here should be read as
+  saying it has been. What is in place is the instrumentation to settle it in
+  one worn session without pulling a single file off the device: `extracting …`
+  and `cut by passthrough` say the master reached the cutter intact, `WROTE …`
+  reports the resolution, colour and bit rate of what actually landed, and
+  `burn:` / `burned …` carry `inRate=` and `outRate=` either side of the caption
+  stage. §4a is the procedure and names the two ways this can fail that are not
+  parameter fixes.

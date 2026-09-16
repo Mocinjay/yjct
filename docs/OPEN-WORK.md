@@ -1,8 +1,17 @@
 # Open work
 
-Status: 2026-09-02. Every item was verified against the tree at `4d93326`
-before being listed. Each carries a `file:line` reference or an explicit
-**unmeasured**; nothing here is inferred from a work-item description.
+Status: 2026-09-02, with O2 and O4 rewritten 2026-09-09. Every item was
+verified against the tree at `4d93326` before being listed. Each carries a
+`file:line` reference or an explicit **unmeasured**; nothing here is inferred
+from a work-item description.
+
+**2026-09-09.** O2 and O4 both moved, and neither closed. The mechanisms they
+describe were built; the measurements they ask for are still not made, and the
+rewritten entries say which is which. `docs/LEECH-ARCHITECTURE.md` §3 U2 closed
+in the same pass — the microphone now has exactly one owner. Line numbers in
+the untouched entries below predate that work and may have drifted by a few
+lines in `SettingsScreen.tsx`, `MicSegmentRecorder.m`, `CaptionEngine.m` and
+`ClipStitcher.m`; the symbol names are the durable half.
 
 **What this is not.** An earlier plan numbered W1–W14 and `docs/ground-truth.md`
 answers questions about it, but that plan's text was never committed and is not
@@ -32,18 +41,79 @@ The prerequisite is done (the §8.2 laundering hole is closed) and
 `tools/measure/canvas/fixtures.sh` re-asserts it in one command. Run that
 before the ladder; an arm built by a misbehaving guard is not worth uploading.
 
-### O2 — What the caption burn does to an HLG master is asserted, not measured
+### O2 — The caption burn now carries HLG; whether it does so correctly is still unmeasured
 
-`CaptionEngine.m:826` builds the composition with the bare
+**Was:** `CaptionEngine.m` built the composition with the bare
 `[AVMutableVideoComposition videoComposition]` initialiser — no
-`colorPrimaries`, no `colorTransferFunction`, no `colorYCbCrMatrix`, confirmed
-by grep across the file. The export preset is
-`AVAssetExportPresetHighestQuality` (`:854`), which is H.264/AAC and cannot
-carry HLG.
+`colorPrimaries`, no `colorTransferFunction`, no `colorYCbCrMatrix` — and
+exported through `AVAssetExportPresetHighestQuality`, which is 8-bit H.264/AAC
+and cannot carry HLG. Two separate losses on the same stage: the compositor
+read HLG-encoded samples through an sRGB transfer function, and the encoder
+could not have represented the result if it had read them correctly.
 
-**Unmeasured:** no path-B asset has been through the burn on device. Whether
-the result is tone-mapped, clipped, or something worse is being claimed from
-API semantics rather than from a file. Measure before building anything on top.
+That mattered more than it read. It was the *only* lossy stage left on the
+master path — `exportOriginal` copies the glasses' own bytes out of the photo
+library and `extractRange` cuts them by passthrough — so a Pro clip arrived at
+the last step as an intact 1520x2032 HLG master and left it as a flat 8-bit
+BT.709 copy.
+
+**Now:** `CEReadVideoColor()` reads the source's format description; when the
+transfer function is HLG or PQ the composition is tagged with the source's own
+primaries / transfer function / matrix (all three or none — AVFoundation raises
+on a partial set), and the export runs through
+`AVAssetExportPresetHEVCHighestQuality` when
+`determineCompatibilityOfExportPreset:` says the composition can take it.
+`ClipStitcher.m`'s transcode fallback got the matching treatment: 10-bit
+`x420` decode instead of 32BGRA, HEVC out, and `AVVideoColorPropertiesKey` set
+from the source. That path is documented as unreachable for a single-source
+cut; it is now unable to destroy a master if the documentation is wrong.
+
+**Measured off-device, 2026-09-09.** `tools/measure/hdr` runs the same
+composition and export against a synthetic 1520x2032 10-bit HEVC / BT.2020 / HLG
+file, using `JVSReadVideoColor` lifted verbatim out of `ClipStitcher.m`:
+
+| Arm | Result | Rate (source 10.62 Mbps) |
+|---|---|---|
+| `untagged+h264` — what shipped before | **avc SDR `ITU_R_709_2`** | 14.11 Mbps |
+| `tagged+hevc` — what ships now | hevc HDR `ITU_R_2100_HLG` | 14.91 Mbps |
+| `tagged+hevc+captions` | hevc HDR `ITU_R_2100_HLG` | 12.05 Mbps |
+
+So the defect was real and is reproduced, not merely argued: the old path hands
+back a file tagged BT.709 SDR. The fix holds, and it holds *with the caption
+overlay attached* — which was the likeliest way it could have been undone, since
+`AVVideoCompositionCoreAnimationTool` draws sRGB layers. Both HDR arms come back
+above the source rate, so the "a preset picks its own bit rate and you cannot
+ask for another" worry does not bite on this content. Separately,
+`AVAssetExportPresetPassthrough` was confirmed to serve an HLG HEVC cut into an
+MP4 container, which is what keeps `extractRange` off the transcode fallback.
+
+**Still unmeasured on device, and that is a real gap, not a formality.** The
+above is macOS AVFoundation against synthetic content. It settles what the APIs
+do with these tags; it does not prove the glasses tag their files the way the
+fixture does, it does not carry iOS's encoder behaviour, and bit rate on real
+footage is scene-dependent. Nor does any of it say how the captions *look* —
+white lands around 72% of the video range, which is HLG diffuse white rather
+than clipped or crushed, but a code value is not a judgement and somebody has to
+watch a clip on an HDR display. The log says what happened per clip, so one worn
+session settles the rest:
+
+```bash
+grep "NOT glasses footage"     /tmp/clypso-diagnostics.log   # read this first
+grep -E "extracting |WROTE |burn:|burned " /tmp/clypso-diagnostics.log
+```
+
+`extracting … hevc HDR transfer=…` followed by `cut by passthrough` means the
+master reached the cutter intact. `WROTE …` reports the resolution, colour and
+bit rate of the file that landed. `burn:` carries `inRate=` and `burned …`
+carries `outRate=`, so the caption stage is judged on both colour and bits —
+a preset picks its own bit rate and cannot be asked for a different one, so an
+HDR clip can come back correctly tagged and still be softer than it went in.
+`WARNING: an HDR master came out of the burn as SDR` is the flat regression.
+
+`docs/LEECH-ARCHITECTURE.md` §4a is the full procedure, including the two
+failures that would not be parameter fixes: Core Animation renders captions in
+SDR sRGB regardless of the composition's colour, and the export runs on a preset
+with no bit-rate control.
 
 ### O3 — Path B never starts a Live Activity
 
@@ -53,21 +123,51 @@ exist and work.
 
 `src/services/glassesImport.ts` and `src/markers/` contain no `LiveActivity`
 reference at all. So the glasses-import path can be listening — holding the
-phone's microphone, which `SettingsScreen.tsx:199-203` warns the user about —
+phone's microphone, which `SettingsScreen.tsx:209-211` warns the user about —
 with nothing on the Lock Screen saying so. That warning is the argument for
 fixing it: the app asks the user not to swipe it away and then gives them no
 persistent sign it is running.
 
-### O4 — Audio interruption is handled natively and tested nowhere
+Sharper since 2026-09-09 in two ways. The setting now defaults on, so this is
+the state a fresh install is in rather than one somebody opted into. And there
+is now a second thing the Lock Screen would have to say, because listening can
+be *paused* — the live-capture path takes the microphone for the length of an
+armed session (`core/microphone.ts`). The Settings screen says so; nothing else
+does.
 
-`MicSegmentRecorder.m:467` registers the observer, `:482-500` handles it,
-including the `ShouldResume` check at `:494`. The session config it protects is
-`:193-226`, and G4 found it already correct.
+### O4 — Audio interruption is handled natively and tested nowhere — still true, and the surface grew
 
-No test in `app/__tests__/` exercises an interruption. The 18 suites are all
-TypeScript, and this logic is Objective-C, so covering it means either a native
-test target or lifting the decision into TS. Worth deciding which before
-writing anything.
+`MicSegmentRecorder.m` registers observers for interruption, route change,
+engine configuration change and — new — `AVAudioSessionMediaServicesWereReset`,
+which is the failure shape that matters most on an always-on path: mediaserverd
+restarts, the tap simply stops being called, the engine still reports itself
+running, and nothing is posted. Hours of listening to nothing, with a
+healthy-looking recorder.
+
+Every one of those handlers ends in `restart`, which is why it is now coalesced
+and budgeted (`kMSRMaxRestartsPerWindow` / `kMSRRestartWindowSeconds`): one
+physical event posts several notifications, and a cause that does not clear was
+an unbounded rebuild loop in the background on battery. Past the budget the
+recorder stops, releases the session and says so, because a trigger that is not
+being heard should look broken rather than busy.
+
+Three defects were fixed in that pass, all of them invisible from JS:
+
+- The segment file pinned itself to mono while the tap format decided the
+  buffer, so a two-channel input route raised `NSInvalidArgumentException` out
+  of `writeFromBuffer:` on the first buffer. Mono is now asked for at the
+  session and the file follows what actually arrives.
+- `teardownEngineLocked` called `setActive:NO` on every restart, on a session
+  object that is shared process-wide — taking it out from under
+  `MWDATSegmentWriter` whenever the glasses stream was up.
+- A session that activated while the engine failed to start was never
+  deactivated by anybody, holding the input route for the life of the process.
+
+**Still no test.** The suites are TypeScript and this is Objective-C; covering
+it means a native test target or lifting the decision into TS, and that choice
+is still unmade. The arbitration half of the same problem *is* covered —
+`__tests__/microphone.test.ts` — because it was deliberately written in TS for
+that reason.
 
 ### O5 — `.hvc1` capture is the real quality lever and is blocked on the preview path
 

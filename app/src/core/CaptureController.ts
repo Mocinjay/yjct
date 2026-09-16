@@ -12,6 +12,7 @@ import { clipStore, newClip, newClipId } from './ClipStore';
 import { Emitter } from './Emitter';
 import { entitlementStore } from './EntitlementStore';
 import { createLogger } from './Logger';
+import { microphone } from './microphone';
 import { AppError, ErrorCode } from './errors';
 import { SegmentRingBuffer } from './SegmentRingBuffer';
 
@@ -148,6 +149,13 @@ export class CaptureController {
     this.sessionClipCount = 0;
     this.setStatus({ state: 'arming', bufferedSeconds: 0 });
     try {
+      // Before the source, because starting it is what opens an audio session:
+      // `MWDATSegmentWriter` brings up its own `AVAudioEngine` tap so the
+      // segments carry the sound the wake word is transcribed from. The
+      // glasses-library path may be holding a tap on that same shared session,
+      // and this awaits its release rather than racing it — see
+      // `core/microphone.ts`.
+      await microphone.acquireExclusive();
       await this.source.prepare();
       await this.source.start(
         seg => this.onSegment(seg),
@@ -197,6 +205,11 @@ export class CaptureController {
       );
     this.buffer.clear();
     this.armedSince = null;
+    // Last, so the other half does not reopen the microphone while this one is
+    // still inside its own teardown. Idempotent, which matters because `arm()`
+    // calls `disarm()` on its own failure path — including a failure that
+    // happened before the claim was ever made.
+    await microphone.releaseExclusive();
     log.info('disarmed');
     this.setStatus({ state: 'idle', bufferedSeconds: 0 });
   }

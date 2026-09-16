@@ -27,6 +27,9 @@ static const int64_t kCERecognitionTimeoutSec = 120;
 /// a performance limit.
 static const double kCEExportTimeoutBaseSec = 60.0;
 static const double kCEExportTimeoutPerSec = 10.0;
+/// Ceiling on the preset-compatibility question, which reads headers and no
+/// samples. Generous for something that should answer in milliseconds.
+static const int64_t kCEPresetCheckTimeoutSec = 10;
 /// Windows overlap so a word straddling a seam is heard whole by one of them.
 /// The duplicate is dropped when the results are merged.
 static const double kCEWindowOverlapSeconds = 1.0;
@@ -35,6 +38,66 @@ static const double kCEFadeInSeconds = 0.06;
 static const double kCEFadeOutSeconds = 0.04;
 
 #pragma mark - Asset helpers
+
+/**
+ * What the container says about a video track's codec and colour.
+ *
+ * Read from the format description rather than guessed from the resolution,
+ * because the two sources of footage this engine burns captions into are
+ * genuinely different files and the difference is invisible in the pixel count:
+ * a Path A proxy is H.264 in BT.709, and a Path B master — what the glasses
+ * recorded to their own storage — is HEVC in BT.2020 with an HLG transfer
+ * function.
+ *
+ * The three strings are `__unsafe_unretained` because a value-returned C struct
+ * cannot own them under ARC. They belong to the format description, which
+ * belongs to the track, which belongs to an asset that outlives every use of
+ * this struct in this file. Keep it that way: hold one of these past the
+ * asset's lifetime and the pointers dangle.
+ *
+ * Their values are usable directly as AVFoundation's `AVVideoColorPrimaries_*`
+ * / `AVVideoTransferFunction_*` / `AVVideoYCbCrMatrix_*` settings. That is not a
+ * coincidence to be re-derived later: CoreMedia's format-description constants
+ * and AVFoundation's video-settings constants are the same strings, which is
+ * what lets a source's declared colour be handed to a composition or an encoder
+ * without a translation table.
+ */
+typedef struct {
+  /** True when the transfer function is one of the two HDR ones. */
+  BOOL isHDR;
+  BOOL isHEVC;
+  /** nil when the container declares nothing; all three move together. */
+  NSString *__unsafe_unretained primaries;
+  NSString *__unsafe_unretained transferFunction;
+  NSString *__unsafe_unretained matrix;
+} CEVideoColor;
+
+static CEVideoColor CEReadVideoColor(AVAssetTrack *track)
+{
+  CEVideoColor info = {NO, NO, nil, nil, nil};
+  CMFormatDescriptionRef description =
+      (__bridge CMFormatDescriptionRef)track.formatDescriptions.firstObject;
+  if (description == NULL) {
+    return info;
+  }
+
+  info.isHEVC = CMFormatDescriptionGetMediaSubType(description) == kCMVideoCodecType_HEVC;
+  info.primaries = (__bridge NSString *)CMFormatDescriptionGetExtension(
+      description, kCMFormatDescriptionExtension_ColorPrimaries);
+  info.transferFunction = (__bridge NSString *)CMFormatDescriptionGetExtension(
+      description, kCMFormatDescriptionExtension_TransferFunction);
+  info.matrix = (__bridge NSString *)CMFormatDescriptionGetExtension(
+      description, kCMFormatDescriptionExtension_YCbCrMatrix);
+
+  NSString *const hlg =
+      (__bridge NSString *)kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG;
+  NSString *const pq =
+      (__bridge NSString *)kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ;
+  info.isHDR = info.transferFunction != nil &&
+               ([info.transferFunction isEqualToString:hlg] ||
+                [info.transferFunction isEqualToString:pq]);
+  return info;
+}
 
 #pragma mark - Canvas promotion (Path A only, disabled pending measurement)
 
@@ -829,6 +892,33 @@ RCT_EXPORT_METHOD(renderEdit:(NSString *)sourcePath
   videoComposition.frameDuration = CMTimeMake(1, (int32_t)lround(fps));
   videoComposition.instructions = instructions;
 
+  // Composite in the colour space the footage is actually in.
+  //
+  // This is the stage that decided what a Path B master was worth. The glasses
+  // record BT.2020 with an HLG transfer function, `exportOriginal` copies those
+  // exact bytes out of the photo library, and `extractRange` cuts them without
+  // re-encoding — so the master arrives here whole. Then an untagged
+  // `AVMutableVideoComposition` composites it as though it were BT.709: the
+  // renderer reads HLG-encoded samples through an sRGB transfer function, and
+  // the burn writes out a flat, desaturated copy that is nobody's footage. The
+  // pixel count survived; the picture did not.
+  //
+  // All three properties or none — AVFoundation raises on a partial set — so a
+  // container that declares only some of its colour is left alone rather than
+  // half-tagged.
+  CEVideoColor const color = CEReadVideoColor(videoTrack);
+  BOOL const canTagColor = color.primaries != nil && color.transferFunction != nil &&
+                           color.matrix != nil;
+  if (color.isHDR && canTagColor) {
+    videoComposition.colorPrimaries = color.primaries;
+    videoComposition.colorTransferFunction = color.transferFunction;
+    videoComposition.colorYCbCrMatrix = color.matrix;
+  } else if (color.isHDR) {
+    CELog(@"HDR source declares an incomplete colour set (primaries=%@ "
+          @"transfer=%@ matrix=%@) - compositing untagged, which will flatten it",
+          color.primaries, color.transferFunction, color.matrix);
+  }
+
   // Only attach the Core Animation overlay when there is something to draw.
   // It forces every frame through CoreAnimation's offline renderer, which is
   // the most expensive part of the export — pointless for a silent clip, and
@@ -849,9 +939,37 @@ RCT_EXPORT_METHOD(renderEdit:(NSString *)sourcePath
                                                                     inLayer:parentLayer];
   }
 
+  // H.264 for an SDR proxy, HEVC for an HDR master.
+  //
+  // `AVAssetExportPresetHighestQuality` is H.264/AAC and 8-bit. For the proxy
+  // that is the right trade — it is the most compatible thing to hand a share
+  // sheet, and the footage is 8-bit BT.709 to begin with, so nothing is lost.
+  // For a master it throws away the two things that make it a master: 10-bit
+  // depth and the wide-gamut HDR the preset cannot represent at all. The HEVC
+  // preset carries both.
+  //
+  // Asked of the composition rather than assumed, because a preset that is not
+  // compatible produces a nil session and no clip at all — a worse outcome than
+  // a flattened one. When HDR footage has to fall back to H.264 the colour tags
+  // above still apply: the compositor works in the right space, so the picture
+  // is correct even though the container it lands in is a narrower one than it
+  // deserves, and the log line says so.
+  NSString *preset = AVAssetExportPresetHighestQuality;
+  if (color.isHDR &&
+      [self presetIsCompatible:AVAssetExportPresetHEVCHighestQuality
+                     withAsset:composition]) {
+    preset = AVAssetExportPresetHEVCHighestQuality;
+  } else if (color.isHDR) {
+    CELog(@"HDR source but the HEVC preset is not available for this "
+          @"composition - falling back to H.264, which cannot carry 10-bit");
+  }
+  CELog(@"burn: %.0fx%.0f %@ source=%@ transfer=%@ inRate=%.2fMbps preset=%@",
+        render.width, render.height, color.isHDR ? @"HDR" : @"SDR",
+        color.isHEVC ? @"hevc" : @"avc", color.transferFunction ?: @"(untagged)",
+        videoTrack.estimatedDataRate / 1000000.0, preset);
+
   AVAssetExportSession *export =
-      [[AVAssetExportSession alloc] initWithAsset:composition
-                                       presetName:AVAssetExportPresetHighestQuality];
+      [[AVAssetExportSession alloc] initWithAsset:composition presetName:preset];
   if (export == nil) {
     reject(@"export_unavailable", @"Could not create an export session.", nil);
     return;
@@ -884,13 +1002,80 @@ RCT_EXPORT_METHOD(renderEdit:(NSString *)sourcePath
            export.error.localizedDescription ?: @"Caption export failed.", export.error);
     return;
   }
-  CELog(@"burned %lu cues into %@", (unsigned long)cues.count,
-        outputPath.lastPathComponent);
+  // Read the burn back rather than trusting that "completed" meant "unharmed".
+  //
+  // This is the measurement `docs/OPEN-WORK.md` O2 asks for, taken by the app
+  // on the clip it just made. Two numbers decide it. `transfer=` says whether
+  // the HLG survived the composite — an HDR source coming back untagged or as
+  // BT.709 means the burn flattened it. `outRate=` against the `inRate=` on the
+  // line above says whether the picture survived: the export runs on a preset,
+  // and a preset picks its own bit rate with no way to ask for a different one,
+  // so an HDR master can come back correctly tagged and still be softer than it
+  // went in. Colour and bits are separate questions and this answers both.
+  AVURLAsset *burned = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:outputPath]
+                                           options:nil];
+  if (CELoadAssetKeys(burned, @[ @"tracks", @"duration" ])) {
+    AVAssetTrack *out = [burned tracksWithMediaType:AVMediaTypeVideo].firstObject;
+    CEVideoColor const outColor = out != nil ? CEReadVideoColor(out)
+                                             : (CEVideoColor){NO, NO, nil, nil, nil};
+    CGSize const outSize = out != nil ? out.naturalSize : CGSizeZero;
+    unsigned long long const outBytes =
+        [[[NSFileManager defaultManager] attributesOfItemAtPath:outputPath error:NULL]
+            fileSize];
+    CELog(@"burned %lu cues into %@: %.0fx%.0f %@ %@ transfer=%@ "
+          @"outRate=%.2fMbps %llu bytes",
+          (unsigned long)cues.count, outputPath.lastPathComponent,
+          fabs(outSize.width), fabs(outSize.height),
+          outColor.isHEVC ? @"hevc" : @"avc", outColor.isHDR ? @"HDR" : @"SDR",
+          outColor.transferFunction ?: @"(untagged)",
+          out.estimatedDataRate / 1000000.0, outBytes);
+    if (color.isHDR && !outColor.isHDR) {
+      // Loud, because this is the exact regression the colour tagging exists to
+      // prevent and it is otherwise only visible by looking at the clip.
+      CELog(@"WARNING: an HDR master came out of the burn as SDR - the caption "
+            @"stage flattened it");
+    }
+  } else {
+    CELog(@"burned %lu cues into %@ (could not read it back to report on it)",
+          (unsigned long)cues.count, outputPath.lastPathComponent);
+  }
   resolve(@{
     @"outputPath" : outputPath,
     @"durationSec" : @(total),
     @"cues" : @(cues.count),
   });
+}
+
+/**
+ * Whether one export preset can serve this composition, answered synchronously.
+ *
+ * The synchronous `exportPresetsCompatibleWithAsset:` was deprecated in iOS 16
+ * and the replacement is callback-based, so the wait is reproduced here — the
+ * same shape `CELoadAssetKeys` already uses, and for the same reason: this whole
+ * method runs on the module's own serial queue, where blocking is the normal
+ * mode and the alternative would be threading a continuation through several
+ * hundred lines that have no other reason to be asynchronous.
+ *
+ * A timeout answers NO, which is the safe direction: the caller falls back to
+ * the preset that is compatible with everything.
+ */
+- (BOOL)presetIsCompatible:(NSString *)preset withAsset:(AVAsset *)asset
+{
+  __block BOOL compatible = NO;
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  [AVAssetExportSession determineCompatibilityOfExportPreset:preset
+                                                  withAsset:asset
+                                             outputFileType:AVFileTypeMPEG4
+                                          completionHandler:^(BOOL isCompatible) {
+    compatible = isCompatible;
+    dispatch_semaphore_signal(done);
+  }];
+  if (dispatch_semaphore_wait(
+          done, dispatch_time(DISPATCH_TIME_NOW, kCEPresetCheckTimeoutSec * NSEC_PER_SEC)) != 0) {
+    CELog(@"timed out checking whether %@ is compatible - assuming it is not", preset);
+    return NO;
+  }
+  return compatible;
 }
 
 /// True when the segments do anything other than play the source straight

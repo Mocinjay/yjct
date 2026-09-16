@@ -453,13 +453,24 @@ RCT_EXPORT_METHOD(extractRange:(NSString *)sourcePath
       }
     }
 
-    JVSLog(@"extracting %.2f-%.2fs from a %.2fs recording", clampedStart,
-           clampedEnd, sourceSec);
+    // The whole quality claim of the glasses-library path, in one line: the
+    // dimensions and colour that came out of the photo library, and then
+    // whether the cut was a copy or a re-encode. Anything other than
+    // `passthrough` here means the delivered clip is not the master.
+    JVSVideoColor const sourceColor = JVSReadVideoColor(srcVideo);
+    CGSize const sourceSize = srcVideo.naturalSize;
+    JVSLog(@"extracting %.2f-%.2fs from a %.2fs recording: %.0fx%.0f %@ %@ "
+           @"transfer=%@",
+           clampedStart, clampedEnd, sourceSec, fabs(sourceSize.width),
+           fabs(sourceSize.height), sourceColor.isHEVC ? @"hevc" : @"avc",
+           sourceColor.isHDR ? @"HDR" : @"SDR",
+           sourceColor.transferFunction ?: @"(untagged)");
 
     [self exportPassthrough:composition
                  outputPath:outputPath
                  completion:^(BOOL ok, NSError *passthroughError) {
       if (ok) {
+        JVSLog(@"cut by passthrough - the master's samples are untouched");
         [self finishWithOutputPath:outputPath resolver:resolve rejecter:reject];
         return;
       }
@@ -472,6 +483,64 @@ RCT_EXPORT_METHOD(extractRange:(NSString *)sourcePath
                         rejecter:reject];
     }];
   });
+}
+
+/**
+ * What the container says about a video track's codec and colour.
+ *
+ * The two kinds of footage that reach this file are the same shape and nothing
+ * alike: a Path A segment is 8-bit H.264 in BT.709, and a Path B master is
+ * 10-bit HEVC in BT.2020 with an HLG transfer function. Only the format
+ * description tells them apart, and the transcode fallback has to know, because
+ * the settings that are right for one destroy the other.
+ *
+ * The three strings are `__unsafe_unretained` because a value-returned C struct
+ * cannot own them under ARC. They belong to the format description, which
+ * belongs to the track, which belongs to an asset that outlives every use of
+ * this struct in this file. Keep it that way: hold one of these past the
+ * asset's lifetime and the pointers dangle.
+ *
+ * Their values are usable directly as AVFoundation's `AVVideoColorPrimaries_*`
+ * / `AVVideoTransferFunction_*` / `AVVideoYCbCrMatrix_*` settings. That is not a
+ * coincidence to be re-derived later: CoreMedia's format-description constants
+ * and AVFoundation's video-settings constants are the same strings, which is
+ * what lets a source's declared colour be handed to a composition or an encoder
+ * without a translation table.
+ */
+typedef struct {
+  BOOL isHDR;
+  BOOL isHEVC;
+  /** nil when the container declares nothing; all three move together. */
+  NSString *__unsafe_unretained primaries;
+  NSString *__unsafe_unretained transferFunction;
+  NSString *__unsafe_unretained matrix;
+} JVSVideoColor;
+
+static JVSVideoColor JVSReadVideoColor(AVAssetTrack *track)
+{
+  JVSVideoColor info = {NO, NO, nil, nil, nil};
+  CMFormatDescriptionRef description =
+      (__bridge CMFormatDescriptionRef)track.formatDescriptions.firstObject;
+  if (description == NULL) {
+    return info;
+  }
+
+  info.isHEVC = CMFormatDescriptionGetMediaSubType(description) == kCMVideoCodecType_HEVC;
+  info.primaries = (__bridge NSString *)CMFormatDescriptionGetExtension(
+      description, kCMFormatDescriptionExtension_ColorPrimaries);
+  info.transferFunction = (__bridge NSString *)CMFormatDescriptionGetExtension(
+      description, kCMFormatDescriptionExtension_TransferFunction);
+  info.matrix = (__bridge NSString *)CMFormatDescriptionGetExtension(
+      description, kCMFormatDescriptionExtension_YCbCrMatrix);
+
+  NSString *const hlg =
+      (__bridge NSString *)kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG;
+  NSString *const pq =
+      (__bridge NSString *)kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ;
+  info.isHDR = info.transferFunction != nil &&
+               ([info.transferFunction isEqualToString:hlg] ||
+                [info.transferFunction isEqualToString:pq]);
+  return info;
 }
 
 /**
@@ -543,10 +612,21 @@ RCT_EXPORT_METHOD(extractRange:(NSString *)sourcePath
       return;
     }
 
+    // Decode into a format that can hold what the source holds.
+    //
+    // 32BGRA is 8 bits per channel with no room for a wide gamut, so decoding a
+    // 10-bit BT.2020 master through it clips the colour before the encoder ever
+    // sees it — and no encoder setting downstream can put back what the decode
+    // threw away. `x420` is the 10-bit biplanar format the glasses' own footage
+    // decodes into natively.
+    JVSVideoColor const color = JVSReadVideoColor(readerVideoTrack);
+    OSType const decodeFormat =
+        color.isHDR ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                    : kCVPixelFormatType_32BGRA;
     AVAssetReaderTrackOutput *videoOutput = [[AVAssetReaderTrackOutput alloc]
         initWithTrack:readerVideoTrack
        outputSettings:@{
-         (NSString *)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA)
+         (NSString *)kCVPixelBufferPixelFormatTypeKey : @(decodeFormat)
        }];
     if (![reader canAddOutput:videoOutput]) {
       reject(@"cannot_add_video_reader_output", @"Cannot add video reader output.", nil);
@@ -603,21 +683,58 @@ RCT_EXPORT_METHOD(extractRange:(NSString *)sourcePath
     // Specifying nothing let AVFoundation pick its own conservative default,
     // which threw away most of what the segment writer had preserved.
     NSInteger bitRate = MAX(4000000, (NSInteger)(videoWidth * videoHeight * 30.0 * 0.3));
-    JVSLog(@"transcode fallback: %.0fx%.0f h264-high bitRate=%ld",
-           videoWidth, videoHeight, (long)bitRate);
-    AVAssetWriterInput *videoWriterInput = [[AVAssetWriterInput alloc]
-        initWithMediaType:AVMediaTypeVideo
-           outputSettings:@{
-             AVVideoCodecKey : AVVideoCodecTypeH264,
-             AVVideoWidthKey : @(videoWidth),
-             AVVideoHeightKey : @(videoHeight),
-             AVVideoCompressionPropertiesKey : @{
-               AVVideoAverageBitRateKey : @(bitRate),
-               AVVideoExpectedSourceFrameRateKey : @30,
-               AVVideoMaxKeyFrameIntervalKey : @30,
-               AVVideoProfileLevelKey : AVVideoProfileLevelH264HighAutoLevel,
-             },
-           }];
+
+    // HEVC for HDR, H.264 otherwise.
+    //
+    // This branch exists for a case that is documented as unreachable: a
+    // single-source cut has no format change, so passthrough should always
+    // serve it. "Should" is doing a lot of work there, and the cost of being
+    // wrong is asymmetric — a proxy that lands here loses a generation of
+    // quality, while a master that lands here loses the entire reason it was
+    // imported instead of streamed. So the fallback is made capable of carrying
+    // a master rather than left to flatten one: 10-bit HEVC, and the source's
+    // own colour written through to the output so a player knows what it is
+    // looking at.
+    //
+    // No `AVVideoProfileLevelKey` on the HEVC branch. The 10-bit profile
+    // constant lives in VideoToolbox, which this pod does not link, and it is
+    // not needed: AVAssetWriter selects Main10 from the pixel format of the
+    // buffers it is handed, which `decodeFormat` has already made 10-bit.
+    NSMutableDictionary *compression = [@{
+      AVVideoAverageBitRateKey : @(bitRate),
+      AVVideoExpectedSourceFrameRateKey : @30,
+      AVVideoMaxKeyFrameIntervalKey : @30,
+    } mutableCopy];
+    NSMutableDictionary *videoSettings = [@{
+      AVVideoWidthKey : @(videoWidth),
+      AVVideoHeightKey : @(videoHeight),
+    } mutableCopy];
+    BOOL const canTagColor = color.primaries != nil && color.transferFunction != nil &&
+                             color.matrix != nil;
+    if (color.isHDR) {
+      videoSettings[AVVideoCodecKey] = AVVideoCodecTypeHEVC;
+      if (canTagColor) {
+        videoSettings[AVVideoColorPropertiesKey] = @{
+          AVVideoColorPrimariesKey : color.primaries,
+          AVVideoTransferFunctionKey : color.transferFunction,
+          AVVideoYCbCrMatrixKey : color.matrix,
+        };
+      }
+    } else {
+      videoSettings[AVVideoCodecKey] = AVVideoCodecTypeH264;
+      compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel;
+    }
+    videoSettings[AVVideoCompressionPropertiesKey] = compression;
+
+    JVSLog(@"transcode fallback: %.0fx%.0f %@ source=%@ transfer=%@ "
+           @"bitRate=%ld tagged=%@",
+           videoWidth, videoHeight, color.isHDR ? @"hevc-10bit" : @"h264-high",
+           color.isHEVC ? @"hevc" : @"avc",
+           color.transferFunction ?: @"(untagged)", (long)bitRate,
+           (color.isHDR && canTagColor) ? @"yes" : @"no");
+    AVAssetWriterInput *videoWriterInput =
+        [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeVideo
+                                      outputSettings:videoSettings];
     videoWriterInput.transform = readerVideoTrack.preferredTransform;
     if (![writer canAddInput:videoWriterInput]) {
       reject(@"cannot_add_video_writer_input", @"Cannot add video writer input.", nil);
@@ -797,6 +914,38 @@ RCT_EXPORT_METHOD(extractRange:(NSString *)sourcePath
   });
 }
 
+/**
+ * What actually got written, read back off the file.
+ *
+ * Every claim this module makes about preserving a master is a claim about what
+ * AVFoundation did, and until now the only evidence for it was that no error
+ * was reported. Passthrough can succeed and still have been the wrong thing;
+ * `AVAssetExportPreset*` chooses its own bit rate with no way to ask for one.
+ * Reading the finished file closes that gap without anyone pulling it off the
+ * device and running ffprobe.
+ *
+ * The number to compare is `rate` against the source. A cut that came out
+ * materially below what went in has lost picture even when the resolution and
+ * the colour tags both survived.
+ */
+- (void)logOutputStats:(AVURLAsset *)asset path:(NSString *)path
+{
+  AVAssetTrack *video = [asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
+  unsigned long long const bytes =
+      [[[NSFileManager defaultManager] attributesOfItemAtPath:path error:NULL] fileSize];
+  if (video == nil) {
+    JVSLog(@"WROTE %@: no video track, %llu bytes", path.lastPathComponent, bytes);
+    return;
+  }
+  JVSVideoColor const color = JVSReadVideoColor(video);
+  CGSize const size = video.naturalSize;
+  JVSLog(@"WROTE %@: %.0fx%.0f %@ %@ transfer=%@ rate=%.2fMbps %llu bytes",
+         path.lastPathComponent, fabs(size.width), fabs(size.height),
+         color.isHEVC ? @"hevc" : @"avc", color.isHDR ? @"HDR" : @"SDR",
+         color.transferFunction ?: @"(untagged)",
+         video.estimatedDataRate / 1000000.0, bytes);
+}
+
 /// Generates the poster frame and resolves, whichever path wrote the clip.
 - (void)finishWithOutputPath:(NSString *)outputPath
                     resolver:(RCTPromiseResolveBlock)resolve
@@ -806,6 +955,13 @@ RCT_EXPORT_METHOD(extractRange:(NSString *)sourcePath
       [[outputPath stringByDeletingPathExtension] stringByAppendingString:@".jpg"];
   AVURLAsset *clipAsset =
       [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:outputPath] options:nil];
+  NSError *statsError = nil;
+  if (JVSLoadAssetKeys(clipAsset, @[ @"tracks", @"duration" ], &statsError)) {
+    [self logOutputStats:clipAsset path:outputPath];
+  } else {
+    JVSLog(@"could not read back %@ to report what was written - %@",
+           outputPath.lastPathComponent, statsError.localizedDescription);
+  }
   AVAssetImageGenerator *generator =
       [[AVAssetImageGenerator alloc] initWithAsset:clipAsset];
   generator.appliesPreferredTrackTransform = YES;

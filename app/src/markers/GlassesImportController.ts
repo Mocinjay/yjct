@@ -14,7 +14,7 @@ import type { Clip } from '../types';
 import type { WakeWordProvider } from '../wakeword/WakeWordProvider';
 import type { MarkerStore } from './MarkerStore';
 import type { GlassesVideo } from './markerMatching';
-import { clipRangesForVideo, markersWithin } from './markerMatching';
+import { clipRangesForVideo, markerOffsetSec, markersWithin } from './markerMatching';
 import { concurrencyVerdict } from './streamConcurrency';
 
 const log = createLogger('glasses-import');
@@ -40,6 +40,8 @@ export class GlassesImportController {
   private subscription: { remove: () => void } | null = null;
   private syncing = false;
   private started = false;
+  /** True while the wake word holds a microphone. False while stood down. */
+  private listening = false;
 
   constructor(
     private readonly markerStore: MarkerStore,
@@ -58,13 +60,20 @@ export class GlassesImportController {
   ) {}
 
   /**
-   * Begin listening and watching.
+   * Begin watching, and begin listening unless something else holds the mic.
    *
    * Photo access is requested up front rather than at the first sync: a wearer
    * who says the trigger word all afternoon and only then discovers the app
    * cannot read the library has lost the whole afternoon.
+   *
+   * `listen: false` starts the watching half only. It exists because the
+   * alternative — open the microphone and let the arbiter close it a moment
+   * later — reconfigures the shared `AVAudioSession` underneath a live-capture
+   * session that is already using it, for no purpose. Nothing is lost by never
+   * opening it: `resumeListening()` is what brings it up when the microphone is
+   * free.
    */
-  async start(): Promise<void> {
+  async start(options: { listen?: boolean } = {}): Promise<void> {
     if (this.started) {
       return;
     }
@@ -83,6 +92,70 @@ export class GlassesImportController {
       );
     }
 
+    if (options.listen ?? true) {
+      await this.startListening();
+    }
+
+    const emitter = new NativeEventEmitter(NativeModules.GlassesMediaLibrary);
+    this.subscription = emitter.addListener(GLASSES_LIBRARY_CHANGED_EVENT, () => {
+      this.sync().catch(err =>
+        log.expected('sync after library change failed', err, ErrorCode.StorageIndexUnreadable),
+      );
+    });
+    await GlassesMediaLibraryNative.startWatching();
+
+    this.started = true;
+    log.info(
+      this.listening
+        ? 'listening for the trigger word and watching the library'
+        : 'watching the library; the microphone is held elsewhere',
+    );
+  }
+
+  async stop(): Promise<void> {
+    this.subscription?.remove();
+    this.subscription = null;
+    await this.stopListening();
+    await GlassesMediaLibraryNative.stopWatching().catch(err =>
+      log.expected('stopWatching failed', err, ErrorCode.StorageIndexUnreadable),
+    );
+    this.started = false;
+  }
+
+  /**
+   * Close the microphone but stay watching the library.
+   *
+   * For the moment the live-capture path arms: one process, one audio session,
+   * and two engines tapping the input is a fight neither half wins (see
+   * `core/microphone.ts`). Only the listening half stands down. The library
+   * observer, the pending markers and every import pass carry on, because the
+   * recordings this matches against arrive long after the moment they contain —
+   * standing down the whole controller would strand the markers already written
+   * for footage that has not synced yet.
+   */
+  async suspendListening(): Promise<void> {
+    if (!this.started || !this.listening) {
+      return;
+    }
+    await this.stopListening();
+    log.info('listening suspended - still watching the library');
+  }
+
+  /** Reopen the microphone after the live-capture path releases it. */
+  async resumeListening(): Promise<void> {
+    if (!this.started || this.listening) {
+      return;
+    }
+    await this.startListening();
+    log.info('listening resumed');
+  }
+
+  /** True while a microphone is held for the trigger word. */
+  get isListening(): boolean {
+    return this.listening;
+  }
+
+  private async startListening(): Promise<void> {
     await this.wakeWord.start(detection => {
       // Without a wall-clock stamp there is nothing to match against later.
       // That means the provider is not the self-listening one, which is a
@@ -107,29 +180,22 @@ export class GlassesImportController {
           log.error('could not record marker', err, ErrorCode.StorageWriteFailed),
         );
     });
-
-    const emitter = new NativeEventEmitter(NativeModules.GlassesMediaLibrary);
-    this.subscription = emitter.addListener(GLASSES_LIBRARY_CHANGED_EVENT, () => {
-      this.sync().catch(err =>
-        log.expected('sync after library change failed', err, ErrorCode.StorageIndexUnreadable),
-      );
-    });
-    await GlassesMediaLibraryNative.startWatching();
-
-    this.started = true;
-    log.info('listening for the trigger word and watching the library');
+    this.listening = true;
   }
 
-  async stop(): Promise<void> {
-    this.subscription?.remove();
-    this.subscription = null;
+  /**
+   * Marked closed whether or not the stop succeeded.
+   *
+   * A wake word that would not stop is not one we can treat as still ours: the
+   * next `resumeListening` has to be free to start it again, and a `listening`
+   * flag left true would make the resume a no-op and leave the trigger dead for
+   * the rest of the session.
+   */
+  private async stopListening(): Promise<void> {
+    this.listening = false;
     await this.wakeWord.stop().catch(err =>
       log.expected('wake word did not stop cleanly', err, ErrorCode.WakeWordStopFailed),
     );
-    await GlassesMediaLibraryNative.stopWatching().catch(err =>
-      log.expected('stopWatching failed', err, ErrorCode.StorageIndexUnreadable),
-    );
-    this.started = false;
   }
 
   /**
@@ -237,6 +303,36 @@ export class GlassesImportController {
       lookbackSec: this.options.lookbackSec,
       maxWindowSec: this.options.maxWindowSec,
     });
+
+    // Where each trigger landed inside the recording, and where that put the
+    // cut. This is the only way clock skew between the two devices can ever be
+    // measured: the phone stamps the wall clock and the glasses stamp theirs,
+    // nothing reconciles them, and `graceBeforeSec` has been absorbing a
+    // difference nobody has put a number on. Play an imported clip and see how
+    // far from its end the trigger word actually falls — that gap, against
+    // `offsetSec` here, is the skew.
+    //
+    // Markers listed with no cut are the silent case worth seeing: a trigger
+    // inside the grace window but before the recording began points at footage
+    // that does not exist, so it is dropped, and until now it was dropped
+    // without a trace.
+    const matched = markersWithin(markers, video);
+    const cutMarkerIds = new Set(cuts.flatMap(cut => cut.markers.map(m => m.id)));
+    log.info('marker alignment', {
+      localIdentifier,
+      videoDurationSec: Number(video.durationSec.toFixed(2)),
+      markers: matched.map(marker => ({
+        id: marker.id,
+        offsetSec: Number(markerOffsetSec(marker, video).toFixed(2)),
+        cut: cutMarkerIds.has(marker.id),
+      })),
+      cuts: cuts.map(cut => ({
+        startSec: Number(cut.range.startSec.toFixed(2)),
+        endSec: Number(cut.range.endSec.toFixed(2)),
+        markers: cut.markers.length,
+      })),
+    });
+
     if (cuts.length === 0) {
       return [];
     }

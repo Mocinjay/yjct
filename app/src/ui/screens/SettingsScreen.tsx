@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { FREE_BUFFER_SECONDS_MAX, WAKE_PHRASE } from '../../config';
 import { describe } from '../../core/errors';
+import { microphone } from '../../core/microphone';
 import { MWDATNative, mwdatAvailable, mwdatEvents } from '../../native/MWDATNative';
 import type { ConnectorConfig } from '../../core/ConnectorConfig';
 import { connectorConfigStore } from '../../core/ConnectorConfig';
@@ -37,6 +38,13 @@ export function SettingsScreen({ navigation }: Props) {
   const [importBlocker, setImportBlocker] = useState<string | null>(
     glassesImport.blockedBecause,
   );
+  // "Switched on" and "listening right now" are different facts. The
+  // live-capture path takes the microphone for the length of an armed session
+  // (see core/microphone.ts), and without this the screen would show
+  // "Listening" while nothing was being heard — which is exactly the kind of
+  // disagreement between the switch and reality that `blockedBecause` exists to
+  // avoid.
+  const [micHolder, setMicHolder] = useState(microphone.heldBy);
 
   useEffect(() => {
     connectorConfigStore.get().then(setConnectors);
@@ -44,6 +52,7 @@ export function SettingsScreen({ navigation }: Props) {
   }, []);
 
   useEffect(() => glassesImport.subscribe(setImportBlocker), []);
+  useEffect(() => microphone.subscribe(setMicHolder), []);
 
   if (!settings) {
     return <View style={styles.root} />;
@@ -200,6 +209,15 @@ export function SettingsScreen({ navigation }: Props) {
             Clypso holds your phone's microphone while this is on, so keep the
             app running — swiping it away stops it hearing you. Clips appear
             after Meta AI syncs, not the instant you speak.
+          </Text>
+        ) : null}
+        {settings.glassesLibraryImport &&
+        importBlocker === null &&
+        micHolder === 'live-capture' ? (
+          <Text style={styles.warning}>
+            Paused while you're armed on the live stream — one microphone, one
+            listener. Marked moments already waiting still come in, and this
+            starts hearing you again when you disarm.
           </Text>
         ) : null}
       </Section>

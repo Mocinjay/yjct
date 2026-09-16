@@ -216,6 +216,45 @@ static NSDate *GMLCaptureDate(AVAsset *asset, PHAsset *phAsset)
   return phAsset.creationDate;
 }
 
+/**
+ * Everything the model/copyright test looked at, joined for a log line.
+ *
+ * The verdict below is a hard AND of two string literals, and those two
+ * literals own the whole feature: a recording they do not match is left alone
+ * silently and forever, which from outside is indistinguishable from Meta AI
+ * never syncing, from the trigger word never being heard, and from the wearer
+ * never having recorded anything. The only way to tell those apart is to say
+ * what the metadata actually contained — so a rejection prints it rather than
+ * asking someone to guess which of four things went wrong.
+ *
+ * Deliberately not a widening of the test. It reports; it decides nothing.
+ */
+static NSString *GMLDescribeIdentity(AVAsset *asset)
+{
+  NSMutableArray<NSString *> *seen = [NSMutableArray array];
+  for (AVMetadataItem *item in
+       [AVMetadataItem metadataItemsFromArray:asset.commonMetadata
+                                      withKey:AVMetadataCommonKeyModel
+                                     keySpace:AVMetadataKeySpaceCommon]) {
+    [seen addObject:[NSString stringWithFormat:@"model='%@'",
+                                               item.stringValue ?: @"(nil)"]];
+  }
+  for (AVMetadataItem *item in
+       [AVMetadataItem metadataItemsFromArray:asset.commonMetadata
+                                      withKey:AVMetadataCommonKeyCopyrights
+                                     keySpace:AVMetadataKeySpaceCommon]) {
+    [seen addObject:[NSString stringWithFormat:@"copyright='%@'",
+                                               item.stringValue ?: @"(nil)"]];
+  }
+  if (seen.count == 0) {
+    // Worth distinguishing from a mismatch: a container carrying no common
+    // metadata at all means the test can never pass on this footage, and no
+    // amount of adjusting the two literals will change that.
+    return @"no model or copyright metadata at all";
+  }
+  return [seen componentsJoinedByString:@" "];
+}
+
 /// Did this come off a pair of Meta glasses?
 static BOOL GMLIsGlassesAsset(AVAsset *asset)
 {
@@ -389,12 +428,27 @@ RCT_EXPORT_METHOD(confirmGlassesVideo:(NSString *)localIdentifier
   NSNumber *cached = [self.verdicts objectForKey:localIdentifier];
   BOOL const isGlasses =
       cached != nil ? cached.boolValue : GMLIsGlassesAsset(avAsset);
-  [self.verdicts setObject:@(isGlasses) forKey:localIdentifier];
 
   if (!isGlasses) {
+    // Printed on the first verdict only, because the verdict is then cached and
+    // a marked recording is re-offered on every library change — the same line
+    // once per asset, not once per pass.
+    //
+    // This is the line to read first when a worn session produces no clips. A
+    // marker pointed into this recording, so the trigger word WAS heard and the
+    // file DID sync; the only thing that failed is the identity test, and the
+    // strings it saw are right here to compare against `Meta` + `Glasses`.
+    if (cached == nil) {
+      GMLLog(@"NOT glasses footage: %@ - wanted model containing '%@' and "
+             @"'Glasses', or copyright '%@' [%@]",
+             GMLDescribeIdentity(avAsset), GMLGlassesModelMarker,
+             GMLGlassesCopyright, localIdentifier);
+    }
+    [self.verdicts setObject:@(isGlasses) forKey:localIdentifier];
     resolve(@{ @"isGlasses" : @NO, @"pendingDownload" : @NO });
     return;
   }
+  [self.verdicts setObject:@(isGlasses) forKey:localIdentifier];
 
   NSDate *captured = GMLCaptureDate(avAsset, phAsset);
   resolve(@{

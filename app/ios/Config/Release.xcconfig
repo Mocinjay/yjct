@@ -5,3 +5,6 @@
 
 // Per-developer signing. Untracked — see Signing.xcconfig.example.
 #include? "Signing.xcconfig"
+
+// See Debug.xcconfig. Must match, or Release grows a warning Debug does not.
+LM_SKIP_METADATA_EXTRACTION = YES

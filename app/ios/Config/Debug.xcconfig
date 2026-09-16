@@ -12,3 +12,14 @@
 // Optional include, so a missing file degrades to an Xcode signing error
 // rather than a confusing "file not found" build failure.
 #include? "Signing.xcconfig"
+
+// Xcode runs appintentsmetadataprocessor over every target containing Swift,
+// and it warns once per build that it found no AppIntents.framework dependency
+// and skipped. It is right: the app declares no AppIntent, AppShortcut, or
+// AppEntity, so the step has nothing to extract. Skipping it drops the warning
+// and changes nothing in the bundle.
+//
+// If App Intents are ever added — a Siri phrase, a Shortcuts action, an
+// interactive Live Activity button — remove this line in the same commit, or
+// they will silently fail to register.
+LM_SKIP_METADATA_EXTRACTION = YES

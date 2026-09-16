@@ -1,6 +1,16 @@
+import { NativeModules } from 'react-native';
 import { GlassesImportController } from '../src/markers/GlassesImportController';
 import { MarkerStore } from '../src/markers/MarkerStore';
 import type { WakeWordProvider } from '../src/wakeword/WakeWordProvider';
+
+// `start()` builds a NativeEventEmitter over the real `NativeModules` lookup,
+// which the jest preset leaves empty. Mocking the bridge module above replaces
+// the promise-returning methods, not the module's presence on NativeModules,
+// and NativeEventEmitter refuses a null argument outright.
+NativeModules.GlassesMediaLibrary = {
+  addListener: jest.fn(),
+  removeListeners: jest.fn(),
+};
 
 // Every binding a jest.mock factory touches must be named `mock*` — the
 // factories are hoisted above these declarations.
@@ -104,12 +114,15 @@ const GLASSES_VIDEO = {
   height: 2032,
 };
 
-function controller(markerStore: MarkerStore) {
-  const wakeWord: WakeWordProvider = {
+function stubWakeWord(): WakeWordProvider {
+  return {
     name: 'stub',
     start: jest.fn(async () => {}),
     stop: jest.fn(async () => {}),
   };
+}
+
+function controller(markerStore: MarkerStore, wakeWord = stubWakeWord()) {
   return new GlassesImportController(markerStore, wakeWord, { lookbackSec: 10 });
 }
 
@@ -285,5 +298,151 @@ describe('GlassesImportController.sync', () => {
     expect(clips).toHaveLength(1);
     // The failed one's marker is kept so the next pass tries it again.
     expect((await store.all()).map(m => m.id)).toEqual(['m1']);
+  });
+});
+
+
+/**
+ * Standing the microphone down without standing the import down.
+ *
+ * The two halves of this controller have completely different lifetimes. The
+ * microphone is contended — the live-capture path needs the same audio session
+ * — but the library watcher and the pending markers are not, and they are the
+ * half that has to survive, because a marker written this morning is matched
+ * against a recording Meta AI syncs this afternoon. Suspending the whole
+ * controller to free a microphone would strand every marker already waiting.
+ */
+describe('GlassesImportController listening', () => {
+  it('starts out listening and watching together', async () => {
+    const wakeWord = stubWakeWord();
+    const subject = controller(await emptyStore(), wakeWord);
+
+    await subject.start();
+
+    expect(subject.isListening).toBe(true);
+    expect(wakeWord.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the microphone but keeps watching the library', async () => {
+    const wakeWord = stubWakeWord();
+    const subject = controller(await emptyStore(), wakeWord);
+    await subject.start();
+
+    await subject.suspendListening();
+
+    expect(subject.isListening).toBe(false);
+    expect(wakeWord.stop).toHaveBeenCalledTimes(1);
+    // The observer is what makes a synced recording turn up on its own, and
+    // it costs no microphone at all.
+    const { GlassesMediaLibraryNative } = jest.requireMock(
+      '../src/native/GlassesMediaLibraryNative',
+    );
+    expect(GlassesMediaLibraryNative.stopWatching).not.toHaveBeenCalled();
+  });
+
+  it('imports while suspended, because that is the half that still works', async () => {
+    const store = await emptyStore();
+    await store.add({ id: 'm1', atMs: RECORDING_START + 15_000 });
+    mockListRecentVideos.mockResolvedValue({ videos: [GLASSES_VIDEO] });
+    mockConfirmGlassesVideo.mockResolvedValue({
+      isGlasses: true,
+      pendingDownload: false,
+      startedAtMs: RECORDING_START,
+      durationSec: 20,
+      width: 1520,
+      height: 2032,
+    });
+    mockExportOriginal.mockResolvedValue({
+      path: '/docs/glasses-1.mov',
+      bytes: 33_000_000,
+    });
+    const subject = controller(store);
+    await subject.start();
+    await subject.suspendListening();
+
+    const clips = await subject.sync();
+
+    expect(clips).toHaveLength(1);
+  });
+
+  it('reopens the microphone on resume', async () => {
+    const wakeWord = stubWakeWord();
+    const subject = controller(await emptyStore(), wakeWord);
+    await subject.start();
+    await subject.suspendListening();
+
+    await subject.resumeListening();
+
+    expect(subject.isListening).toBe(true);
+    expect(wakeWord.start).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores a resume that nothing suspended, and a suspend twice over', async () => {
+    const wakeWord = stubWakeWord();
+    const subject = controller(await emptyStore(), wakeWord);
+    await subject.start();
+
+    await subject.resumeListening();
+    await subject.suspendListening();
+    await subject.suspendListening();
+
+    expect(wakeWord.start).toHaveBeenCalledTimes(1);
+    expect(wakeWord.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('can be resumed after a stop that would not close cleanly', async () => {
+    const wakeWord = stubWakeWord();
+    (wakeWord.stop as jest.Mock).mockRejectedValueOnce(
+      new Error('recognizer would not stop'),
+    );
+    const subject = controller(await emptyStore(), wakeWord);
+    await subject.start();
+
+    await subject.suspendListening();
+    await subject.resumeListening();
+
+    // A `listening` flag left true by the failed stop would have made this
+    // resume a no-op and killed the trigger for the rest of the session.
+    expect(subject.isListening).toBe(true);
+    expect(wakeWord.start).toHaveBeenCalledTimes(2);
+  });
+
+  it('can start watching without ever opening the microphone', async () => {
+    const wakeWord = stubWakeWord();
+    const subject = controller(await emptyStore(), wakeWord);
+
+    await subject.start({ listen: false });
+
+    // The case is a service starting while the live-capture path is already
+    // armed. Opening the microphone and being told to close it a moment later
+    // would reconfigure the audio session under a live capture for nothing.
+    expect(wakeWord.start).not.toHaveBeenCalled();
+    expect(subject.isListening).toBe(false);
+    const { GlassesMediaLibraryNative } = jest.requireMock(
+      '../src/native/GlassesMediaLibraryNative',
+    );
+    expect(GlassesMediaLibraryNative.startWatching).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the microphone on the first resume after a silent start', async () => {
+    const wakeWord = stubWakeWord();
+    const subject = controller(await emptyStore(), wakeWord);
+    await subject.start({ listen: false });
+
+    await subject.resumeListening();
+
+    expect(wakeWord.start).toHaveBeenCalledTimes(1);
+    expect(subject.isListening).toBe(true);
+  });
+
+  it('does nothing on either call before start', async () => {
+    const wakeWord = stubWakeWord();
+    const subject = controller(await emptyStore(), wakeWord);
+
+    await subject.suspendListening();
+    await subject.resumeListening();
+
+    expect(wakeWord.start).not.toHaveBeenCalled();
+    expect(wakeWord.stop).not.toHaveBeenCalled();
   });
 });
