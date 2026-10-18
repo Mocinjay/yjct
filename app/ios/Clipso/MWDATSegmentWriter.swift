@@ -124,10 +124,6 @@ final class MWDATSegmentWriter {
   private var pendingAudio: [(sample: CMSampleBuffer, pts: CMTime, peak: Float)] = []
   private var pendingAudioDrops = 0
 
-  /// Host time the last video frame arrived, for `idleTimer`.
-  private var lastVideoArrival: CMTime?
-  /// Finishes a segment whose frames have stopped (see `idleFinishSeconds`).
-  private var idleTimer: DispatchSourceTimer?
 
   /// How long a cut waits for the next keyframe before ending the segment
   /// anyway. Waiting keeps the rolling buffer gap-free; the cap keeps a cut
@@ -142,11 +138,6 @@ final class MWDATSegmentWriter {
   /// whole segment's video late against its audio.
   private static let primingFrames = 15
   private static let primingSeconds = 0.6
-  /// With no frame for this long, the open segment is finished where it
-  /// stands. A passthrough segment otherwise waits for a keyframe that a
-  /// stalled or stopped stream never sends, and the stall recovery that
-  /// follows would throw the seconds before the dropout away.
-  private static let idleFinishSeconds = 2.0
   /// Mic audio older than this with no video to go under is dropped.
   private static let maxPendingAudioSeconds = 5.0
   /// Duration given to a passthrough frame the SDK did not stamp with one.
@@ -178,6 +169,10 @@ final class MWDATSegmentWriter {
     var videoSamples = 0
     var keyframes = 0
     var lastVideoDTS: CMTime = .invalid
+    /// End of the last mic buffer written. A segment finished on its way into
+    /// a teardown keeps the sound past its last frame, so its file — and the
+    /// duration the stitcher trims from — runs to here, not to `lastPTS`.
+    var audioEnd: CMTime = .invalid
     /// Set when a passthrough frame could not be written. Every frame up to
     /// the next keyframe references it, so they are skipped rather than
     /// written as a smear of undecodable pictures.
@@ -515,8 +510,13 @@ final class MWDATSegmentWriter {
   }
 
   /// Writes the waiting mic buffers stamped before `limit` into `segment`.
+  /// A momentarily busy input leaves the rest queued for the next drain; only
+  /// the final drain before a segment closes (an infinite `limit`) drops them.
   private func drainAudio(into segment: Segment, before limit: CMTime) {
     while let entry = pendingAudio.first, entry.pts < limit {
+      if limit.isNumeric, let audioInput = segment.audioInput, !audioInput.isReadyForMoreMediaData {
+        return
+      }
       pendingAudio.removeFirst()
       segment.audioPeak = max(segment.audioPeak, entry.peak)
       guard let audioInput = segment.audioInput else { continue }
@@ -528,6 +528,8 @@ final class MWDATSegmentWriter {
       }
       if audioInput.append(entry.sample) {
         segment.audioSamples += 1
+        let duration = CMSampleBufferGetDuration(entry.sample)
+        segment.audioEnd = duration.isNumeric ? CMTimeAdd(entry.pts, duration) : entry.pts
       } else {
         segment.audioAppendFailures += 1
         if segment.audioAppendFailures == 1 {
@@ -543,8 +545,6 @@ final class MWDATSegmentWriter {
 
   private func appendVideoOnQueue(_ sample: CMSampleBuffer, at arrival: CMTime) {
     guard running else { return }
-    lastVideoArrival = arrival
-    armIdleTimer()
 
     let passthrough = CMSampleBufferGetImageBuffer(sample) == nil
     let keyframe = sample.isVideoKeyframe
@@ -826,29 +826,6 @@ final class MWDATSegmentWriter {
     }
   }
 
-  /// Finishes the open segment once frames have stopped for
-  /// `idleFinishSeconds`. Armed lazily by the first frame; one timer for the
-  /// writer's life.
-  private func armIdleTimer() {
-    guard idleTimer == nil else { return }
-    let timer = DispatchSource.makeTimerSource(queue: queue)
-    timer.schedule(deadline: .now() + 1, repeating: 1)
-    timer.setEventHandler { [weak self] in
-      guard let self, self.running, let segment = self.current,
-            let last = self.lastVideoArrival
-      else { return }
-      let idle = CMTimeSubtract(CMClockGetTime(CMClockGetHostTimeClock()), last).seconds
-      guard idle > Self.idleFinishSeconds else { return }
-      Self.log(String(format: "no frames for %.1fs — finishing the segment where it stands", idle))
-      // The mic kept running through the gap; that sound goes under the frozen
-      // last frame rather than being lost.
-      self.drainAudio(into: segment, before: .positiveInfinity)
-      self.rotate(completion: self.takePendingCuts())
-    }
-    timer.resume()
-    idleTimer = timer
-  }
-
   // MARK: - Cut / stop (called from the bridge)
 
   /// Finalize the in-flight segment; `completion` fires after the file is
@@ -933,8 +910,6 @@ final class MWDATSegmentWriter {
       self.running = false
       self.rotateTimer?.cancel()
       self.rotateTimer = nil
-      self.idleTimer?.cancel()
-      self.idleTimer = nil
       self.rotateDue = false
       self.priming = []
       self.pendingAudio = []
@@ -1136,10 +1111,15 @@ final class MWDATSegmentWriter {
     }
     current = nil
 
+    // The file ends at its last sample of either kind, and JS trims the wake
+    // word against this duration, so it must be the file's, not the video's.
+    let end = segment.audioEnd.isNumeric && segment.audioEnd > segment.lastPTS
+      ? segment.audioEnd
+      : segment.lastPTS
     let finished = FinishedSegment(
       path: segment.path,
       startedAtMs: segment.startedAtMs,
-      durationSec: max(0, CMTimeSubtract(segment.lastPTS, segment.firstPTS).seconds)
+      durationSec: max(0, CMTimeSubtract(end, segment.firstPTS).seconds)
     )
     let fps = finished.durationSec > 0 ? Double(segment.videoSamples) / finished.durationSec : 0
 

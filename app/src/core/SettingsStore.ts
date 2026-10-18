@@ -14,6 +14,13 @@ const CHIME_OFF_MIGRATION_KEY = 'settings.migrations.chimeOff';
 export class SettingsStore {
   private cached: Settings | null = null;
   private listeners = new Set<(s: Settings) => void>();
+  /**
+   * The chime-off default was applied in memory but could not be saved. The
+   * next successful save of the settings carries it, so that save also marks
+   * the migration done — otherwise the retry next launch could not tell the
+   * old default from a chime the wearer turned back on in the meantime.
+   */
+  private chimeOffUnpersisted = false;
 
   async get(): Promise<Settings> {
     if (this.cached) {
@@ -69,20 +76,23 @@ export class SettingsStore {
    *
    * Kept apart from the load on purpose: a storage error here must not throw
    * away settings that loaded fine. The change is applied in memory first; if
-   * persisting it fails, the marker stays unset and it is retried next launch.
+   * persisting it fails, the next settings save finishes it (see
+   * `chimeOffUnpersisted`), or failing that the next launch retries.
    */
   private async applyChimeOffDefault(): Promise<void> {
     try {
       if ((await AsyncStorage.getItem(CHIME_OFF_MIGRATION_KEY)) !== null) {
         return;
       }
+      this.chimeOffUnpersisted = true;
       if (this.cached?.glassesChime) {
         this.cached = { ...this.cached, glassesChime: false };
         await AsyncStorage.setItem(KEY, JSON.stringify(this.cached));
       }
       await AsyncStorage.setItem(CHIME_OFF_MIGRATION_KEY, '1');
+      this.chimeOffUnpersisted = false;
     } catch {
-      // Retried on the next launch.
+      // Finished by the next save, or retried on the next launch.
     }
   }
 
@@ -95,6 +105,16 @@ export class SettingsStore {
     );
     this.cached = next;
     await AsyncStorage.setItem(KEY, JSON.stringify(next));
+    if (this.chimeOffUnpersisted) {
+      // `next` was built on the migrated settings, so what was just saved is
+      // either the migrated chime-off or the wearer's own choice since.
+      try {
+        await AsyncStorage.setItem(CHIME_OFF_MIGRATION_KEY, '1');
+        this.chimeOffUnpersisted = false;
+      } catch {
+        // Retried on the next save or launch.
+      }
+    }
     this.listeners.forEach(l => l(next));
     return next;
   }

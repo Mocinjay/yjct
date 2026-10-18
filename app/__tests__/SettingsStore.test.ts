@@ -103,6 +103,23 @@ describe('SettingsStore', () => {
     ).toBeNull();
   });
 
+  it('does not revert a chime the wearer re-enabled after a failed migration write', async () => {
+    await AsyncStorage.setItem(
+      'settings.v2',
+      JSON.stringify({ deviceKind: 'mwdat', glassesChime: true }),
+    );
+    (AsyncStorage.setItem as jest.Mock).mockImplementationOnce(async () => {
+      throw new Error('disk full');
+    });
+
+    const first = new SettingsStore();
+    expect((await first.get()).glassesChime).toBe(false);
+    await first.update({ glassesChime: true }); // the wearer's own choice
+
+    const relaunched = new SettingsStore();
+    expect((await relaunched.get()).glassesChime).toBe(true);
+  });
+
   it('clamps buffer seconds into the 30-90 range on update', async () => {
     const store = new SettingsStore();
     expect((await store.update({ bufferSeconds: 300 })).bufferSeconds).toBe(90);
