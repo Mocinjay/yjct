@@ -138,8 +138,15 @@ final class MWDATSegmentWriter {
   /// whole segment's video late against its audio.
   private static let primingFrames = 15
   private static let primingSeconds = 0.6
-  /// Mic audio older than this with no video to go under is dropped.
-  private static let maxPendingAudioSeconds = 5.0
+  /// Mic audio older than this with no video to go under is dropped. Longer
+  /// than a stalled segment can stay open — the bridge's 10s stall watchdog,
+  /// a recovery backoff of up to 6s, a JS re-arm — so the sound right after a
+  /// freeze is still queued when the segment is finally finished.
+  private static let maxPendingAudioSeconds = 30.0
+  /// How much sound past its last frame a segment finished on its way into a
+  /// teardown keeps. What follows went unseen, and a long tail would only be a
+  /// frozen picture filling the look-back window.
+  private static let finishTailSeconds = 2.0
   /// Duration given to a passthrough frame the SDK did not stamp with one.
   /// Only the last frame of a segment relies on it; the rest are spaced by
   /// their timestamps.
@@ -510,17 +517,15 @@ final class MWDATSegmentWriter {
   }
 
   /// Writes the waiting mic buffers stamped before `limit` into `segment`.
-  /// A momentarily busy input leaves the rest queued for the next drain; only
-  /// the final drain before a segment closes (an infinite `limit`) drops them.
+  /// A momentarily busy input leaves the rest queued for the next drain.
   private func drainAudio(into segment: Segment, before limit: CMTime) {
     while let entry = pendingAudio.first, entry.pts < limit {
-      if limit.isNumeric, let audioInput = segment.audioInput, !audioInput.isReadyForMoreMediaData {
+      if let audioInput = segment.audioInput, !audioInput.isReadyForMoreMediaData {
         return
       }
       pendingAudio.removeFirst()
       segment.audioPeak = max(segment.audioPeak, entry.peak)
       guard let audioInput = segment.audioInput else { continue }
-      guard audioInput.isReadyForMoreMediaData else { continue }
       // Never write media that predates the writer session — AVAssetWriter drops the segment otherwise.
       guard entry.pts >= segment.firstPTS else {
         segment.audioPreSessionDrops += 1
@@ -890,7 +895,10 @@ final class MWDATSegmentWriter {
   func finishCurrentSegment() {
     queue.async { [self] in
       guard let segment = current else { return }
-      drainAudio(into: segment, before: .positiveInfinity)
+      drainAudio(
+        into: segment,
+        before: CMTimeAdd(segment.lastPTS, CMTime(seconds: Self.finishTailSeconds, preferredTimescale: 600))
+      )
       rotate(completion: takePendingCuts())
     }
   }

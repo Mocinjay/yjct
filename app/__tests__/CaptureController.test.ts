@@ -76,8 +76,13 @@ class FakeSource implements DeviceVideoSource {
   private counter = 0;
 
   async prepare() {}
-  async start(onSegment: (s: Segment) => void) {
+  private onError: ((e: Error) => void) | null = null;
+  async start(onSegment: (s: Segment) => void, onError?: (e: Error) => void) {
     this.onSegment = onSegment;
+    this.onError = onError ?? null;
+  }
+  fail(message: string) {
+    this.onError?.(new Error(message));
   }
   async cut() {
     this.cuts += 1;
@@ -187,6 +192,32 @@ describe('CaptureController', () => {
     expect(paths[paths.length - 1]).toBe(wakeSegment);
     // 5s segment, phrase ends at 1.2s, 0.3s padding → drop the last 3.5s
     expect(trim).toBeCloseTo(3.5);
+  });
+
+  it('saves a wake word heard while capture was down once it re-arms', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10, false);
+
+    await controller.arm();
+    for (let i = 0; i < 3; i++) {
+      source.emit();
+    }
+    const wakeSegment = source.emit();
+    // The feed drops; the segment holding "Clipso" is only transcribed after
+    // the error has landed.
+    source.fail('The glasses feed stalled');
+    wake.fire({ segmentPath: wakeSegment, endOffsetSec: 1.2 });
+    await settle();
+    expect(mockStitch).not.toHaveBeenCalled();
+
+    await controller.arm(); // the capture screen re-arms on its own
+    await settle();
+    await settle();
+
+    expect(mockStitch).toHaveBeenCalledTimes(1);
+    const [paths] = mockStitch.mock.calls[0];
+    expect(paths[paths.length - 1]).toBe(wakeSegment);
   });
 
   it('falls back to cut + flush when the wake segment is already gone', async () => {

@@ -63,6 +63,14 @@ final class MWDATBridge: RCTEventEmitter {
   /// used to stop the first (stop chime), create another (start chime), then
   /// the first failure tore *that* one down: a self-sustaining restart loop.
   private var openTask: Task<Void, Error>?
+  /// Identifies the newest open, so only that open clears `openTask`.
+  private var openGeneration = 0
+  /// Bumped whenever the pipeline is released on purpose — stopPreview, an
+  /// app-lifecycle release, stop(). An open checks it after every wait and
+  /// abandons itself if it moved: cancelling a recovery does not stop the
+  /// open the recovery is running, and without this the glasses reopened
+  /// behind a wearer who had left the screen or pocketed the phone.
+  private var pipelineEpoch = 0
 
   /// Consumes the session state stream for the life of the session. Held so
   /// teardown can cancel it — an orphaned consumer from a previous attempt is
@@ -154,6 +162,13 @@ final class MWDATBridge: RCTEventEmitter {
   /// `streamResolution` as copied onto healthQueue for the open stream.
   private var judgedResolution: StreamingResolution = .high
   private var healthTicks = 0
+  /// Consecutive health ticks with frames flowing, for the open stream.
+  private var healthyTicks = 0
+  /// Seconds a rebuilt stream must run cleanly before recovery's attempt
+  /// budget is given back. Not on open: an open alone proves nothing, and
+  /// refilling there let a link that drops every minute cycle the glasses
+  /// forever.
+  private static let recoveryBudgetResetSeconds = 30
 
   /// Resolution the next stream asks for. `.high` (720x1280) needs the glasses'
   /// Wi-Fi link; over Bluetooth the SDK's ladder protects resolution by cutting
@@ -395,14 +410,20 @@ final class MWDATBridge: RCTEventEmitter {
   /// writer, and nothing is lost by dropping that one on background.
   @objc static var isCapturing: Bool { current?.isCaptureIntended ?? false }
 
-  /// Armed, whether or not a writer exists this instant: a stall recovery
-  /// tears the writer down and brings it back only once the stream reopens.
+  /// Armed, whether or not a writer exists this instant: a stall recovery or
+  /// a re-arm tears the writer down and brings it back only once the stream
+  /// reopens. The intent outlives those teardowns and is cleared only when the
+  /// wearer stops recording or recovery gives up.
   private var isCaptureIntended: Bool {
-    writer != nil || (recoveryTask != nil && activeSegmentSeconds != nil)
+    writer != nil || activeSegmentSeconds != nil
   }
 
   @objc static func releaseGlassesForAppLifecycle(_ reason: String) {
-    guard let bridge = current, bridge.deviceSession != nil || bridge.stream != nil else { return }
+    // A recovery or open between pipelines holds nothing yet, but will.
+    guard let bridge = current,
+          bridge.deviceSession != nil || bridge.stream != nil
+            || bridge.recoveryTask != nil || bridge.openTask != nil
+    else { return }
     // Backgrounding while armed is the whole point of the product: the wearer
     // is out in the world with the phone in a pocket. Tearing down here is
     // what made "say Clipso while using another app" impossible, so an active
@@ -417,8 +438,10 @@ final class MWDATBridge: RCTEventEmitter {
       return
     }
     log("app lifecycle (\(reason)) — releasing glasses session")
-    // A recovery still in flight would reopen the glasses in the background.
+    // A recovery, or an open, still in flight would reopen the glasses in the
+    // background.
     bridge.recoveryTask?.cancel()
+    bridge.pipelineEpoch += 1
     bridge.stopping = true
     bridge.teardown()
     bridge.stopping = false
@@ -733,6 +756,7 @@ final class MWDATBridge: RCTEventEmitter {
       // including one a stall recovery is still rebuilding.
       if !isCaptureIntended {
         recoveryTask?.cancel()
+        pipelineEpoch += 1
         stopping = true
         teardown()
         stopping = false
@@ -874,6 +898,7 @@ final class MWDATBridge: RCTEventEmitter {
     recoveryTask = nil
     recoveryAttempts = 0
     activeSegmentSeconds = nil
+    pipelineEpoch += 1
     stopping = true
     teardown()
     stopping = false
@@ -907,10 +932,27 @@ final class MWDATBridge: RCTEventEmitter {
       try await existing.value
       return
     }
-    let task = Task { @MainActor in try await performOpenPipeline() }
+    openGeneration += 1
+    let generation = openGeneration
+    let task = Task { @MainActor in
+      // Cleared by the open itself the moment it ends. Its starter may resume
+      // only after a newer open began, and clearing then dropped that one's
+      // handle; a waiter that resumed first found this finished, failed
+      // handle still set and coalesced onto it.
+      defer { if openGeneration == generation { openTask = nil } }
+      try await performOpenPipeline()
+    }
     openTask = task
-    defer { openTask = nil }
     try await task.value
+  }
+
+  /// Throws if the pipeline was released on purpose while an open waited.
+  @MainActor
+  private func ensureOpenStillWanted(_ epoch: Int) throws {
+    guard epoch == pipelineEpoch else {
+      Self.log("open abandoned — the pipeline was released while it waited")
+      throw CancellationError()
+    }
   }
 
   @MainActor
@@ -946,6 +988,7 @@ final class MWDATBridge: RCTEventEmitter {
     stopping = true
     teardown()
     stopping = false
+    let epoch = pipelineEpoch
 
     let wearables = Wearables.shared
     Self.log(
@@ -958,6 +1001,7 @@ final class MWDATBridge: RCTEventEmitter {
     if wearables.devices.isEmpty {
       Self.log("device list empty — waiting up to 20s…")
       let appeared = await Self.waitForDevice(wearables, timeoutSeconds: 20)
+      try ensureOpenStillWanted(epoch)
       Self.log("waitForDevice → \(appeared)")
       guard appeared else {
         throw NSError(
@@ -1000,6 +1044,7 @@ final class MWDATBridge: RCTEventEmitter {
       // to the first device explicitly.
       Self.log("auto-selector undecided — waiting up to 10s…")
       let resolved = await Self.waitForActiveDevice(auto, timeoutSeconds: 10)
+      try ensureOpenStillWanted(epoch)
       if resolved {
         Self.log("auto-selector resolved: \(String(describing: auto.activeDevice))")
         selector = auto
@@ -1031,6 +1076,7 @@ final class MWDATBridge: RCTEventEmitter {
     if session.state != .started {
       Self.log("waiting for session to reach started (60s max)…")
       let outcome = await Self.waitForStarted(startedSignal, timeoutSeconds: 60)
+      try ensureOpenStillWanted(epoch)
       // The live property is authoritative. A missed stream event must not
       // fail a session that is demonstrably up.
       let liveState = session.state
@@ -1174,6 +1220,7 @@ final class MWDATBridge: RCTEventEmitter {
     if newStream.state != .streaming {
       Self.log("waiting for stream to reach .streaming (45s max)…")
       let streaming = await waitForStreaming(newStream, timeoutSeconds: 45)
+      try ensureOpenStillWanted(epoch)
       Self.log("waitForStreaming → \(streaming), state=\(String(describing: newStream.state))")
       guard streaming else {
         let cause = lastStreamError.map { $0.description }
@@ -1217,6 +1264,7 @@ final class MWDATBridge: RCTEventEmitter {
       self.fpsSamples = []
       self.resolutionJudged = skipJudging
       self.healthTicks = 0
+      self.healthyTicks = 0
       self.judgedResolution = watchedResolution
     }
 
@@ -1253,12 +1301,23 @@ final class MWDATBridge: RCTEventEmitter {
         )
       }
       if sinceFrame < 1 { self.judgeResolution(fps: fps) }
+      self.healthyTicks = sinceFrame < 1 ? self.healthyTicks + 1 : 0
+      if self.healthyTicks == Self.recoveryBudgetResetSeconds {
+        // Recovered stalls used to spend the budget for good: after three, the
+        // next drop got no recovery at all.
+        DispatchQueue.main.async { [weak self] in
+          guard let self, self.recoveryTask == nil, self.recoveryAttempts > 0 else { return }
+          Self.log("stream healthy for \(Self.recoveryBudgetResetSeconds)s — recovery budget restored")
+          self.recoveryAttempts = 0
+        }
+      }
 
       guard sinceFrame > Self.stallSeconds else {
         if self.stallReported {
           self.stallReported = false
           self.pipelineStalled = false
-          self.recoveryAttempts = 0
+          // Main-actor state; the recovery loop reads it there.
+          DispatchQueue.main.async { [weak self] in self?.recoveryAttempts = 0 }
           Self.log("frames RESUMED after stall")
           self.sendEvent(
             withName: Event.streamState,

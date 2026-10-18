@@ -85,6 +85,14 @@ export class CaptureController {
   private sessionClipCount = 0;
   private armedSince: number | null = null;
   private maxRecordingTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * A wake word heard while capture was down mid-session. A segment that is
+   * open when the glasses' feed drops is only finished once the native side
+   * rebuilds the stream — after the error has already reached here — so its
+   * "Clipso" is transcribed while the state is 'error' and would be ignored.
+   * Its segment is still in the buffer; the clip is saved on the next arm.
+   */
+  private deferredDetection: WakeDetection | null = null;
 
   /**
    * `onClipSaved` fires once a clip is in the library. Post-capture work
@@ -125,6 +133,12 @@ export class CaptureController {
       });
       this.armedSince = Date.now();
       this.setStatus({ ...this.status, state: 'armed' });
+      const deferred = this.deferredDetection;
+      this.deferredDetection = null;
+      if (deferred) {
+        // Not awaited: arming is done; the save reports through the status.
+        this.captureNow(deferred).catch(() => {});
+      }
     } catch (err) {
       await this.disarm();
       this.setStatus({
@@ -138,6 +152,7 @@ export class CaptureController {
 
   async disarm(): Promise<void> {
     this.clearMaxRecordingTimer();
+    this.deferredDetection = null;
     await this.wakeWord.stop().catch(() => {});
     await this.source.stop().catch(() => {});
     this.buffer.clear();
@@ -154,6 +169,12 @@ export class CaptureController {
       await this.stopClip();
     } else if (this.status.state === 'armed') {
       await this.captureNow(detection);
+    } else if (
+      detection &&
+      this.armedSince !== null &&
+      (this.status.state === 'error' || this.status.state === 'arming')
+    ) {
+      this.deferredDetection = detection;
     }
   }
 
