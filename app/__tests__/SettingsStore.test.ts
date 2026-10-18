@@ -56,6 +56,30 @@ describe('SettingsStore', () => {
     expect((await store.get()).wakeWord.provider).toBe('mock');
   });
 
+  it('defaults the glasses chime to off', async () => {
+    const store = new SettingsStore();
+    expect((await store.get()).glassesChime).toBe(false);
+  });
+
+  it('switches a stored chime-on default off once, then respects the choice', async () => {
+    await AsyncStorage.setItem(
+      'settings.v2',
+      JSON.stringify({
+        deviceKind: 'mwdat',
+        bufferSeconds: 60,
+        glassesChime: true,
+      }),
+    );
+    const first = new SettingsStore();
+    const migrated = await first.get();
+    expect(migrated.glassesChime).toBe(false);
+    expect(migrated.bufferSeconds).toBe(60); // everything else untouched
+
+    await first.update({ glassesChime: true });
+    const relaunched = new SettingsStore();
+    expect((await relaunched.get()).glassesChime).toBe(true);
+  });
+
   it('clamps buffer seconds into the 30-90 range on update', async () => {
     const store = new SettingsStore();
     expect((await store.update({ bufferSeconds: 300 })).bufferSeconds).toBe(90);

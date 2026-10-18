@@ -19,6 +19,12 @@ import { publishService } from './PublishService';
  * One job at a time on purpose. Captioning is transcription plus a re-encode
  * on the other end; firing a whole armed session's clips at it in parallel
  * just makes every one of them slower.
+ *
+ * Nothing starts while the glasses are recording (`setCaptureActive`). A
+ * caption burn is a full-clip export on the same media hardware the live
+ * capture and the wake-word transcription use, and running it mid-session is
+ * what cost captured footage frames. Clips queue up and caption once the
+ * wearer disarms. A job already running when capture starts finishes.
  */
 export class CaptionQueue {
   private pending: string[] = [];
@@ -31,6 +37,7 @@ export class CaptionQueue {
    * get past the check while the other was mid-await.
    */
   private claimed = new Set<string>();
+  private captureActive = false;
 
   /**
    * Queue a freshly captured clip. No-op for free tier — captioning is Pro,
@@ -79,6 +86,20 @@ export class CaptionQueue {
     }
   }
 
+  /**
+   * Holds new jobs while a capture session is live and releases them when it
+   * ends. Driven by the capture session's status (services/capture.ts).
+   */
+  setCaptureActive(active: boolean): void {
+    if (this.captureActive === active) {
+      return;
+    }
+    this.captureActive = active;
+    if (!active) {
+      this.drain();
+    }
+  }
+
   /** Clips waiting or running — for tests and diagnostics. */
   get depth(): number {
     return this.claimed.size;
@@ -113,14 +134,19 @@ export class CaptionQueue {
   }
 
   private drain(): void {
-    if (this.draining) {
+    if (this.draining || this.captureActive) {
       return;
     }
     this.draining = true;
     void (async () => {
       try {
-        let next = this.pending.shift();
-        while (next !== undefined) {
+        // Re-checked per job: capture can start while one is running, and the
+        // rest then wait for it to end.
+        while (!this.captureActive) {
+          const next = this.pending.shift();
+          if (next === undefined) {
+            break;
+          }
           this.active = next;
           try {
             await this.run(next);
@@ -128,7 +154,6 @@ export class CaptionQueue {
             this.claimed.delete(next);
             this.active = null;
           }
-          next = this.pending.shift();
         }
       } finally {
         this.active = null;

@@ -898,8 +898,14 @@ RCT_EXPORT_METHOD(renderEdit:(NSString *)sourcePath
 
   AVMutableVideoComposition *videoComposition = [AVMutableVideoComposition videoComposition];
   videoComposition.renderSize = render;
-  float fps = videoTrack.nominalFrameRate > 1 ? videoTrack.nominalFrameRate : 30.0f;
-  videoComposition.frameDuration = CMTimeMake(1, (int32_t)lround(fps));
+  // Output frames land exactly where the source's do. Glasses capture is
+  // variable-rate - the link's quality ladder moves between 15 and 30 fps - and
+  // a fixed frameDuration resampled it: at round(nominalFrameRate), an average
+  // dragged down by every slow stretch, frames were duplicated in some places
+  // and dropped in others. frameDuration now only paces what has no source
+  // frames at all, the black beat of a climax edit.
+  videoComposition.sourceTrackIDForFrameTiming = videoComp.trackID;
+  videoComposition.frameDuration = CMTimeMake(1, 30);
   videoComposition.instructions = instructions;
 
   // Only attach the Core Animation overlay when there is something to draw.

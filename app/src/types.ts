@@ -72,9 +72,9 @@ export interface Settings {
   climaxEdit: boolean;
   /**
    * Sound the glasses when a trigger lands and again when the clip is saved.
-   * Behind a flag because the only sound MWDAT can make the glasses play is
-   * their still-capture tone, and whether firing it disturbs the live video
-   * stream is not yet confirmed on hardware.
+   * Off by default because the only sound MWDAT can make the glasses play is
+   * their still-capture tone, fired on the live video stream right at the
+   * moment being clipped.
    */
   glassesChime: boolean;
 }

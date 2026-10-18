@@ -330,3 +330,49 @@ xcrun devicectl device process launch --console --terminate-existing com.mocinja
 > The console connection reliably drops during long *capture* runs, which is why
 > `MWDATSegmentWriter` also mirrors to `clipso-diagnostics.log`. A caption export
 > is short enough that the live console is fine.
+
+---
+
+## 8. 2026-10-18 — capturing at the stream's ceiling
+
+This section supersedes the parts of §2–§5 that describe segments as H.264
+encoded on the phone.
+
+**What cannot change.** MWDAT, up to and including 1.0.1 (2026-10-09), still
+has no video-record API: the glasses' own 3K / 1080p60 capture is not
+reachable. The best any app gets is the live stream, at most 720x1280 @ 30.
+Everything below is about reaching that ceiling without losing anything on
+the way.
+
+| Change | Where | Why |
+|---|---|---|
+| Wi-Fi entitlements (`HotspotConfiguration`, `wifi-info`) | `ios/Clipso/Clipso.entitlements` | The SDK joins the glasses' Wi-Fi with `NEHotspotConfigurationManager`. With no entitlements file the app could only ever stream over Bluetooth, where the ladder caps resolution and cuts frame rate. Same pair as Meta's CameraAccess sample. Needs the two capabilities on the App ID (paid team). |
+| `ClientToken` under `MWDAT`, `_meta-datax._tcp` in `NSBonjourServices` | `Info.plist` | Completes the attestation config (empty in Developer Mode, `MWDAT_CLIENT_TOKEN` otherwise); lets iOS allow the SDK's local-network browse. |
+| SDK 0.8.0 → 1.0.1, iOS 17.2 minimum | project, `Package.resolved` | Adds the Wi-Fi Aware transport with SoftAP fallback. `addStream` → `addCamera(config:).stream`. |
+| Stream `.raw` → `.hvc1`, segments written passthrough | `MWDATBridge.swift`, `MWDATSegmentWriter.swift` | The glasses' own HEVC is stored bit for bit — no phone-side decode and H.264 re-encode, so one fewer quality generation and no realtime encoder to drop frames (`notReady`) when other work holds the hardware. This is how Meta's sample records. |
+| Segments start on keyframes | `MWDATSegmentWriter.swift` | Passthrough requires it. Rotation waits for the first keyframe after `segmentSeconds`, so segments abut with no lost frames; `cut()` waits up to 2s for one. |
+| Glasses timestamps kept | `MWDATSegmentWriter.swift` | Frames used to be stamped with phone arrival time, which wrote the link's burstiness into the file as judder. Now the glasses' spacing is kept, shifted onto the host clock by the lowest observed delay (re-measured per segment) so phone-mic audio stays in sync. |
+| Preview decodes HEVC itself | `MWDATPreviewDecoder` in `MWDATBridge.swift` | `.hvc1` frames carry no pixel buffer. Decoding runs only while a preview is visible and never in the background. |
+| `.medium` fallback | `MWDATBridge.requestedResolution` | If a `.high` stream averages under 26 fps over its first ~10s, later streams in the process ask for `.medium` @ 30 (§4.3: Bluetooth `.high` carried ~504p of detail anyway). The live stream is never renegotiated. |
+| Caption export keeps source frame timing | `CaptionEngine.m` | `sourceTrackIDForFrameTiming` instead of resampling to `round(nominalFrameRate)`, which duplicated and dropped frames on variable-rate capture. |
+| No captioning while armed | `CaptionQueue.setCaptureActive` | Caption exports competed with live capture for the media hardware. Clips queue and caption on disarm. |
+| Glasses chime off by default | `config.ts`, one-time migration in `SettingsStore` | The chime is a still capture on the live stream, fired at the moment being clipped. |
+
+**Codec of what is delivered.** Uncaptioned clips are now HEVC in MP4 (the
+glasses' bitstream). Captioned clips are re-encoded by the caption export as
+before. §5's HEVC concern for third-party share targets applies to the
+uncaptioned ones.
+
+**Verify on device** (`Documents/clipso-diagnostics.log`):
+
+- `addCamera(codec: hvc1, resolution: high, fps: 30)` and
+  `FRAME ANATOMY — subtype='hvc1' 720x1280 … keyframe=…`
+- `video input: … 'hvc1' passthrough (no re-encode)`
+- per segment: `rotating: … fps=… mode=passthrough keyframes=… worstGap=…`
+- every 5s: `HEALTH fps=… resolution=…`, and once per stream `high held …` or
+  `high averaged … — the next stream asks for medium@30`
+- `timing: glasses pts=… arrival=…`, or `frames carry no capture timestamp`
+  if the SDK sends none (arrival time is then used, as before)
+
+`source video format: … 720x1280` with `HEALTH fps` holding near 30 means the
+Wi-Fi link came up; 504x896, or `.high` with falling fps, means Bluetooth.

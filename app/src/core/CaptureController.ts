@@ -54,6 +54,17 @@ export interface CaptureStatus {
 }
 
 /**
+ * True from the start of arming until disarm — while the glasses may be
+ * recording. `armedSince` is the marker rather than the state alone: a stream
+ * error mid-session puts the state in 'error' while the glasses keep
+ * recording, and a failed arm ends in 'error' with nothing recording at all.
+ * Only the first has `armedSince` set.
+ */
+export function isCaptureLive(status: CaptureStatus): boolean {
+  return status.state === 'arming' || status.armedSince !== undefined;
+}
+
+/**
  * The core loop:
  *
  *   armed      — rolling buffer keeps the last N seconds, evicting old files

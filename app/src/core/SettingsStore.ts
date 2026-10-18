@@ -8,6 +8,8 @@ import type { Settings } from '../types';
 
 const KEY = 'settings.v2';
 const LEGACY_KEY = 'settings.v1';
+/** Set once the chime-off default has been applied to this install. */
+const CHIME_OFF_MIGRATION_KEY = 'settings.migrations.chimeOff';
 
 export class SettingsStore {
   private cached: Settings | null = null;
@@ -37,6 +39,17 @@ export class SettingsStore {
         }
         this.cached = migrated;
         await AsyncStorage.setItem(KEY, JSON.stringify(migrated));
+      }
+      // One-time: the glasses chime used to default to on, so every install
+      // that ever saved settings stored `true` without anyone choosing it. It
+      // is now off by default (see DEFAULT_SETTINGS); switch stored installs
+      // off once, and from then on whatever the wearer picks sticks.
+      if ((await AsyncStorage.getItem(CHIME_OFF_MIGRATION_KEY)) === null) {
+        if (this.cached.glassesChime) {
+          this.cached = { ...this.cached, glassesChime: false };
+          await AsyncStorage.setItem(KEY, JSON.stringify(this.cached));
+        }
+        await AsyncStorage.setItem(CHIME_OFF_MIGRATION_KEY, '1');
       }
     } catch {
       this.cached = DEFAULT_SETTINGS;

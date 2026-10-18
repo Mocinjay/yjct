@@ -144,8 +144,9 @@ export function SettingsScreen({ navigation }: Props) {
           Capture tone: the glasses sound when a trigger lands and again once
           the clip is saved, so you know it worked without pulling your phone
           out. It uses the glasses' own photo-capture tone — the only sound the
-          Meta toolkit can play on them. Turn it off if the feed stalls when it
-          fires.
+          Meta toolkit can play on them — and taking that photo can briefly
+          interrupt the video right at the moment you clip, so it is off by
+          default.
         </Text>
         <View style={styles.row}>
           <Choice

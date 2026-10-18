@@ -220,11 +220,12 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
     NSAssert(compositionAudioTracks != 1 || audioTrack != nil,
              @"composition audio track present without a usable source");
 
-    // Every segment leaves MWDATSegmentWriter with identical encoder settings,
-    // so concatenating them needs no re-encode at all: passthrough copies the
-    // exact bits the segment writer produced. The previous path decoded every
-    // frame to BGRA and re-encoded it with no bitrate specified, spending a
-    // whole extra generation of quality on a pure concatenation.
+    // Segments are the glasses' own HEVC, written as-is by MWDATSegmentWriter,
+    // and each one starts on a keyframe - so concatenating them needs no
+    // re-encode at all: passthrough copies the exact bits the glasses encoded.
+    // The previous path decoded every frame to BGRA and re-encoded it with no
+    // bitrate specified, spending a whole extra generation of quality on a
+    // pure concatenation.
     //
     // The one thing passthrough cannot do is join segments whose formats
     // differ, which the SDK's ABR ladder can produce by stepping resolution

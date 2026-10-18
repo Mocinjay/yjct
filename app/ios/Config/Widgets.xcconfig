@@ -22,6 +22,6 @@ CURRENT_PROJECT_VERSION = 1
 MARKETING_VERSION = 1.0
 
 // Live Activities need 16.2 for the ActivityContent API the bridge uses. The
-// app itself stays on 15.1; everything Live-Activity-shaped is availability
-// gated so older devices simply run without the widget.
+// app itself is on 17.2, the Meta Wearables SDK's minimum, so the extension's
+// lower floor never matters on a device that can install the app.
 IPHONEOS_DEPLOYMENT_TARGET = 16.2

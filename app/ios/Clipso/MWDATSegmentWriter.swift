@@ -39,16 +39,25 @@ enum DiagnosticLog {
   }
 }
 
-/// Writes the MWDAT glasses stream as back-to-back fixed-length MP4 segments —
-/// the same rolling-segment contract MockDeviceSource fulfils with the phone
-/// camera.
+/// Writes the MWDAT glasses stream as back-to-back MP4 segments of roughly
+/// `segmentSeconds` each — the same rolling-segment contract MockDeviceSource
+/// fulfils with the phone camera.
 ///
-/// Video frames arrive as CMSampleBuffers from the SDK on the glasses' own
-/// timeline; the toolkit exposes no microphone API, so audio is captured
-/// phone-side with AVAudioEngine (iOS routes input from the glasses' Bluetooth
-/// mic while they are the active audio device). Both tracks are re-stamped
-/// onto the host clock at arrival so a single AVAssetWriter timeline can hold
-/// them; segment-level drift over a few seconds is imperceptible.
+/// The stream is requested as `.hvc1`, so frames arrive as the glasses' own
+/// HEVC encode and are written untouched (passthrough), the way Meta's
+/// CameraAccess sample records. The phone never decodes or re-encodes them,
+/// which removes a whole generation of quality loss and the realtime encoder
+/// that used to drop frames whenever captioning or transcription held the
+/// hardware. Decoded pixel buffers, if a stream ever delivers them, still go
+/// through an H.264 encoder.
+///
+/// A compressed segment can only begin on a keyframe, so rotation waits for
+/// the first keyframe after the segment's time is up: segments run a little
+/// over `segmentSeconds` and abut exactly, with no frame lost between them.
+///
+/// Audio is captured phone-side with AVAudioEngine on the host clock. Video
+/// keeps the glasses' own frame spacing and is shifted onto that same clock
+/// (see `mapped(_:offset:arrival:)`), so one AVAssetWriter timeline holds both.
 final class MWDATSegmentWriter {
   struct FinishedSegment {
     let path: String
@@ -81,6 +90,33 @@ final class MWDATSegmentWriter {
   private var current: Segment?
   private var rotateTimer: DispatchSourceTimer?
 
+  /// Set when a passthrough segment's time is up. It ends on the next keyframe,
+  /// because that keyframe is the only frame the next segment can start with.
+  private var rotateDue = false
+  private var loggedLongSegment = false
+  /// `cut()` callers waiting for a passthrough segment to end on a keyframe.
+  private var pendingCuts: [() -> Void] = []
+  private var cutDeadline: DispatchSourceTimer?
+  /// Frames thrown away because no segment was open and they were not
+  /// keyframes. Only nonzero after a stream (re)start or a forced cut.
+  private var droppedAwaitingKeyframe = 0
+
+  /// Lowest arrival-minus-capture delay seen since the current segment opened.
+  /// The next segment shifts glasses time onto the host clock by this amount.
+  private var recentMinDelay: CMTime?
+  private var loggedTimingSource = false
+
+  /// How long a cut waits for the next keyframe before ending the segment
+  /// anyway. Waiting keeps the rolling buffer gap-free; the cap keeps a cut
+  /// from hanging on a stream whose keyframes have stopped.
+  private static let cutKeyframeWaitSeconds = 2.0
+  /// A jump in the glasses' clock larger than this is a restart, not jitter.
+  private static let clockResyncSeconds = 1.0
+  /// Duration given to a passthrough frame the SDK did not stamp with one.
+  /// Only the last frame of a segment relies on it; the rest are spaced by
+  /// their timestamps.
+  private static let fallbackFrameDuration = CMTime(value: 1, timescale: 30)
+
   private final class Segment {
     let writer: AVAssetWriter
     let videoInput: AVAssetWriterInput
@@ -92,8 +128,19 @@ final class MWDATSegmentWriter {
     let startedAtMs: Double
     let firstPTS: CMTime
     var lastPTS: CMTime
+    /// True when the glasses' compressed frames are written as-is.
+    let passthrough: Bool
+    /// What the segment was opened with. A passthrough input is bound to its
+    /// source format, so a format change (the SDK's quality ladder switching
+    /// resolution) ends the segment at the keyframe that carries it.
+    let formatDescription: CMFormatDescription?
+    /// Host clock minus glasses clock, fixed for the life of the segment so
+    /// the frame spacing inside it is exactly the glasses' own.
+    var clockOffset: CMTime
 
     var videoSamples = 0
+    var keyframes = 0
+    var lastVideoDTS: CMTime = .invalid
     var audioSamples = 0
     var videoAppendFailures = 0
     var audioAppendFailures = 0
@@ -116,7 +163,10 @@ final class MWDATSegmentWriter {
       audioInput: AVAssetWriterInput?,
       path: String,
       startedAtMs: Double,
-      firstPTS: CMTime
+      firstPTS: CMTime,
+      passthrough: Bool,
+      formatDescription: CMFormatDescription?,
+      clockOffset: CMTime
     ) {
       self.writer = writer
       self.videoInput = videoInput
@@ -125,6 +175,9 @@ final class MWDATSegmentWriter {
       self.startedAtMs = startedAtMs
       self.firstPTS = firstPTS
       self.lastPTS = firstPTS
+      self.passthrough = passthrough
+      self.formatDescription = formatDescription
+      self.clockOffset = clockOffset
     }
   }
 
@@ -431,41 +484,47 @@ final class MWDATSegmentWriter {
   private func appendVideoOnQueue(_ sample: CMSampleBuffer, at arrival: CMTime) {
     guard running else { return }
 
-    // Video and audio share the host clock (audio is phone-mic), so a frame is
-    // stamped with the moment it arrived. Only monotonicity is enforced.
-    //
-    // There used to be an upper clamp here too — no more than ~2 frames (66 ms)
-    // past the previous PTS — meant to smooth over dropped frames. It did the
-    // opposite of what a rolling buffer needs: any gap longer than 66 ms (a
-    // Bluetooth hiccup, or simply the SDK's quality ladder dropping below
-    // 15 fps) was rewritten as 66 ms, so the file's timeline ran FASTER than
-    // real time. Three consequences, all of them things this app promises not
-    // to get wrong:
-    //   1. `durationSec` is the PTS span, so every segment under-reported how
-    //      much wall time it covered — that is why the buffered-seconds counter
-    //      was always low and the look-back window held more than it claimed.
-    //   2. Audio is NOT clamped (it is stamped from the host clock), so video
-    //      drifted ahead of audio by the whole accumulated gap — progressive
-    //      A/V desync inside a single segment.
-    //   3. Playback was time-compressed: the clip ran fast.
-    // A real gap in the feed is a real freeze; recording it honestly keeps the
-    // clip, its duration and its audio aligned.
-    var pts = arrival
-    if let segment = current, segment.lastVideoPTS.isValid {
-      let minNext = CMTimeAdd(segment.lastVideoPTS, CMTime(value: 1, timescale: 30_000))
-      if pts < minNext { pts = minNext }
-      let gap = CMTimeSubtract(pts, segment.lastVideoPTS).seconds
-      if gap > segment.longestGapSec { segment.longestGapSec = gap }
-    }
+    let passthrough = CMSampleBufferGetImageBuffer(sample) == nil
+    let keyframe = sample.isVideoKeyframe
+    let delay = observeDelay(of: sample, arrival: arrival)
 
-    guard let retimed = Self.retimed(sample, to: pts) else {
-      Self.log("retiming failed — dropping frame")
-      return
+    // A passthrough segment can only end where the next one can begin: on a
+    // keyframe. Its time being up, a cut, or a new stream format all wait here.
+    if let segment = current, segment.passthrough, keyframe {
+      var formatChanged = false
+      if let opened = segment.formatDescription,
+         let incoming = CMSampleBufferGetFormatDescription(sample) {
+        formatChanged = !CMFormatDescriptionEqual(opened, otherFormatDescription: incoming)
+      }
+      if formatChanged {
+        Self.log("stream format changed at a keyframe — ending the segment there")
+      }
+      if rotateDue || formatChanged || !pendingCuts.isEmpty {
+        rotate(completion: takePendingCuts())
+      }
     }
 
     if current == nil {
+      guard keyframe else {
+        droppedAwaitingKeyframe += 1
+        return
+      }
+      // The new segment's offset is the lowest delay seen over the previous
+      // one: that is the link's real latency, and re-measuring it per segment
+      // follows any drift between the glasses' clock and the phone's.
+      let offset = recentMinDelay ?? delay ?? .zero
+      recentMinDelay = delay
+      let timing = Self.mapped(sample, offset: offset, arrival: arrival)
+      guard let retimed = Self.retimed(
+        sample, pts: timing.pts, dts: timing.dts, keyframe: keyframe, passthrough: passthrough
+      ) else {
+        Self.log("retiming failed — dropping frame")
+        return
+      }
       do {
-        current = try startSegment(firstSample: retimed, firstPTS: pts)
+        current = try startSegment(
+          firstSample: retimed, firstPTS: timing.pts, passthrough: passthrough, clockOffset: offset
+        )
         scheduleRotation()
       } catch {
         running = false
@@ -473,9 +532,123 @@ final class MWDATSegmentWriter {
         onError("Could not start segment writer: \(error.localizedDescription)")
         return
       }
+      if droppedAwaitingKeyframe > 0 {
+        Self.log("segment opened after dropping \(droppedAwaitingKeyframe) frames waiting for a keyframe")
+        droppedAwaitingKeyframe = 0
+      }
+      append(retimed, to: current, pts: timing.pts, dts: timing.dts, keyframe: keyframe, original: sample)
+      return
     }
 
     guard let segment = current else { return }
+
+    // Inside a segment the offset is fixed, so frames keep the glasses' own
+    // spacing. Only a jump far beyond any transport jitter — the glasses'
+    // clock restarting — moves it.
+    if let delay, abs(CMTimeSubtract(delay, segment.clockOffset).seconds) > Self.clockResyncSeconds {
+      Self.log(
+        String(
+          format: "glasses clock jumped %.2fs — re-anchoring the segment",
+          CMTimeSubtract(delay, segment.clockOffset).seconds
+        )
+      )
+      segment.clockOffset = delay
+    }
+
+    var timing = Self.mapped(sample, offset: segment.clockOffset, arrival: arrival)
+    // Monotonic only. There used to be an upper clamp too — no more than ~2
+    // frames past the previous PTS — and it rewrote every real gap as 66 ms, so
+    // the file ran faster than real time, under-reported its duration and
+    // drifted ahead of the (unclamped) audio. A real gap is a real freeze.
+    if segment.lastVideoDTS.isValid {
+      let floor = CMTimeAdd(segment.lastVideoDTS, CMTime(value: 1, timescale: 30_000))
+      if timing.dts < floor { timing.dts = floor }
+    }
+    if timing.pts < timing.dts { timing.pts = timing.dts }
+    if segment.lastVideoPTS.isValid {
+      let gap = CMTimeSubtract(timing.pts, segment.lastVideoPTS).seconds
+      if gap > segment.longestGapSec { segment.longestGapSec = gap }
+    }
+
+    if rotateDue, !loggedLongSegment,
+       CMTimeSubtract(timing.pts, segment.firstPTS).seconds > segmentSeconds * 3 {
+      loggedLongSegment = true
+      Self.log(
+        "no keyframe for \(Int(segmentSeconds * 2))s past the segment's end — "
+          + "it keeps growing until one arrives"
+      )
+    }
+
+    guard let retimed = Self.retimed(
+      sample, pts: timing.pts, dts: timing.dts, keyframe: keyframe, passthrough: segment.passthrough
+    ) else {
+      Self.log("retiming failed — dropping frame")
+      return
+    }
+    append(retimed, to: segment, pts: timing.pts, dts: timing.dts, keyframe: keyframe, original: sample)
+  }
+
+  /// Arrival minus capture time for one frame, folded into the running minimum.
+  /// nil when the SDK gave the frame no usable timestamp.
+  private func observeDelay(of sample: CMSampleBuffer, arrival: CMTime) -> CMTime? {
+    let source = CMSampleBufferGetPresentationTimeStamp(sample)
+    guard source.isNumeric else {
+      if !loggedTimingSource {
+        loggedTimingSource = true
+        Self.log("frames carry no capture timestamp — stamping arrival time instead")
+      }
+      return nil
+    }
+    let delay = CMTimeSubtract(arrival, source)
+    if !loggedTimingSource {
+      loggedTimingSource = true
+      Self.log(
+        String(
+          format: "timing: glasses pts=%.3f arrival=%.3f — keeping the glasses' frame spacing",
+          source.seconds, arrival.seconds
+        )
+      )
+    }
+    if let lowest = recentMinDelay, abs(CMTimeSubtract(delay, lowest).seconds) <= Self.clockResyncSeconds {
+      if delay < lowest { recentMinDelay = delay }
+    } else {
+      // First frame, or the glasses' clock jumped: start over from here.
+      recentMinDelay = delay
+    }
+    return delay
+  }
+
+  /// Where on the host clock a frame belongs.
+  ///
+  /// Each frame carries the glasses' capture time. Arrival time on the phone is
+  /// that plus a transport delay that changes frame to frame, because the link
+  /// delivers in bursts. This writer used to stamp arrival time, which wrote the
+  /// burstiness straight into the file as uneven frame spacing — judder on top of
+  /// whatever the link really dropped. Now the glasses' spacing is kept and only
+  /// the offset onto the host clock comes from arrival, since the audio is from
+  /// the phone mic on the host clock and both tracks share one timeline.
+  private static func mapped(
+    _ sample: CMSampleBuffer,
+    offset: CMTime,
+    arrival: CMTime
+  ) -> (pts: CMTime, dts: CMTime) {
+    let source = CMSampleBufferGetPresentationTimeStamp(sample)
+    guard source.isNumeric else { return (arrival, arrival) }
+    let pts = CMTimeAdd(source, offset)
+    let sourceDTS = CMSampleBufferGetDecodeTimeStamp(sample)
+    let dts = sourceDTS.isNumeric ? CMTimeAdd(sourceDTS, offset) : pts
+    return (pts, dts)
+  }
+
+  private func append(
+    _ retimed: CMSampleBuffer,
+    to segment: Segment?,
+    pts: CMTime,
+    dts: CMTime,
+    keyframe: Bool,
+    original sample: CMSampleBuffer
+  ) {
+    guard let segment else { return }
     guard segment.videoInput.isReadyForMoreMediaData else {
       segment.droppedNotReady += 1
       return
@@ -483,11 +656,13 @@ final class MWDATSegmentWriter {
 
     if segment.videoInput.append(retimed) {
       segment.videoSamples += 1
+      if keyframe, segment.passthrough { segment.keyframes += 1 }
       segment.lastVideoPTS = pts
+      segment.lastVideoDTS = dts
       let duration = CMSampleBufferGetDuration(sample)
-      segment.lastPTS = duration.isValid && duration.value > 0
+      segment.lastPTS = duration.isNumeric && duration.value > 0
         ? CMTimeAdd(pts, duration)
-        : pts
+        : CMTimeAdd(pts, Self.fallbackFrameDuration)
     } else {
       segment.videoAppendFailures += 1
       if segment.videoAppendFailures == 1 {
@@ -502,16 +677,56 @@ final class MWDATSegmentWriter {
 
   // MARK: - Cut / stop (called from the bridge)
 
-  /// Finalize the in-flight segment immediately; `completion` fires after the
-  /// file is written and reported through `onSegment`.
+  /// Finalize the in-flight segment; `completion` fires after the file is
+  /// written and reported through `onSegment`.
+  ///
+  /// A passthrough segment ends on the next keyframe rather than this instant:
+  /// ending it mid-GOP would leave the frames up to that keyframe with nowhere
+  /// to go, a hole in the rolling buffer. The wait is at most one keyframe
+  /// interval, and `cutKeyframeWaitSeconds` caps it on a stream that has
+  /// stopped sending them.
   func cut(completion: @escaping () -> Void) {
     queue.async { [weak self] in
-      guard let self, self.running, self.current != nil else {
+      guard let self, self.running, let segment = self.current else {
         completion()
         return
       }
-      self.rotate(completion: completion)
+      guard segment.passthrough else {
+        self.rotate(completion: completion)
+        return
+      }
+      self.pendingCuts.append(completion)
+      self.armCutDeadline()
     }
+  }
+
+  private func armCutDeadline() {
+    guard cutDeadline == nil else { return }
+    let timer = DispatchSource.makeTimerSource(queue: queue)
+    timer.schedule(deadline: .now() + Self.cutKeyframeWaitSeconds)
+    timer.setEventHandler { [weak self] in
+      guard let self else { return }
+      self.cutDeadline = nil
+      guard let cuts = self.takePendingCuts() else { return }
+      Self.log(
+        "no keyframe within \(Self.cutKeyframeWaitSeconds)s of a cut — ending the segment now; "
+          + "frames until the next keyframe are dropped"
+      )
+      self.rotate(completion: cuts)
+    }
+    timer.resume()
+    cutDeadline = timer
+  }
+
+  /// Every waiting `cut()` completion, folded into one, and the deadline
+  /// cancelled. nil when nothing is waiting.
+  private func takePendingCuts() -> (() -> Void)? {
+    cutDeadline?.cancel()
+    cutDeadline = nil
+    guard !pendingCuts.isEmpty else { return nil }
+    let cuts = pendingCuts
+    pendingCuts = []
+    return { cuts.forEach { $0() } }
   }
 
   /// Stop everything and discard the in-flight segment.
@@ -526,6 +741,10 @@ final class MWDATSegmentWriter {
       self.running = false
       self.rotateTimer?.cancel()
       self.rotateTimer = nil
+      self.rotateDue = false
+      // Nothing will ever end the segment these were waiting on. Settle them
+      // so the JS promises behind them do not hang.
+      self.takePendingCuts()?()
       if let segment = self.current {
         self.current = nil
         segment.writer.cancelWriting()
@@ -536,7 +755,12 @@ final class MWDATSegmentWriter {
 
   // MARK: - Segment lifecycle (queue-only)
 
-  private func startSegment(firstSample: CMSampleBuffer, firstPTS: CMTime) throws -> Segment {
+  private func startSegment(
+    firstSample: CMSampleBuffer,
+    firstPTS: CMTime,
+    passthrough: Bool,
+    clockOffset: CMTime
+  ) throws -> Segment {
     let dir = NSTemporaryDirectory()
     let path = (dir as NSString).appendingPathComponent("clipso-mwdat-\(UUID().uuidString).mp4")
     let url = URL(fileURLWithPath: path)
@@ -547,65 +771,64 @@ final class MWDATSegmentWriter {
 
     let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
 
+    let formatDescription = CMSampleBufferGetFormatDescription(firstSample)
     var width = 504
     var height = 896
-    if let desc = CMSampleBufferGetFormatDescription(firstSample) {
+    var subType = "????"
+    if let desc = formatDescription {
       let dims = CMVideoFormatDescriptionGetDimensions(desc)
       if dims.width > 0, dims.height > 0 {
         width = Int(dims.width)
         height = Int(dims.height)
       }
-      let subType = CMFormatDescriptionGetMediaSubType(desc)
-      let isCompressed = CMSampleBufferGetImageBuffer(firstSample) == nil
+      subType = Self.fourCC(CMFormatDescriptionGetMediaSubType(desc))
       Self.log(
-        "source video format: subtype='\(Self.fourCC(subType))' \(dims.width)x\(dims.height) "
-          + "compressed=\(isCompressed)"
+        "source video format: subtype='\(subType)' \(dims.width)x\(dims.height) "
+          + "compressed=\(passthrough)"
       )
-      if isCompressed {
-        // The H.264 output settings below configure an ENCODER input, which
-        // only accepts uncompressed samples. Fail loudly rather than let
-        // AVFoundation report it as an opaque "Cannot Encode Media".
+    }
+
+    let videoInput: AVAssetWriterInput
+    if passthrough {
+      guard let formatDescription else {
         throw NSError(
           domain: "MWDATSegmentWriter", code: 4,
           userInfo: [
-            NSLocalizedDescriptionKey:
-              "Glasses are delivering compressed '\(Self.fourCC(subType))' frames, but the "
-              + "segment writer encodes raw frames. Set the stream's videoCodec to .raw.",
+            NSLocalizedDescriptionKey: "Glasses frame has no format description to write it with.",
           ]
         )
       }
+      // nil output settings: the glasses' own HEVC is written bit for bit. The
+      // format hint is what the track's sample description is built from.
+      videoInput = AVAssetWriterInput(
+        mediaType: .video, outputSettings: nil, sourceFormatHint: formatDescription
+      )
+      Self.log("video input: \(width)x\(height) '\(subType)' passthrough (no re-encode)")
+    } else {
+      // Decoded pixels only reach here if the stream delivers them instead of
+      // HEVC. 0.3 bits/pixel/frame at 30 fps, High profile: generous, because
+      // this is the only encode those frames get before the stitcher passes
+      // them through.
+      let bitRate = max(4_000_000, Int(Double(width * height) * 30.0 * 0.3))
+      videoInput = AVAssetWriterInput(
+        mediaType: .video,
+        outputSettings: [
+          AVVideoCodecKey: AVVideoCodecType.h264,
+          AVVideoWidthKey: width,
+          AVVideoHeightKey: height,
+          AVVideoCompressionPropertiesKey: [
+            AVVideoAverageBitRateKey: bitRate,
+            AVVideoExpectedSourceFrameRateKey: 30,
+            AVVideoMaxKeyFrameIntervalKey: 30,
+            // High profile buys CABAC and B-frames over Baseline — roughly 20%
+            // better quality at the same bitrate, at no cost on a HW encoder.
+            AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+          ],
+        ]
+      )
+      Self.log("video input: \(width)x\(height) h264-high bitRate=\(bitRate) (raw frames)")
     }
-
-    // 0.3 bits/pixel/frame at 30 fps. The previous `width * height * 2` was
-    // 0.067 bpp (its "~0.2" comment was off by 3x) and only ever hit the
-    // 1.5 Mbit floor, which is what made clips look soft next to a native
-    // Meta recording. This is the LAST place the glasses' pixels are encoded
-    // at full fidelity — the stitcher passes these segments through untouched —
-    // so it is the one that has to be generous.
-    //
-    // Encode cost is not the constraint it was assumed to be: this is a
-    // hardware VideoToolbox encode, and 720x1280@30 is a small fraction of
-    // what the SoC sustains. Disk is not either — 30s at 8 Mbit is ~30 MB of
-    // temporary files that the ring buffer deletes as it evicts them.
-    let bitRate = max(4_000_000, Int(Double(width * height) * 30.0 * 0.3))
-    let videoInput = AVAssetWriterInput(
-      mediaType: .video,
-      outputSettings: [
-        AVVideoCodecKey: AVVideoCodecType.h264,
-        AVVideoWidthKey: width,
-        AVVideoHeightKey: height,
-        AVVideoCompressionPropertiesKey: [
-          AVVideoAverageBitRateKey: bitRate,
-          AVVideoExpectedSourceFrameRateKey: 30,
-          AVVideoMaxKeyFrameIntervalKey: 30,
-          // High profile buys CABAC and B-frames over Baseline — roughly 20%
-          // better quality at the same bitrate, at no cost on a HW encoder.
-          AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-        ],
-      ]
-    )
     videoInput.expectsMediaDataInRealTime = true
-    Self.log("video input: \(width)x\(height) h264-high bitRate=\(bitRate)")
 
     // Audio is optional: it is captured phone-side via AVAudioEngine and can be
     // absent entirely (engine never started, no route, permission). Adding an
@@ -678,7 +901,10 @@ final class MWDATSegmentWriter {
       audioInput: audioInput,
       path: path,
       startedAtMs: Date().timeIntervalSince1970 * 1000,
-      firstPTS: firstPTS
+      firstPTS: firstPTS,
+      passthrough: passthrough,
+      formatDescription: formatDescription,
+      clockOffset: clockOffset
     )
   }
 
@@ -687,17 +913,26 @@ final class MWDATSegmentWriter {
     let timer = DispatchSource.makeTimerSource(queue: queue)
     timer.schedule(deadline: .now() + segmentSeconds)
     timer.setEventHandler { [weak self] in
-      self?.rotate(completion: nil)
+      guard let self, let segment = self.current else { return }
+      if segment.passthrough {
+        // Ended by the next keyframe in appendVideoOnQueue.
+        self.rotateDue = true
+      } else {
+        self.rotate(completion: nil)
+      }
     }
     timer.resume()
     rotateTimer = timer
   }
 
   /// Finish the current segment and report it. The next arriving video frame
-  /// opens the next segment, so the loop keeps running until stopAndDiscard().
+  /// (the next keyframe, for a passthrough stream) opens the next segment, so
+  /// the loop keeps running until stopAndDiscard().
   private func rotate(completion: (() -> Void)?) {
     rotateTimer?.cancel()
     rotateTimer = nil
+    rotateDue = false
+    loggedLongSegment = false
 
     guard let segment = current else {
       completion?()
@@ -710,10 +945,13 @@ final class MWDATSegmentWriter {
       startedAtMs: segment.startedAtMs,
       durationSec: max(0, CMTimeSubtract(segment.lastPTS, segment.firstPTS).seconds)
     )
+    let fps = finished.durationSec > 0 ? Double(segment.videoSamples) / finished.durationSec : 0
 
     Self.log(
       "rotating: video=\(segment.videoSamples) samples "
         + "(failed=\(segment.videoAppendFailures), notReady=\(segment.droppedNotReady)) "
+        + "fps=\(String(format: "%.1f", fps)) "
+        + "mode=\(segment.passthrough ? "passthrough keyframes=\(segment.keyframes)" : "encode") "
         + "audio=\(segment.audioSamples) samples (failed=\(segment.audioAppendFailures), "
         + "preSession=\(segment.audioPreSessionDrops), peak=\(segment.audioPeak)) "
         + "span=\(finished.durationSec)s worstGap=\(String(format: "%.2f", segment.longestGapSec))s "
@@ -771,11 +1009,24 @@ final class MWDATSegmentWriter {
 
   // MARK: - Sample-buffer helpers
 
-  private static func retimed(_ sample: CMSampleBuffer, to pts: CMTime) -> CMSampleBuffer? {
+  /// A copy of `sample` at the given timeline position. Passthrough frames also
+  /// get explicit sync flags: SDK buffers can omit them, and without them the
+  /// writer builds no keyframe index, so the file plays but cannot be seeked,
+  /// trimmed on a keyframe, or imported to Photos.
+  private static func retimed(
+    _ sample: CMSampleBuffer,
+    pts: CMTime,
+    dts: CMTime,
+    keyframe: Bool,
+    passthrough: Bool
+  ) -> CMSampleBuffer? {
+    let duration = CMSampleBufferGetDuration(sample)
     var timing = CMSampleTimingInfo(
-      duration: CMSampleBufferGetDuration(sample),
+      duration: duration.isNumeric && duration.value > 0
+        ? duration
+        : (passthrough ? fallbackFrameDuration : .invalid),
       presentationTimeStamp: pts,
-      decodeTimeStamp: .invalid
+      decodeTimeStamp: passthrough ? dts : .invalid
     )
     var out: CMSampleBuffer?
     let status = CMSampleBufferCreateCopyWithNewTiming(
@@ -785,7 +1036,15 @@ final class MWDATSegmentWriter {
       sampleTimingArray: &timing,
       sampleBufferOut: &out
     )
-    return status == noErr ? out : nil
+    guard status == noErr, let out else { return nil }
+    if passthrough,
+       let attachments = CMSampleBufferGetSampleAttachmentsArray(out, createIfNecessary: true)
+         as? [NSMutableDictionary],
+       let first = attachments.first {
+      first[kCMSampleAttachmentKey_NotSync] = !keyframe
+      first[kCMSampleAttachmentKey_DependsOnOthers] = !keyframe
+    }
+    return out
   }
 
   /// Loudest absolute sample, 0…1. A granted-but-muted microphone delivers
@@ -856,5 +1115,74 @@ final class MWDATSegmentWriter {
       bufferList: buffer.audioBufferList
     )
     return status == noErr ? sampleBuffer : nil
+  }
+}
+
+// MARK: - Keyframes
+
+extension CMSampleBuffer {
+  /// Whether a file, or a decoder, can start at this frame.
+  ///
+  /// Raw pixel buffers stand alone, so every one qualifies. A compressed frame
+  /// qualifies only if it holds an HEVC random-access picture (BLA/IDR/CRA, NAL
+  /// types 16-21) or an H.264 IDR (type 5). An explicit `NotSync` attachment is
+  /// trusted when present, but its absence is not: CoreMedia reads a missing
+  /// flag as "sync", and SDK buffers omit it, so every frame would pass.
+  var isVideoKeyframe: Bool {
+    if CMSampleBufferGetImageBuffer(self) != nil { return true }
+    if let attachments = CMSampleBufferGetSampleAttachmentsArray(self, createIfNecessary: false)
+      as? [[String: Any]],
+      let notSync = attachments.first?[kCMSampleAttachmentKey_NotSync as String] as? Bool {
+      return !notSync
+    }
+    guard let format = CMSampleBufferGetFormatDescription(self),
+          let data = CMSampleBufferGetDataBuffer(self)
+    else { return false }
+
+    let codec = CMFormatDescriptionGetMediaSubType(format)
+    // 'hev1' carries its parameter sets in-band; CoreMedia names only 'hvc1'.
+    let hev1: FourCharCode = 0x6865_7631
+    let hevc = codec == kCMVideoCodecType_HEVC || codec == hev1
+    var lengthSize: Int32 = 4
+    if hevc {
+      _ = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+        format, parameterSetIndex: 0, parameterSetPointerOut: nil,
+        parameterSetSizeOut: nil, parameterSetCountOut: nil, nalUnitHeaderLengthOut: &lengthSize
+      )
+    } else if codec == kCMVideoCodecType_H264 {
+      _ = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+        format, parameterSetIndex: 0, parameterSetPointerOut: nil,
+        parameterSetSizeOut: nil, parameterSetCountOut: nil, nalUnitHeaderLengthOut: &lengthSize
+      )
+    } else {
+      return false
+    }
+    let headerLength = [1, 2, 4].contains(Int(lengthSize)) ? Int(lengthSize) : 4
+
+    // Length-prefixed NAL units; an access unit can open with parameter sets
+    // or a delimiter before the picture, so walk all of them.
+    let total = CMBlockBufferGetDataLength(data)
+    var offset = 0
+    var lengthBytes = [UInt8](repeating: 0, count: headerLength)
+    while offset + headerLength < total {
+      guard CMBlockBufferCopyDataBytes(
+        data, atOffset: offset, dataLength: headerLength, destination: &lengthBytes
+      ) == kCMBlockBufferNoErr else { return false }
+      let nalLength = lengthBytes.reduce(0) { ($0 << 8) | Int($1) }
+      offset += headerLength
+      guard nalLength > 0, offset + nalLength <= total else { return false }
+
+      var header: UInt8 = 0
+      guard CMBlockBufferCopyDataBytes(
+        data, atOffset: offset, dataLength: 1, destination: &header
+      ) == kCMBlockBufferNoErr else { return false }
+      if hevc {
+        if (16...21).contains((header >> 1) & 0x3F) { return true }
+      } else if header & 0x1F == 5 {
+        return true
+      }
+      offset += nalLength
+    }
+    return false
   }
 }

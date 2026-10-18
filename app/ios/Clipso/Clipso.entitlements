@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  The glasses' high-bandwidth link is Wi-Fi: the Meta Wearables SDK joins the
+	  glasses' own network with NEHotspotConfigurationManager, which refuses to
+	  run without these two. Without them the camera stream can only use
+	  Bluetooth, where the SDK caps it near 504x896 and cuts frame rate to fit.
+	  Same pair as Meta's CameraAccess sample. Both need the matching
+	  capabilities (Hotspot Configuration, Access Wi-Fi Information) enabled on
+	  the App ID; automatic signing does that for a paid developer team.
+	-->
+	<key>com.apple.developer.networking.HotspotConfiguration</key>
+	<true/>
+	<key>com.apple.developer.networking.wifi-info</key>
+	<true/>
+</dict>
+</plist>

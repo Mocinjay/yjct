@@ -32,3 +32,9 @@ DEVELOPMENT_TEAM = ABCDE12345
 // anywhere else or the two drift and the extension fails to install.
 CLIPSO_BUNDLE_ID = com.yourname.clipso
 PRODUCT_BUNDLE_IDENTIFIER = $(CLIPSO_BUNDLE_ID)
+
+// MWDAT_CLIENT_TOKEN
+//   The Client Token from Wearables Developer Center. Leave it empty while the
+//   glasses run in Developer Mode (MetaAppID 0); set it, together with a real
+//   MetaAppID, for any other release channel.
+MWDAT_CLIENT_TOKEN =

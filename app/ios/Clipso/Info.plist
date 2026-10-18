@@ -55,6 +55,14 @@
 		<string>jarvis://</string>
 		<key>MetaAppID</key>
 		<string>0</string>
+		<!--
+		  Empty in Developer Mode, as in Meta's CameraAccess sample. Outside
+		  Developer Mode set MWDAT_CLIENT_TOKEN in Config/Signing.xcconfig to the
+		  Client Token from Wearables Developer Center; the SDK otherwise logs a
+		  partial attestation configuration (TeamID present, ClientToken not).
+		-->
+		<key>ClientToken</key>
+		<string>$(MWDAT_CLIENT_TOKEN)</string>
 		<key>TeamID</key>
 		<string>$(DEVELOPMENT_TEAM)</string>
 	</dict>
@@ -68,8 +76,14 @@
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Clipso connects to your Meta glasses over Bluetooth to buffer their camera feed.</string>
 	<key>NSBonjourServices</key>
+	<!--
+	  `_meta-datax._tcp` is the service the Meta Wearables SDK browses for on
+	  the local network (named in the 1.0 SDK binary). iOS only lets an app
+	  browse service types listed here.
+	-->
 	<array>
 		<string>_bonjour._tcp</string>
+		<string>_meta-datax._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Clipso buffers video from your camera while recording so saying “Clipso” can save the last moments as a clip.</string>

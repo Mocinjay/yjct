@@ -55,5 +55,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // second, opinionated transformation on top of that, so it is opt-in rather
   // than something every clip silently gets.
   climaxEdit: false,
-  glassesChime: true,
+  // Off by default: the tone is a still capture fired on the live stream, at
+  // the exact moment being clipped, and a still capture can interrupt the
+  // video. Wearers who want the audible confirmation can turn it on.
+  glassesChime: false,
 };

@@ -1,5 +1,5 @@
 import { FREE_BUFFER_SECONDS_MAX } from '../config';
-import { CaptureController } from '../core/CaptureController';
+import { CaptureController, isCaptureLive } from '../core/CaptureController';
 import { entitlementStore } from '../core/EntitlementStore';
 import { settingsStore } from '../core/SettingsStore';
 import type { DeviceVideoSource } from '../device/DeviceVideoSource';
@@ -34,20 +34,21 @@ export async function buildCaptureSession(): Promise<CaptureSession> {
     : Math.min(settings.bufferSeconds, FREE_BUFFER_SECONDS_MAX);
   const { source, mockSource } = buildSource(settings);
   const { wakeWord, mockWakeWord } = buildWakeWord(settings);
-  return {
-    controller: new CaptureController(
-      source,
-      wakeWord,
-      windowSeconds,
-      settings.glassesChime,
-      clip =>
-        // Fire-and-forget: the clip is already saved, and captioning progress
-        // is tracked on the clip itself, so nothing here needs awaiting.
-        void captionQueue.enqueue(clip.id).catch(() => {}),
-    ),
-    mockSource,
-    mockWakeWord,
-  };
+  const controller = new CaptureController(
+    source,
+    wakeWord,
+    windowSeconds,
+    settings.glassesChime,
+    clip =>
+      // Fire-and-forget: the clip is already saved, and captioning progress
+      // is tracked on the clip itself, so nothing here needs awaiting.
+      void captionQueue.enqueue(clip.id).catch(() => {}),
+  );
+  // Captioning waits while the glasses are recording; see CaptionQueue.
+  controller.subscribe(status =>
+    captionQueue.setCaptureActive(isCaptureLive(status)),
+  );
+  return { controller, mockSource, mockWakeWord };
 }
 
 function buildSource(settings: Settings): {

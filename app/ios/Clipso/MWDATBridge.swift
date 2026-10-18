@@ -6,6 +6,7 @@ import MWDATCore
 import MWDATMockDevice
 import React
 import UIKit
+import VideoToolbox
 
 /// React Native bridge for the Meta Wearables Device Access Toolkit.
 ///
@@ -51,6 +52,8 @@ final class MWDATBridge: RCTEventEmitter {
   private var deviceSelector: AutoDeviceSelector?
 
   private var deviceSession: DeviceSession?
+  /// Owns the glasses camera; `stream` is its child. Stopping it cascades.
+  private var camera: MWDATCamera.Camera?
   private var stream: MWDATCamera.Stream?
 
   /// In-flight pipeline open so concurrent callers coalesce onto one attempt.
@@ -90,6 +93,14 @@ final class MWDATBridge: RCTEventEmitter {
   private var mockGlasses: (any MockGlasses)?
 
   private let previewQueue = DispatchQueue(label: "com.mocinjay.clipso.mwdat.preview")
+  /// The stream is compressed HEVC, so the preview has to decode it. Every frame
+  /// is decoded while the preview is on, not just the ones shown — each depends
+  /// on the one before. Decoder state is only touched on this queue.
+  private let previewDecodeQueue = DispatchQueue(label: "com.mocinjay.clipso.mwdat.decode")
+  private var previewDecoder: MWDATPreviewDecoder?
+  /// No preview work while the app is in the background: nothing is on screen,
+  /// and an armed capture keeps the stream (and its frames) running there.
+  private var appInBackground = false
   /// Backpressure for the preview encoder. `previewQueue` is serial, so an
   /// encode that runs longer than the emit interval used to build a backlog of
   /// frames that were already stale by the time they crossed the bridge — the
@@ -126,6 +137,26 @@ final class MWDATBridge: RCTEventEmitter {
   private static let maxRecoveryAttempts = 3
   private var healthTimer: DispatchSourceTimer?
   private let healthQueue = DispatchQueue(label: "com.mocinjay.clipso.mwdat.health")
+  /// Delivered fps over the stream's first seconds, to judge the requested
+  /// resolution (see `judgeResolution`). healthQueue only.
+  private var fpsSamples: [Double] = []
+  private var resolutionJudged = false
+  /// What the open stream asked for. Written before the health timer starts.
+  private var streamResolution: StreamingResolution = .high
+  /// `streamResolution` as copied onto healthQueue for the open stream.
+  private var judgedResolution: StreamingResolution = .high
+  private var healthTicks = 0
+
+  /// Resolution the next stream asks for. `.high` (720x1280) needs the glasses'
+  /// Wi-Fi link; over Bluetooth the SDK's ladder protects resolution by cutting
+  /// frame rate, down to 15 fps. When a `.high` stream cannot hold its frame
+  /// rate, later streams in this process ask for `.medium` instead — measured on
+  /// a Bluetooth link the `.high` frames only carried ~504p of detail anyway
+  /// (docs/VIDEO-QUALITY.md 4.3), so 30 fps at 504x896 loses nothing real. A
+  /// relaunch tries `.high` again. Main actor only.
+  private static var requestedResolution: StreamingResolution = .high
+  /// Below this average, a `.high` stream is judged unable to hold 30 fps.
+  private static let minimumHighFps = 26.0
   /// Creating a CIContext allocates a GPU context and is documented as
   /// expensive; it must be made once and reused. Building one per frame (~7/s)
   /// churned enough memory for the OS to terminate the app with
@@ -331,6 +362,24 @@ final class MWDATBridge: RCTEventEmitter {
   override init() {
     super.init()
     MWDATBridge.current = self
+    let center = NotificationCenter.default
+    center.addObserver(
+      self, selector: #selector(appDidEnterBackground),
+      name: UIApplication.didEnterBackgroundNotification, object: nil
+    )
+    center.addObserver(
+      self, selector: #selector(appWillEnterForeground),
+      name: UIApplication.willEnterForegroundNotification, object: nil
+    )
+  }
+
+  @objc private func appDidEnterBackground() {
+    appInBackground = true
+    resetPreviewDecoder()
+  }
+
+  @objc private func appWillEnterForeground() {
+    appInBackground = false
   }
 
   /// True while segments are actually being written — i.e. the wearer is armed
@@ -682,8 +731,15 @@ final class MWDATBridge: RCTEventEmitter {
     reject _: @escaping RCTPromiseRejectBlock
   ) {
     previewEnabled = enabled.boolValue
+    if !enabled.boolValue { resetPreviewDecoder() }
     Self.log("preview emission \(enabled.boolValue ? "enabled" : "disabled")")
     resolve(nil)
+  }
+
+  /// Drops the preview's decode session. The next frame shown starts a fresh
+  /// one at the next keyframe.
+  private func resetPreviewDecoder() {
+    previewDecodeQueue.async { [weak self] in self?.previewDecoder = nil }
   }
 
   @objc(start:resolve:reject:)
@@ -965,32 +1021,28 @@ final class MWDATBridge: RCTEventEmitter {
       }
     }
 
-    // `.raw` delivers decoded CVPixelBuffers; `.hvc1` delivers compressed HEVC
-    // that the SDK does NOT decode for us — a frame then carries a dataBuffer
-    // and no imageBuffer, `makeUIImage()` returns nil, `CMSampleBufferGetImageBuffer`
-    // returns nil, and every frame is dropped by both the preview converter and
-    // the writer's H.264 encoder input (which expects uncompressed samples).
-    // Verified on-device: hvc1 frames log `imageBuffer=false makeUIImage=NIL`.
-    // `.raw` is also what Meta's own sample pairs with `makeUIImage()`; the SDK
-    // applies an automatic quality ladder (resolution first, then frame rate,
-    // never below 15 fps) to fit the Bluetooth link, so raw is safe to request.
+    // `.hvc1`: the glasses' own HEVC encode, delivered compressed. The segment
+    // writer stores it as-is — no decode, no re-encode on the phone — exactly
+    // how Meta's CameraAccess sample records. `.raw` had the SDK decode every
+    // frame and the writer encode it again as H.264: a full generation of
+    // quality lost, and a realtime encoder that dropped frames whenever
+    // captioning or transcription held the hardware. The preview decodes for
+    // itself (MWDATPreviewDecoder), and only while something is showing it.
     //
-    // 30 fps is the glasses' top supported rate. Ask for `.high`: the SDK's
-    // ABR ladder only ever steps DOWN from the requested rung, so `.medium`
-    // was a hard ceiling of 504×896 even when the link could carry more.
-    // MWDATCamera's own diagnostics say high "requires ... high (WiFi)
-    // bandwidth link", so over Bluetooth Classic the ladder will still land on
-    // medium — that is the floor we used to pin ourselves to, not a regression.
-    // The delivered size per segment is logged by MWDATSegmentWriter
-    // ("source video format: …"), which is where to check what we actually get.
-    let config = StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: 30)
-    Self.log("addStream(codec: raw, resolution: high, fps: 30)…")
-    guard let newStream = try session.addStream(config: config) else {
+    // 30 fps is the glasses' top streaming rate. `.high` (720x1280) needs the
+    // Wi-Fi link; see `requestedResolution` for when this asks for less.
+    let resolution = Self.requestedResolution
+    let config = StreamConfiguration(videoCodec: .hvc1, resolution: resolution, frameRate: 30)
+    Self.log("addCamera(codec: hvc1, resolution: \(resolution), fps: 30)…")
+    guard let newCamera = try session.addCamera(config: config) else {
       throw NSError(
         domain: "MWDATBridge", code: 11,
         userInfo: [NSLocalizedDescriptionKey: "Could not open the glasses camera stream."]
       )
     }
+    camera = newCamera
+    let newStream = newCamera.stream
+    streamResolution = resolution
     stream = newStream
     lastStreamError = nil
     streamHasLeftStopped = false
@@ -1032,6 +1084,10 @@ final class MWDATBridge: RCTEventEmitter {
     listenerTokens.append(
       newStream.errorPublisher.listen { [weak self] error in
         Self.log("stream ERROR: \(error.description)")
+        // A still capture that failed (the chime) leaves the video running. It
+        // must not read as a dead stream: that aborts arming and puts the
+        // capture screen into its error state.
+        if error == .photoCaptureFailed { return }
         self?.lastStreamError = error
         self?.sendEvent(withName: Event.error, body: ["message": error.description])
       }
@@ -1095,6 +1151,14 @@ final class MWDATBridge: RCTEventEmitter {
     frameCountAtLastHealth = frameCount
     stallReported = false
     pipelineStalled = false
+    let watchedResolution = streamResolution
+    healthQueue.async { [weak self] in
+      guard let self else { return }
+      self.fpsSamples = []
+      self.resolutionJudged = false
+      self.healthTicks = 0
+      self.judgedResolution = watchedResolution
+    }
 
     let timer = DispatchSource.makeTimerSource(queue: healthQueue)
     timer.schedule(deadline: .now() + 1, repeating: 1)
@@ -1116,6 +1180,19 @@ final class MWDATBridge: RCTEventEmitter {
           "recording": self.writer != nil,
         ]
       )
+      // The delivered rate, in the diagnostics log: the only record of what
+      // the link actually carried, as opposed to what was asked for.
+      self.healthTicks += 1
+      if self.healthTicks % 5 == 0 {
+        Self.log(
+          String(
+            format: "HEALTH fps=%.1f sinceFrame=%.1fs resolution=%@ recording=%@",
+            fps, sinceFrame, String(describing: self.judgedResolution),
+            self.writer != nil ? "YES" : "NO"
+          )
+        )
+      }
+      if sinceFrame < 1 { self.judgeResolution(fps: fps) }
 
       guard sinceFrame > Self.stallSeconds else {
         if self.stallReported {
@@ -1152,6 +1229,25 @@ final class MWDATBridge: RCTEventEmitter {
     }
     timer.resume()
     healthTimer = timer
+  }
+
+  /// Decides once per `.high` stream whether the link holds 30 fps at that
+  /// size, from ten seconds of delivered rate after a short settle. If it does
+  /// not, later streams ask for `.medium`. The live stream is left alone:
+  /// renegotiating it mid-capture costs the glasses' stop/start chime and a gap
+  /// in the rolling buffer. healthQueue only.
+  private func judgeResolution(fps: Double) {
+    guard !resolutionJudged, judgedResolution == .high, healthTicks > 3 else { return }
+    fpsSamples.append(fps)
+    guard fpsSamples.count >= 10 else { return }
+    resolutionJudged = true
+    let average = fpsSamples.reduce(0, +) / Double(fpsSamples.count)
+    if average >= Self.minimumHighFps {
+      Self.log(String(format: "high held %.1f fps — keeping it", average))
+      return
+    }
+    Self.log(String(format: "high averaged %.1f fps — the next stream asks for medium@30", average))
+    DispatchQueue.main.async { Self.requestedResolution = .medium }
   }
 
   /// Rebuild the pipeline after the watchdog declares the feed stalled.
@@ -1262,8 +1358,11 @@ final class MWDATBridge: RCTEventEmitter {
     writer = nil
     stream?.stop()
     stream = nil
+    camera?.stop()
+    camera = nil
     deviceSession?.stop()
     deviceSession = nil
+    resetPreviewDecoder()
     // Released LAST: clearing these first would detach the state/error
     // listeners before stop(), silently swallowing whatever the SDK reports
     // on the way down — which is exactly the failure we need to see.
@@ -1318,6 +1417,7 @@ final class MWDATBridge: RCTEventEmitter {
       parts.append("pixelFormat='\(fourCC)'")
     }
     parts.append("dataBuffer=\(CMSampleBufferGetDataBuffer(sample) != nil)")
+    parts.append("keyframe=\(sample.isVideoKeyframe)")
     parts.append("samples=\(CMSampleBufferGetNumSamples(sample))")
     parts.append("dataReady=\(CMSampleBufferDataIsReady(sample))")
 
@@ -1331,17 +1431,33 @@ final class MWDATBridge: RCTEventEmitter {
   }
 
   /// Longest edge of a preview frame, in pixels. The feed is a ~1/3-screen
-  /// viewfinder, so the glasses' native 504×896 is far more detail than is ever
-  /// displayed — and every extra pixel is paid for three times: CoreImage
-  /// render, JPEG encode, and a base64 string across the bridge. Halving the
-  /// edge quarters all three, which is what buys the higher frame rate below.
+  /// viewfinder, so the stream's full 720x1280 (or 504x896) is far more detail
+  /// than is ever displayed — and every extra pixel is paid for three times:
+  /// CoreImage render, JPEG encode, and a base64 string across the bridge.
+  /// Capping the edge cuts all three, which is what buys the frame rate below.
   private static let previewMaxEdge: CGFloat = 448
 
-  /// ~8 fps JPEG preview of the wearer's view. Kept below the clip encode rate
-  /// so CoreImage/JPEG work does not starve the segment writer (which is what
-  /// makes recorded clips look laggy).
+  /// ~8 fps JPEG preview of the wearer's view. Recording does not depend on
+  /// any of this: segments are written from the compressed frames directly.
   private func emitPreviewFrame(_ frame: VideoFrame) {
-    guard previewEnabled else { return }
+    guard previewEnabled, !appInBackground else { return }
+    let sample = frame.sampleBuffer
+    if let pixelBuffer = CMSampleBufferGetImageBuffer(sample) {
+      emitPreview(pixelBuffer)
+      return
+    }
+    previewDecodeQueue.async { [weak self] in
+      guard let self, self.previewEnabled, !self.appInBackground else { return }
+      let decoder = self.previewDecoder ?? MWDATPreviewDecoder()
+      self.previewDecoder = decoder
+      guard let pixelBuffer = decoder.decode(sample) else { return }
+      self.emitPreview(pixelBuffer)
+    }
+  }
+
+  /// Throttles decoded frames down to the preview rate and JPEG-encodes one at
+  /// a time on `previewQueue`.
+  private func emitPreview(_ pixelBuffer: CVPixelBuffer) {
     let now = Date().timeIntervalSince1970
     guard now - lastPreviewAt > 0.12 else { return }
 
@@ -1360,34 +1476,27 @@ final class MWDATBridge: RCTEventEmitter {
         self.previewLock.unlock()
       }
 
-      // Raw YCbCr frames (what `.raw` delivers, and what the writer needs) come
-      // through as CVPixelBuffers, so scale and encode them on the GPU in one
-      // pass — `jpegRepresentation` skips the CGImage → UIImage → jpegData
-      // round trip that allocated a full-size bitmap per frame. `makeUIImage()`
-      // is the fallback for compressed/HVC1 frames, which it does decode.
-      let jpeg: Data?
-      if let pixelBuffer = CMSampleBufferGetImageBuffer(frame.sampleBuffer) {
-        var image = CIImage(cvPixelBuffer: pixelBuffer)
-        let longestEdge = max(image.extent.width, image.extent.height)
-        let scale = longestEdge > 0 ? min(1, Self.previewMaxEdge / longestEdge) : 1
-        if scale < 1 {
-          image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        }
-        jpeg = Self.ciContext.jpegRepresentation(
-          of: image,
-          colorSpace: CGColorSpaceCreateDeviceRGB(),
-          options: [
-            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.4,
-          ]
-        )
-      } else {
-        jpeg = frame.makeUIImage()?.jpegData(compressionQuality: 0.4)
+      // Scale and encode on the GPU in one pass — `jpegRepresentation` skips
+      // the CGImage → UIImage → jpegData round trip that allocated a full-size
+      // bitmap per frame.
+      var image = CIImage(cvPixelBuffer: pixelBuffer)
+      let longestEdge = max(image.extent.width, image.extent.height)
+      let scale = longestEdge > 0 ? min(1, Self.previewMaxEdge / longestEdge) : 1
+      if scale < 1 {
+        image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
       }
+      let jpeg = Self.ciContext.jpegRepresentation(
+        of: image,
+        colorSpace: CGColorSpaceCreateDeviceRGB(),
+        options: [
+          kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.4,
+        ]
+      )
 
       guard let jpeg else {
         if !self.previewFailLogged {
           self.previewFailLogged = true
-          Self.log("preview conversion FAILED (makeUIImage and CoreImage both nil) — frames arrive but cannot render")
+          Self.log("preview JPEG encode FAILED — frames decode but cannot render")
         }
         return
       }
@@ -1410,7 +1519,7 @@ final class MWDATBridge: RCTEventEmitter {
   ///
   /// `.stopped` must NOT be treated as terminal on its own. As of SDK 0.8.0
   /// `Stream.start()` is synchronous and fire-and-forget, and a stream created
-  /// by `addStream` sits in `.stopped` until the glasses answer and the SDK
+  /// by `addCamera` sits in `.stopped` until the glasses answer and the SDK
   /// walks it through `.waitingForDevice` → `.starting` → `.streaming`. So the
   /// very first reading after `start()` is virtually always `.stopped`, and
   /// bailing on it aborts every stream ~0 ms after it is asked to start —
@@ -1541,5 +1650,97 @@ final class MWDATBridge: RCTEventEmitter {
       group.cancelAll()
       return result
     }
+  }
+}
+
+/// Decodes the glasses' compressed HEVC stream for the on-screen preview.
+///
+/// Recording never goes through here — segments are written from the
+/// compressed frames — so this only runs while a preview is visible. Decoding
+/// has to start on a keyframe; until one arrives after a (re)start nothing is
+/// shown, rather than the smeared frames a mid-GOP start produces. Not
+/// thread-safe: call it from one serial queue.
+final class MWDATPreviewDecoder {
+  private var session: VTDecompressionSession?
+  private var formatDescription: CMFormatDescription?
+  private var awaitingKeyframe = true
+  private var consecutiveFailures = 0
+
+  /// Holds the decoder's output across the callback. The callback runs before
+  /// `VTDecompressionSessionDecodeFrame` returns because no asynchronous flag is
+  /// passed — do not add one.
+  private final class Output: @unchecked Sendable {
+    var pixelBuffer: CVPixelBuffer?
+  }
+
+  deinit {
+    invalidate()
+  }
+
+  func decode(_ sample: CMSampleBuffer) -> CVPixelBuffer? {
+    guard CMSampleBufferGetDataBuffer(sample) != nil,
+          let format = CMSampleBufferGetFormatDescription(sample)
+    else { return nil }
+
+    // A format change (the quality ladder switching resolution) or a session
+    // iOS invalidated needs a new session, starting again at a keyframe.
+    if let current = formatDescription,
+       !CMFormatDescriptionEqual(current, otherFormatDescription: format) {
+      invalidate()
+    }
+    if let session, !VTDecompressionSessionCanAcceptFormatDescription(session, formatDescription: format) {
+      invalidate()
+    }
+    if session == nil {
+      var created: VTDecompressionSession?
+      let attributes: [CFString: Any] = [
+        kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+      ]
+      let status = VTDecompressionSessionCreate(
+        allocator: kCFAllocatorDefault,
+        formatDescription: format,
+        decoderSpecification: nil,
+        imageBufferAttributes: attributes as CFDictionary,
+        outputCallback: nil,
+        decompressionSessionOut: &created
+      )
+      guard status == noErr, let created else { return nil }
+      session = created
+      formatDescription = format
+      awaitingKeyframe = true
+    }
+
+    let keyframe = sample.isVideoKeyframe
+    if awaitingKeyframe, !keyframe { return nil }
+    guard let session else { return nil }
+
+    let output = Output()
+    let status = VTDecompressionSessionDecodeFrame(
+      session,
+      sampleBuffer: sample,
+      flags: [],
+      infoFlagsOut: nil
+    ) { frameStatus, _, imageBuffer, _, _ in
+      if frameStatus == noErr { output.pixelBuffer = imageBuffer }
+    }
+    guard status == noErr else {
+      // Transient errors happen; three in a row means the session is gone.
+      consecutiveFailures += 1
+      if consecutiveFailures >= 3 { invalidate() }
+      return nil
+    }
+    consecutiveFailures = 0
+    if keyframe { awaitingKeyframe = false }
+    return output.pixelBuffer
+  }
+
+  private func invalidate() {
+    if let session {
+      VTDecompressionSessionInvalidate(session)
+    }
+    session = nil
+    formatDescription = nil
+    awaitingKeyframe = true
+    consecutiveFailures = 0
   }
 }

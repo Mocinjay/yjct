@@ -63,7 +63,10 @@ jest.mock('../src/native/ClipStitcher', () => ({
     mockStitch(paths, out, trim),
 }));
 
-import { CaptureController } from '../src/core/CaptureController';
+import {
+  CaptureController,
+  isCaptureLive,
+} from '../src/core/CaptureController';
 import { clipStore } from '../src/core/ClipStore';
 import { entitlementStore } from '../src/core/EntitlementStore';
 
@@ -241,5 +244,61 @@ describe('CaptureController', () => {
     expect(mockStitch).toHaveBeenCalledTimes(1);
     const clips = await clipStore.list();
     expect(clips).toHaveLength(1);
+  });
+});
+
+describe('isCaptureLive', () => {
+  beforeEach(() => {
+    mockFiles.clear();
+    clipStore.resetCache();
+  });
+
+  it('is true from arming until disarm, and false again after', async () => {
+    const controller = new CaptureController(
+      new FakeSource(),
+      new FakeWakeWord(),
+      10,
+      false,
+    );
+    const seen: boolean[] = [];
+    controller.subscribe(s => seen.push(isCaptureLive(s)));
+
+    await controller.arm();
+    expect(seen[seen.length - 1]).toBe(true);
+    await controller.disarm();
+
+    // idle → arming → armed → idle
+    expect(seen).toEqual([false, true, true, false]);
+  });
+
+  it('stays true when a stream error lands mid-session', () => {
+    expect(
+      isCaptureLive({
+        state: 'error',
+        bufferedSeconds: 0,
+        bufferedAsOf: 0,
+        armedSince: 1,
+      }),
+    ).toBe(true);
+  });
+
+  it('is false after an arm that failed', async () => {
+    const source = new FakeSource();
+    source.prepare = async () => {
+      throw new Error('no glasses');
+    };
+    const controller = new CaptureController(
+      source,
+      new FakeWakeWord(),
+      10,
+      false,
+    );
+    let last = true;
+    controller.subscribe(s => {
+      last = isCaptureLive(s);
+    });
+
+    await expect(controller.arm()).rejects.toThrow('no glasses');
+    expect(last).toBe(false);
   });
 });

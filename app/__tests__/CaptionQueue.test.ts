@@ -229,6 +229,54 @@ describe('auto-captioning', () => {
   });
 });
 
+describe('while the glasses are recording', () => {
+  afterEach(() => {
+    captionQueue.setCaptureActive(false);
+  });
+
+  /** A few turns of the event loop: long enough for a job that could start to. */
+  async function idle(): Promise<void> {
+    for (let i = 0; i < 20; i++) {
+      await new Promise<void>(resolve => setImmediate(() => resolve()));
+    }
+  }
+
+  it('holds new clips until capture ends, then captions them', async () => {
+    seed([makeClip('a')]);
+    captionQueue.setCaptureActive(true);
+
+    await captionQueue.enqueue('a');
+    await idle();
+
+    expect(mockCaptioner.calls).toHaveLength(0);
+    expect((await clipById('a')).captionState).toBe('queued');
+
+    captionQueue.setCaptureActive(false);
+    await drain();
+
+    expect(mockCaptioner.calls).toHaveLength(1);
+    expect((await clipById('a')).captionState).toBe('ready');
+  });
+
+  it('lets a running job finish but starts no more until capture ends', async () => {
+    seed([makeClip('a'), makeClip('b')]);
+
+    await Promise.all(['a', 'b'].map(id => captionQueue.enqueue(id)));
+    captionQueue.setCaptureActive(true);
+    await idle();
+
+    expect(mockCaptioner.calls.map(c => c.path)).toEqual(['/docs/clips/a.mp4']);
+    expect((await clipById('a')).captionState).toBe('ready');
+    expect((await clipById('b')).captionState).toBe('queued');
+
+    captionQueue.setCaptureActive(false);
+    await drain();
+
+    expect(mockCaptioner.calls).toHaveLength(2);
+    expect((await clipById('b')).captionState).toBe('ready');
+  });
+});
+
 describe('failure handling', () => {
   it('records why captioning failed instead of swallowing it', async () => {
     seed([makeClip('a')]);
