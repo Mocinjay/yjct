@@ -112,6 +112,9 @@ export class SegmentRingBuffer {
       this.onEvict(seg);
     }
     this.segments = this.segments.slice(end + 1);
+    // Indices shifted under any pin; one left from an interrupted recording
+    // would otherwise stop eviction for the rest of the session.
+    this.pinnedFrom = null;
     this.evict();
     return out;
   }

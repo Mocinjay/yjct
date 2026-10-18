@@ -65,6 +65,14 @@ final class MWDATBridge: RCTEventEmitter {
   private var openTask: Task<Void, Error>?
   /// Identifies the newest open, so only that open clears `openTask`.
   private var openGeneration = 0
+  /// `pipelineEpoch` when `openTask` began. An open from an older epoch has
+  /// been released and will throw; a new caller starts its own instead of
+  /// joining it.
+  private var openEpoch = 0
+  /// An arm is between start() and its writer attaching. Only counted when
+  /// the app backgrounds: a wearer who taps arm and pockets the phone wants
+  /// that arm to finish, even though nothing records yet.
+  private var armInFlight = false
   /// Bumped whenever the pipeline is released on purpose — stopPreview, an
   /// app-lifecycle release, stop(). An open checks it after every wait and
   /// abandons itself if it moved: cancelling a recovery does not stop the
@@ -429,7 +437,7 @@ final class MWDATBridge: RCTEventEmitter {
     // what made "say Clipso while using another app" impossible, so an active
     // capture now keeps the session. Preview-only sessions still release —
     // they hold the glasses' capture slot for nothing.
-    if reason == "didEnterBackground", bridge.isCaptureIntended {
+    if reason == "didEnterBackground", bridge.isCaptureIntended || bridge.armInFlight {
       log("app lifecycle (\(reason)) — KEEPING glasses session, capture is armed")
       bridge.sendEvent(
         withName: Event.streamState,
@@ -738,8 +746,10 @@ final class MWDATBridge: RCTEventEmitter {
         resolve(nil)
       } catch {
         Self.log("startPreview() FAILED: \(error.localizedDescription)")
-        if self.writer == nil { self.teardown() }
-        reject("mwdat_preview", error.localizedDescription, error)
+        // An abandoned open was already torn down by whatever released it,
+        // and tearing down again here could stop a newer open's session.
+        if self.writer == nil, !(error is CancellationError) { self.teardown() }
+        reject("mwdat_preview", Self.describeOpenError(error), error)
       }
     }
   }
@@ -808,14 +818,19 @@ final class MWDATBridge: RCTEventEmitter {
         // it is relaunched. Not mid-recovery, though: resetting a running loop
         // on every JS re-arm kept it from ever running out.
         if recoveryTask == nil { recoveryAttempts = 0 }
+        armInFlight = true
+        defer { armInFlight = false }
         try await openPipelineIfNeeded()
         try attachWriter(segmentSeconds: segmentSeconds.doubleValue)
         resolve(nil)
       } catch {
         // The snapshot can say "open" for a pipeline that open then had to
         // rebuild; if the rebuild failed, nothing is watching what it left.
-        if !pipelineAlreadyOpen || healthTimer == nil { teardown() }
-        reject("mwdat_start", error.localizedDescription, error)
+        // An abandoned open was already torn down by whatever released it.
+        if !(error is CancellationError), !pipelineAlreadyOpen || healthTimer == nil {
+          teardown()
+        }
+        reject("mwdat_start", Self.describeOpenError(error), error)
       }
     }
   }
@@ -850,6 +865,7 @@ final class MWDATBridge: RCTEventEmitter {
       // one, must bring the preview back without silently resuming capture.
       // On the main actor so a recovery mid-open reads this before it attaches.
       activeSegmentSeconds = nil
+      armInFlight = false
       resolve(nil)
     }
   }
@@ -898,6 +914,7 @@ final class MWDATBridge: RCTEventEmitter {
     recoveryTask = nil
     recoveryAttempts = 0
     activeSegmentSeconds = nil
+    armInFlight = false
     pipelineEpoch += 1
     stopping = true
     teardown()
@@ -927,13 +944,14 @@ final class MWDATBridge: RCTEventEmitter {
   /// instead of starting a competing one.
   @MainActor
   private func openPipelineIfNeeded() async throws {
-    if let existing = openTask {
+    if let existing = openTask, openEpoch == pipelineEpoch {
       Self.log("open already in flight — coalescing onto it")
       try await existing.value
       return
     }
     openGeneration += 1
     let generation = openGeneration
+    openEpoch = pipelineEpoch
     let task = Task { @MainActor in
       // Cleared by the open itself the moment it ends. Its starter may resume
       // only after a newer open began, and clearing then dropped that one's
@@ -944,6 +962,15 @@ final class MWDATBridge: RCTEventEmitter {
     }
     openTask = task
     try await task.value
+  }
+
+  /// What JS shows for a failed open. An open abandoned because the pipeline
+  /// was released has no cause worth showing as Swift's raw CancellationError.
+  private static func describeOpenError(_ error: Error) -> String {
+    if error is CancellationError {
+      return "The glasses connection was closed before it finished opening. Try again."
+    }
+    return error.localizedDescription
   }
 
   /// Throws if the pipeline was released on purpose while an open waited.
@@ -1403,7 +1430,7 @@ final class MWDATBridge: RCTEventEmitter {
         // A JS re-arm may be rebuilding the pipeline, or have rebuilt it,
         // while this slept. Tearing that down would cost the glasses' stop and
         // start chimes and a hole in the buffer just as the feed came back.
-        if let pending = openTask { _ = try? await pending.value }
+        if let pending = openTask, openEpoch == pipelineEpoch { _ = try? await pending.value }
         guard !Task.isCancelled else { return }
         if let stream, stream.state == .streaming, healthTimer != nil, !pipelineStalled {
           Self.log("stall recovery \(attempt): the pipeline was already rebuilt — standing down")

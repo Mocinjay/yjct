@@ -194,10 +194,12 @@ describe('CaptureController', () => {
     expect(trim).toBeCloseTo(3.5);
   });
 
-  it('saves a wake word heard while capture was down once it re-arms', async () => {
+  it('saves a wake word heard while capture is down, without waiting for a re-arm', async () => {
     const source = new FakeSource();
     const wake = new FakeWakeWord();
     const controller = new CaptureController(source, wake, 10, false);
+    const states: string[] = [];
+    controller.subscribe(s => states.push(s.state));
 
     await controller.arm();
     for (let i = 0; i < 3; i++) {
@@ -209,15 +211,46 @@ describe('CaptureController', () => {
     source.fail('The glasses feed stalled');
     wake.fire({ segmentPath: wakeSegment, endOffsetSec: 1.2 });
     await settle();
-    expect(mockStitch).not.toHaveBeenCalled();
-
-    await controller.arm(); // the capture screen re-arms on its own
-    await settle();
     await settle();
 
     expect(mockStitch).toHaveBeenCalledTimes(1);
-    const [paths] = mockStitch.mock.calls[0];
+    const [paths, , trim] = mockStitch.mock.calls[0];
     expect(paths[paths.length - 1]).toBe(wakeSegment);
+    expect(trim).toBeCloseTo(3.5);
+    // The recovery state is left for the capture screen to handle.
+    expect(states[states.length - 1]).toBe('error');
+    expect(await clipStore.list()).toHaveLength(1);
+  });
+
+  it('a wake word while down stops an interrupted extended recording whole', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10, false);
+
+    await controller.arm();
+    source.emit();
+    source.emit();
+    controller.startClip();
+    const recorded: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      recorded.push(source.emit());
+    }
+    source.fail('The glasses feed stalled');
+    wake.fire({ segmentPath: recorded[recorded.length - 1], endOffsetSec: 1 });
+    await settle();
+    await settle();
+
+    try {
+      expect(mockStitch).toHaveBeenCalledTimes(1);
+      const [paths] = mockStitch.mock.calls[0];
+      // The pinned look-back and every recorded segment, not just one window.
+      expect(paths.length).toBeGreaterThanOrEqual(recorded.length);
+      expect(paths.slice(-recorded.length)).toEqual(recorded);
+    } finally {
+      // Clears the extended recording's safety timer even on failure, or jest
+      // waits out its 180s.
+      await controller.disarm();
+    }
   });
 
   it('falls back to cut + flush when the wake segment is already gone', async () => {

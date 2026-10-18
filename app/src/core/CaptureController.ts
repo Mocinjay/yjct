@@ -86,15 +86,6 @@ export class CaptureController {
   private armedSince: number | null = null;
   private maxRecordingTimer: ReturnType<typeof setTimeout> | null = null;
   /**
-   * A wake word heard while capture was down mid-session. A segment that is
-   * open when the glasses' feed drops is only finished once the native side
-   * rebuilds the stream — after the error has already reached here — so its
-   * "Clipso" is transcribed while the state is 'error' and would be ignored.
-   * Its segment is still in the buffer; the clip is saved on the next arm.
-   */
-  private deferredDetection: WakeDetection | null = null;
-
-  /**
    * `onClipSaved` fires once a clip is in the library. Post-capture work
    * (auto-captioning) hangs off this rather than being called from here, so
    * the capture loop keeps no dependency on Phase 2 — see services/capture.ts.
@@ -133,12 +124,6 @@ export class CaptureController {
       });
       this.armedSince = Date.now();
       this.setStatus({ ...this.status, state: 'armed' });
-      const deferred = this.deferredDetection;
-      this.deferredDetection = null;
-      if (deferred) {
-        // Not awaited: arming is done; the save reports through the status.
-        this.captureNow(deferred).catch(() => {});
-      }
     } catch (err) {
       await this.disarm();
       this.setStatus({
@@ -152,7 +137,6 @@ export class CaptureController {
 
   async disarm(): Promise<void> {
     this.clearMaxRecordingTimer();
-    this.deferredDetection = null;
     await this.wakeWord.stop().catch(() => {});
     await this.source.stop().catch(() => {});
     this.buffer.clear();
@@ -174,7 +158,69 @@ export class CaptureController {
       this.armedSince !== null &&
       (this.status.state === 'error' || this.status.state === 'arming')
     ) {
-      this.deferredDetection = detection;
+      await this.saveWhileDown(detection);
+    }
+  }
+
+  /**
+   * A wake word heard while capture is down mid-session. The segment open when
+   * the glasses' feed drops is only finished once the native side rebuilds the
+   * stream — after the error has already reached here — so its "Clipso" is
+   * transcribed in 'error' (or in the 'arming' of the re-arm that follows).
+   *
+   * The footage is already in the buffer and saving it needs no live stream,
+   * so it is saved now, and the state the capture screen is recovering from is
+   * left alone. Waiting for a re-arm lost the clip whenever the re-arm failed
+   * — exactly when the glasses had been folded or taken off — because a failed
+   * arm clears the buffer.
+   */
+  private async saveWhileDown(detection: WakeDetection): Promise<void> {
+    if (this.saving) {
+      return;
+    }
+    this.saving = true;
+    this.chime();
+    try {
+      let segments: Segment[];
+      let trimEndSec = 0;
+      if (this.buffer.isPinned) {
+        // The error interrupted an extended recording: the word was its stop.
+        this.clearMaxRecordingTimer();
+        segments = this.buffer.flushFromPin();
+      } else {
+        segments = this.buffer.flushEndingAt(detection.segmentPath);
+        if (segments.length > 0) {
+          const last = segments[segments.length - 1];
+          trimEndSec = Math.max(
+            0,
+            last.durationSec -
+              (detection.endOffsetSec + WAKE_TRIM_PADDING_SECONDS),
+          );
+        }
+      }
+      if (segments.length === 0) {
+        return;
+      }
+      const clip = await this.stitch(segments, trimEndSec);
+      await clipStore.add(clip);
+      this.announceSaved(clip);
+      await Promise.all(segments.map(s => RNFS.unlink(s.path).catch(() => {})));
+      this.sessionClipCount += 1;
+      // Whatever the state is now — still 'error', or 'armed' again if a
+      // re-arm finished meanwhile — it stays.
+      this.setStatus({
+        ...this.status,
+        recordingSince: undefined,
+        lastClip: clip,
+        sessionClipCount: this.sessionClipCount,
+      });
+    } catch (err) {
+      this.setStatus({
+        ...this.status,
+        lastError: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      this.saving = false;
     }
   }
 
