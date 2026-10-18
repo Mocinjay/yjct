@@ -3,5 +3,13 @@
 
 #include "../Pods/Target Support Files/Pods-Clipso/Pods-Clipso.release.xcconfig"
 
+// Wi-Fi entitlements (Hotspot Configuration, Access Wi-Fi Information): what
+// lets the glasses stream over their Wi-Fi link instead of Bluetooth. Free
+// "Personal Team" accounts cannot sign them; such a developer sets
+// `CLIPSO_ENTITLEMENTS =` in Signing.xcconfig and gets a Bluetooth-only build.
+// Set here, not in the project, so that per-developer override can win.
+CLIPSO_ENTITLEMENTS = Clipso/Clipso.entitlements
+CODE_SIGN_ENTITLEMENTS = $(CLIPSO_ENTITLEMENTS)
+
 // Per-developer signing. Untracked — see Signing.xcconfig.example.
 #include? "Signing.xcconfig"

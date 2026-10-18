@@ -80,6 +80,29 @@ describe('SettingsStore', () => {
     expect((await relaunched.get()).glassesChime).toBe(true);
   });
 
+  it('keeps loaded settings when persisting the chime migration fails', async () => {
+    await AsyncStorage.setItem(
+      'settings.v2',
+      JSON.stringify({
+        deviceKind: 'mwdat',
+        bufferSeconds: 90,
+        glassesChime: true,
+      }),
+    );
+    (AsyncStorage.setItem as jest.Mock).mockImplementationOnce(async () => {
+      throw new Error('disk full');
+    });
+
+    const store = new SettingsStore();
+    const settings = await store.get();
+    expect(settings.bufferSeconds).toBe(90); // not reset to defaults
+    expect(settings.glassesChime).toBe(false); // applied in memory anyway
+    // Not marked done, so the next launch tries to persist it again.
+    expect(
+      await AsyncStorage.getItem('settings.migrations.chimeOff'),
+    ).toBeNull();
+  });
+
   it('clamps buffer seconds into the 30-90 range on update', async () => {
     const store = new SettingsStore();
     expect((await store.update({ bufferSeconds: 300 })).bufferSeconds).toBe(90);

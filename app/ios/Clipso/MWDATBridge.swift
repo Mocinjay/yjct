@@ -134,6 +134,10 @@ final class MWDATBridge: RCTEventEmitter {
   /// cycling the glasses for as long as the app is armed.
   private var recoveryTask: Task<Void, Never>?
   private var recoveryAttempts = 0
+  /// True while stall recovery is opening a pipeline. Such a stream is opened
+  /// on a link that just failed, so its frame rate says nothing about what the
+  /// link carries when healthy; the resolution judge skips it.
+  private var openingForRecovery = false
   private static let maxRecoveryAttempts = 3
   private var healthTimer: DispatchSourceTimer?
   private let healthQueue = DispatchQueue(label: "com.mocinjay.clipso.mwdat.health")
@@ -902,11 +906,17 @@ final class MWDATBridge: RCTEventEmitter {
         )
         return
       }
-      if let session = deviceSession, session.state == .started, stream != nil {
-        Self.log("pipeline already open (session started, stream present)")
+      // A stream that has stopped, or one nothing is watching, is not open:
+      // since SDK 0.9 a stopped stream does not come back on its own.
+      if let session = deviceSession, session.state == .started,
+         let stream, stream.state != .stopped, healthTimer != nil {
+        Self.log("pipeline already open (session started, stream \(stream.state))")
         return
       }
     }
+    // Keep what the writer has, in case it is attached to the stream being
+    // replaced.
+    writer?.finishCurrentSegment()
     // Our own teardown, not a device-initiated drop — suppress the error event.
     stopping = true
     teardown()
@@ -1063,7 +1073,7 @@ final class MWDATBridge: RCTEventEmitter {
       }
     )
     listenerTokens.append(
-      newStream.statePublisher.listen { [weak self] state in
+      newStream.statePublisher.listen { [weak self, weak newStream] state in
         guard let self else { return }
         Self.log("stream state → \(state) (hasLeftStopped=\(self.streamHasLeftStopped), stopping=\(self.stopping))")
         self.sendEvent(withName: Event.streamState, body: ["state": String(describing: state)])
@@ -1078,6 +1088,23 @@ final class MWDATBridge: RCTEventEmitter {
             withName: Event.error,
             body: ["message": "The glasses stream stopped (folded, out of range, or taken over)."]
           )
+          // Since SDK 0.9 a stopped stream stays stopped: taking the glasses off
+          // ends it (hingesClosed) instead of pausing it until they are back
+          // on, and nothing restarts it. Waiting for the 10s no-frame watchdog
+          // cost that long again, with LIVE showing over a dead feed, and the
+          // session-started reuse guard made a re-arm keep the dead stream.
+          // Rebuild now — but only a stream that was live and watched (a health
+          // timer runs only once the stream reached .streaming; a stream that
+          // never got there fails its own open), and only while it is still the
+          // bridge's stream: our own teardown clears `stream` first.
+          Task { @MainActor [weak self, weak newStream] in
+            guard let self, let newStream, self.stream === newStream,
+                  !self.stopping, self.healthTimer != nil
+            else { return }
+            Self.log("stream stopped on its own — rebuilding now")
+            self.pipelineStalled = true
+            await self.attemptStallRecovery()
+          }
         }
       }
     )
@@ -1103,6 +1130,10 @@ final class MWDATBridge: RCTEventEmitter {
     listenerTokens.append(
       session.errorPublisher.listen { [weak self] error in
         Self.log("session ERROR: \(error.description)")
+        // SDK 1.0 documents this one as a non-blocking compatibility warning:
+        // the session carries on. Surfacing it would put capture into its
+        // error state over a working stream.
+        if error == .dwaOutOfStuRange { return }
         self?.sendEvent(withName: Event.error, body: ["message": error.description])
       }
     )
@@ -1152,10 +1183,14 @@ final class MWDATBridge: RCTEventEmitter {
     stallReported = false
     pipelineStalled = false
     let watchedResolution = streamResolution
+    // Only a stream opened in ordinary conditions is judged: not one rebuilt
+    // on a link that just failed, not one opened in the background, and not
+    // MockDeviceKit's fixed-rate test feed.
+    let skipJudging = openingForRecovery || appInBackground || mockActive
     healthQueue.async { [weak self] in
       guard let self else { return }
       self.fpsSamples = []
-      self.resolutionJudged = false
+      self.resolutionJudged = skipJudging
       self.healthTicks = 0
       self.judgedResolution = watchedResolution
     }
@@ -1253,9 +1288,9 @@ final class MWDATBridge: RCTEventEmitter {
   /// Rebuild the pipeline after the watchdog declares the feed stalled.
   ///
   /// Runs at most `maxRecoveryAttempts` times with a widening backoff, and only
-  /// while the app still wants frames. A failed rebuild leaves the stream torn
-  /// down rather than half-open, so the next attempt starts from a known state
-  /// and the reuse guards in `performOpenPipeline()` cannot short-circuit it.
+  /// while the app still wants frames. Each attempt starts with a teardown, and
+  /// running out of attempts ends with one, so nothing half-open is left for
+  /// the reuse guards in `performOpenPipeline()` to mistake for a live stream.
   @MainActor
   private func attemptStallRecovery() async {
     guard recoveryTask == nil, !stopping else { return }
@@ -1286,11 +1321,16 @@ final class MWDATBridge: RCTEventEmitter {
         // rebuilding here would restart the glasses behind their back.
         guard !Task.isCancelled, !stopping else { return }
 
+        // The footage up to the dropout is kept, not discarded with the
+        // writer: those seconds are the likeliest ones to be clipped.
+        writer?.finishCurrentSegment()
         // Our own teardown, not a device-initiated drop — suppress the error event.
         stopping = true
         teardown()
         stopping = false
         do {
+          openingForRecovery = true
+          defer { openingForRecovery = false }
           try await openPipelineIfNeeded()
           if let segmentSeconds {
             try attachWriter(segmentSeconds: segmentSeconds)
@@ -1305,6 +1345,12 @@ final class MWDATBridge: RCTEventEmitter {
         }
       }
 
+      // A failed attempt can leave its session, camera and stopped stream
+      // behind with no health timer. Left there, the next arm reused them as an
+      // "already open" pipeline and reported LIVE over a feed that never came.
+      stopping = true
+      teardown()
+      stopping = false
       sendEvent(
         withName: Event.error,
         body: [

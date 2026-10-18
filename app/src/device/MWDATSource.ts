@@ -39,6 +39,11 @@ export class MWDATSource implements DeviceVideoSource {
     onSegment: (segment: Segment) => void,
     onError: (e: Error) => void,
   ): Promise<void> {
+    // Re-arming from the error state calls start() again without a stop().
+    // Without this the previous arm's listeners stayed attached, every segment
+    // was delivered once per arm, and the ring buffer — and the clips stitched
+    // from it — held the same footage twice.
+    this.clearSubscriptions();
     const emitter = mwdatEvents();
     this.subscriptions = [
       emitter.addListener('MWDATSegment', (event: MWDATSegmentEvent) => {

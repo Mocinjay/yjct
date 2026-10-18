@@ -9,7 +9,9 @@
 	  Bluetooth, where the SDK caps it near 504x896 and cuts frame rate to fit.
 	  Same pair as Meta's CameraAccess sample. Both need the matching
 	  capabilities (Hotspot Configuration, Access Wi-Fi Information) enabled on
-	  the App ID; automatic signing does that for a paid developer team.
+	  the App ID; automatic signing does that for a paid developer team. A free
+	  Personal Team cannot sign them: set `CLIPSO_ENTITLEMENTS =` in
+	  Config/Signing.xcconfig to build without this file (Bluetooth only).
 	-->
 	<key>com.apple.developer.networking.HotspotConfiguration</key>
 	<true/>

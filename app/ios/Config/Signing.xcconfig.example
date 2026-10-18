@@ -22,7 +22,10 @@
 //   Add your own line rather than borrowing either of these.
 //
 // Free "Personal Team" accounts get 7-day provisioning profiles. When the app
-// stops launching after a week, rebuild from Xcode and it reissues.
+// stops launching after a week, rebuild from Xcode and it reissues. They also
+// cannot sign the Wi-Fi entitlements the glasses' high-bandwidth link needs, so
+// on a Personal Team uncomment the CLIPSO_ENTITLEMENTS line below: the build
+// then streams over Bluetooth only (about 504x896, frame rate as the link allows).
 
 DEVELOPMENT_TEAM = ABCDE12345
 
@@ -32,6 +35,9 @@ DEVELOPMENT_TEAM = ABCDE12345
 // anywhere else or the two drift and the extension fails to install.
 CLIPSO_BUNDLE_ID = com.yourname.clipso
 PRODUCT_BUNDLE_IDENTIFIER = $(CLIPSO_BUNDLE_ID)
+
+// Personal Team only — see above.
+// CLIPSO_ENTITLEMENTS =
 
 // MWDAT_CLIENT_TOKEN
 //   The Client Token from Wearables Developer Center. Leave it empty while the

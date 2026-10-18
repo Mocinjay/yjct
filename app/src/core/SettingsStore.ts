@@ -19,6 +19,7 @@ export class SettingsStore {
     if (this.cached) {
       return this.cached;
     }
+    let loaded = false;
     try {
       const raw = await AsyncStorage.getItem(KEY);
       if (raw) {
@@ -40,19 +41,12 @@ export class SettingsStore {
         this.cached = migrated;
         await AsyncStorage.setItem(KEY, JSON.stringify(migrated));
       }
-      // One-time: the glasses chime used to default to on, so every install
-      // that ever saved settings stored `true` without anyone choosing it. It
-      // is now off by default (see DEFAULT_SETTINGS); switch stored installs
-      // off once, and from then on whatever the wearer picks sticks.
-      if ((await AsyncStorage.getItem(CHIME_OFF_MIGRATION_KEY)) === null) {
-        if (this.cached.glassesChime) {
-          this.cached = { ...this.cached, glassesChime: false };
-          await AsyncStorage.setItem(KEY, JSON.stringify(this.cached));
-        }
-        await AsyncStorage.setItem(CHIME_OFF_MIGRATION_KEY, '1');
-      }
+      loaded = true;
     } catch {
       this.cached = DEFAULT_SETTINGS;
+    }
+    if (loaded) {
+      await this.applyChimeOffDefault();
     }
     // Glasses-only: stored 'mock' choices from earlier builds are retired.
     if (this.cached.deviceKind !== 'mwdat') {
@@ -65,6 +59,31 @@ export class SettingsStore {
       this.cached = { ...this.cached, wakeWord: { provider: 'speech' } };
     }
     return this.cached;
+  }
+
+  /**
+   * One-time: the glasses chime used to default to on, so every install that
+   * ever saved settings stored `true` without anyone choosing it. It is now off
+   * by default (see DEFAULT_SETTINGS); stored installs are switched off once,
+   * and from then on whatever the wearer picks sticks.
+   *
+   * Kept apart from the load on purpose: a storage error here must not throw
+   * away settings that loaded fine. The change is applied in memory first; if
+   * persisting it fails, the marker stays unset and it is retried next launch.
+   */
+  private async applyChimeOffDefault(): Promise<void> {
+    try {
+      if ((await AsyncStorage.getItem(CHIME_OFF_MIGRATION_KEY)) !== null) {
+        return;
+      }
+      if (this.cached?.glassesChime) {
+        this.cached = { ...this.cached, glassesChime: false };
+        await AsyncStorage.setItem(KEY, JSON.stringify(this.cached));
+      }
+      await AsyncStorage.setItem(CHIME_OFF_MIGRATION_KEY, '1');
+    } catch {
+      // Retried on the next launch.
+    }
   }
 
   async update(patch: Partial<Settings>): Promise<Settings> {

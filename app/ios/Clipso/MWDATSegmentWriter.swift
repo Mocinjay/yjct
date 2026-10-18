@@ -105,6 +105,29 @@ final class MWDATSegmentWriter {
   /// The next segment shifts glasses time onto the host clock by this amount.
   private var recentMinDelay: CMTime?
   private var loggedTimingSource = false
+  /// The previous frame's capture time and arrival. A link stall delays
+  /// arrival while capture times stay continuous; only the glasses' clock
+  /// itself jumping moves capture time out of step with the wall clock.
+  private var lastSourceTime: CMTime?
+  private var lastSourceArrival: CMTime?
+
+  /// Segments opened by this writer. The first one is primed (see
+  /// `primingFrames`) because nothing has been measured yet.
+  private var segmentsOpened = 0
+  /// Frames held while the first segment's clock offset is measured.
+  private var priming: [(sample: CMSampleBuffer, arrival: CMTime, keyframe: Bool)] = []
+
+  /// Mic buffers waiting for the video they belong under. Audio is assigned to
+  /// a segment by timestamp, not by when it happens to be processed: video
+  /// arrives late by the link's delay, so appending audio as it came would put
+  /// the first moments of every segment's sound at the end of the previous one.
+  private var pendingAudio: [(sample: CMSampleBuffer, pts: CMTime, peak: Float)] = []
+  private var pendingAudioDrops = 0
+
+  /// Host time the last video frame arrived, for `idleTimer`.
+  private var lastVideoArrival: CMTime?
+  /// Finishes a segment whose frames have stopped (see `idleFinishSeconds`).
+  private var idleTimer: DispatchSourceTimer?
 
   /// How long a cut waits for the next keyframe before ending the segment
   /// anyway. Waiting keeps the rolling buffer gap-free; the cap keeps a cut
@@ -112,6 +135,20 @@ final class MWDATSegmentWriter {
   private static let cutKeyframeWaitSeconds = 2.0
   /// A jump in the glasses' clock larger than this is a restart, not jitter.
   private static let clockResyncSeconds = 1.0
+  /// The first segment of a writer opens only after this many frames, or
+  /// `primingSeconds` of them, have been seen. Its offset onto the host clock
+  /// is the lowest delay among them; taken from the opening keyframe alone —
+  /// the largest frame, and the first after a link start — it would leave the
+  /// whole segment's video late against its audio.
+  private static let primingFrames = 15
+  private static let primingSeconds = 0.6
+  /// With no frame for this long, the open segment is finished where it
+  /// stands. A passthrough segment otherwise waits for a keyframe that a
+  /// stalled or stopped stream never sends, and the stall recovery that
+  /// follows would throw the seconds before the dropout away.
+  private static let idleFinishSeconds = 2.0
+  /// Mic audio older than this with no video to go under is dropped.
+  private static let maxPendingAudioSeconds = 5.0
   /// Duration given to a passthrough frame the SDK did not stamp with one.
   /// Only the last frame of a segment relies on it; the rest are spaced by
   /// their timestamps.
@@ -141,6 +178,11 @@ final class MWDATSegmentWriter {
     var videoSamples = 0
     var keyframes = 0
     var lastVideoDTS: CMTime = .invalid
+    /// Set when a passthrough frame could not be written. Every frame up to
+    /// the next keyframe references it, so they are skipped rather than
+    /// written as a smear of undecodable pictures.
+    var awaitingKeyframe = false
+    var skippedToKeyframe = 0
     var audioSamples = 0
     var videoAppendFailures = 0
     var audioAppendFailures = 0
@@ -457,22 +499,40 @@ final class MWDATSegmentWriter {
         self.loggedFirstAudioSample = true
         Self.log("first mic sample: frames=\(buffer.frameLength) peak=\(peak) pts=\(pts.seconds)")
       }
-      guard let segment = self.current else { return }
-      segment.audioPeak = max(segment.audioPeak, peak)
-      guard let audioInput = segment.audioInput else { return }
-      guard audioInput.isReadyForMoreMediaData else { return }
-      // Never write media that predates the writer session — AVAssetWriter drops the segment otherwise.
-      guard pts >= segment.firstPTS else {
-        segment.audioPreSessionDrops += 1
-        return
+      self.pendingAudio.append((sample, pts, peak))
+      while let oldest = self.pendingAudio.first,
+            CMTimeSubtract(pts, oldest.pts).seconds > Self.maxPendingAudioSeconds {
+        self.pendingAudio.removeFirst()
+        self.pendingAudioDrops += 1
+        if self.pendingAudioDrops == 1 {
+          Self.log("mic audio waited over \(Self.maxPendingAudioSeconds)s with no video to go under — dropping it")
+        }
       }
-      if audioInput.append(sample) {
+      if let segment = self.current {
+        self.drainAudio(into: segment, before: segment.lastPTS)
+      }
+    }
+  }
+
+  /// Writes the waiting mic buffers stamped before `limit` into `segment`.
+  private func drainAudio(into segment: Segment, before limit: CMTime) {
+    while let entry = pendingAudio.first, entry.pts < limit {
+      pendingAudio.removeFirst()
+      segment.audioPeak = max(segment.audioPeak, entry.peak)
+      guard let audioInput = segment.audioInput else { continue }
+      guard audioInput.isReadyForMoreMediaData else { continue }
+      // Never write media that predates the writer session — AVAssetWriter drops the segment otherwise.
+      guard entry.pts >= segment.firstPTS else {
+        segment.audioPreSessionDrops += 1
+        continue
+      }
+      if audioInput.append(entry.sample) {
         segment.audioSamples += 1
       } else {
         segment.audioAppendFailures += 1
         if segment.audioAppendFailures == 1 {
           Self.log(
-            "AUDIO append FAILED (first) at pts=\(pts.seconds) "
+            "AUDIO append FAILED (first) at pts=\(entry.pts.seconds) "
               + "status=\(Self.describeStatus(segment.writer.status)) "
               + "error=\(Self.describe(segment.writer.error))"
           )
@@ -483,10 +543,12 @@ final class MWDATSegmentWriter {
 
   private func appendVideoOnQueue(_ sample: CMSampleBuffer, at arrival: CMTime) {
     guard running else { return }
+    lastVideoArrival = arrival
+    armIdleTimer()
 
     let passthrough = CMSampleBufferGetImageBuffer(sample) == nil
     let keyframe = sample.isVideoKeyframe
-    let delay = observeDelay(of: sample, arrival: arrival)
+    let observed = observeDelay(of: sample, arrival: arrival)
 
     // A passthrough segment can only end where the next one can begin: on a
     // keyframe. Its time being up, a cut, or a new stream format all wait here.
@@ -500,61 +562,123 @@ final class MWDATSegmentWriter {
         Self.log("stream format changed at a keyframe — ending the segment there")
       }
       if rotateDue || formatChanged || !pendingCuts.isEmpty {
+        // Sound up to the instant the next segment starts belongs to this one.
+        let nextStart = Self.mapped(sample, offset: nextSegmentOffset(observed.delay), arrival: arrival).pts
+        drainAudio(into: segment, before: nextStart)
         rotate(completion: takePendingCuts())
       }
     }
 
-    if current == nil {
-      guard keyframe else {
-        droppedAwaitingKeyframe += 1
-        return
-      }
-      // The new segment's offset is the lowest delay seen over the previous
-      // one: that is the link's real latency, and re-measuring it per segment
-      // follows any drift between the glasses' clock and the phone's.
-      let offset = recentMinDelay ?? delay ?? .zero
-      recentMinDelay = delay
-      let timing = Self.mapped(sample, offset: offset, arrival: arrival)
-      guard let retimed = Self.retimed(
-        sample, pts: timing.pts, dts: timing.dts, keyframe: keyframe, passthrough: passthrough
-      ) else {
-        Self.log("retiming failed — dropping frame")
-        return
-      }
-      do {
-        current = try startSegment(
-          firstSample: retimed, firstPTS: timing.pts, passthrough: passthrough, clockOffset: offset
-        )
-        scheduleRotation()
-      } catch {
-        running = false
-        Self.log("could not start segment writer — \(Self.describe(error))")
-        onError("Could not start segment writer: \(error.localizedDescription)")
-        return
-      }
-      if droppedAwaitingKeyframe > 0 {
-        Self.log("segment opened after dropping \(droppedAwaitingKeyframe) frames waiting for a keyframe")
-        droppedAwaitingKeyframe = 0
-      }
-      append(retimed, to: current, pts: timing.pts, dts: timing.dts, keyframe: keyframe, original: sample)
+    guard let segment = current else {
+      openSegment(sample, arrival: arrival, keyframe: keyframe, passthrough: passthrough, delay: observed.delay)
       return
     }
 
-    guard let segment = current else { return }
-
     // Inside a segment the offset is fixed, so frames keep the glasses' own
-    // spacing. Only a jump far beyond any transport jitter — the glasses'
-    // clock restarting — moves it.
-    if let delay, abs(CMTimeSubtract(delay, segment.clockOffset).seconds) > Self.clockResyncSeconds {
-      Self.log(
-        String(
-          format: "glasses clock jumped %.2fs — re-anchoring the segment",
-          CMTimeSubtract(delay, segment.clockOffset).seconds
-        )
-      )
+    // spacing — a stall shows as the gap it was, with the late frames still
+    // at their capture times. Only the glasses' clock itself jumping moves it.
+    if observed.restarted, let delay = observed.delay {
+      Self.log("glasses clock jumped — re-anchoring the segment")
       segment.clockOffset = delay
     }
+    appendInSegment(sample, arrival: arrival, keyframe: keyframe, to: segment)
+  }
 
+  /// The offset the next segment opens with: the lowest delay seen over the
+  /// current one, which is the link's real latency. Re-measured per segment,
+  /// so drift between the glasses' clock and the phone's is followed.
+  private func nextSegmentOffset(_ delay: CMTime?) -> CMTime {
+    recentMinDelay ?? delay ?? .zero
+  }
+
+  /// Opens a segment at this frame, which must be able to start one. The
+  /// first segment of a writer is primed first: frames are held until enough
+  /// delays have been seen to place them on the host clock (`primingFrames`).
+  private func openSegment(
+    _ sample: CMSampleBuffer,
+    arrival: CMTime,
+    keyframe: Bool,
+    passthrough: Bool,
+    delay: CMTime?
+  ) {
+    if passthrough, segmentsOpened == 0 {
+      guard keyframe || !priming.isEmpty else {
+        droppedAwaitingKeyframe += 1
+        return
+      }
+      // The quality ladder often settles in the first moments of a stream. A
+      // new format starts over from its own keyframe, since one segment holds
+      // one format.
+      if keyframe, let first = priming.first,
+         let opened = CMSampleBufferGetFormatDescription(first.sample),
+         let incoming = CMSampleBufferGetFormatDescription(sample),
+         !CMFormatDescriptionEqual(opened, otherFormatDescription: incoming) {
+        droppedAwaitingKeyframe += priming.count
+        priming = []
+      }
+      priming.append((sample, arrival, keyframe))
+      let span = CMTimeSubtract(arrival, priming[0].arrival).seconds
+      guard priming.count >= Self.primingFrames || span >= Self.primingSeconds else { return }
+      let frames = priming
+      priming = []
+      guard let segment = beginSegment(
+        with: frames[0].sample, arrival: frames[0].arrival, offset: nextSegmentOffset(delay)
+      ) else { return }
+      for frame in frames.dropFirst() {
+        appendInSegment(frame.sample, arrival: frame.arrival, keyframe: frame.keyframe, to: segment)
+      }
+      return
+    }
+
+    guard keyframe else {
+      droppedAwaitingKeyframe += 1
+      return
+    }
+    let offset = nextSegmentOffset(delay)
+    // A new measuring window for the segment after this one.
+    recentMinDelay = delay
+    _ = beginSegment(with: sample, arrival: arrival, offset: offset)
+  }
+
+  /// Creates the segment, writes its first frame and starts its clock.
+  private func beginSegment(with sample: CMSampleBuffer, arrival: CMTime, offset: CMTime) -> Segment? {
+    let passthrough = CMSampleBufferGetImageBuffer(sample) == nil
+    let timing = Self.mapped(sample, offset: offset, arrival: arrival)
+    guard let retimed = Self.retimed(
+      sample, pts: timing.pts, dts: timing.dts, keyframe: true, passthrough: passthrough
+    ) else {
+      Self.log("retiming failed — dropping frame")
+      return nil
+    }
+    let segment: Segment
+    do {
+      segment = try startSegment(
+        firstSample: retimed, firstPTS: timing.pts, passthrough: passthrough, clockOffset: offset
+      )
+    } catch {
+      running = false
+      Self.log("could not start segment writer — \(Self.describe(error))")
+      onError("Could not start segment writer: \(error.localizedDescription)")
+      return nil
+    }
+    current = segment
+    segmentsOpened += 1
+    scheduleRotation()
+    if droppedAwaitingKeyframe > 0 {
+      Self.log("segment opened after dropping \(droppedAwaitingKeyframe) frames waiting for a keyframe")
+      droppedAwaitingKeyframe = 0
+    }
+    append(retimed, to: segment, pts: timing.pts, dts: timing.dts, keyframe: true, original: sample)
+    return segment
+  }
+
+  /// Places a frame on the segment's timeline and writes it.
+  private func appendInSegment(
+    _ sample: CMSampleBuffer,
+    arrival: CMTime,
+    keyframe: Bool,
+    to segment: Segment
+  ) {
     var timing = Self.mapped(sample, offset: segment.clockOffset, arrival: arrival)
     // Monotonic only. There used to be an upper clamp too — no more than ~2
     // frames past the previous PTS — and it rewrote every real gap as 66 ms, so
@@ -583,21 +707,23 @@ final class MWDATSegmentWriter {
       sample, pts: timing.pts, dts: timing.dts, keyframe: keyframe, passthrough: segment.passthrough
     ) else {
       Self.log("retiming failed — dropping frame")
+      if segment.passthrough { segment.awaitingKeyframe = true }
       return
     }
     append(retimed, to: segment, pts: timing.pts, dts: timing.dts, keyframe: keyframe, original: sample)
   }
 
-  /// Arrival minus capture time for one frame, folded into the running minimum.
-  /// nil when the SDK gave the frame no usable timestamp.
-  private func observeDelay(of sample: CMSampleBuffer, arrival: CMTime) -> CMTime? {
+  /// Arrival minus capture time for one frame, folded into the running
+  /// minimum. `delay` is nil when the SDK gave the frame no usable timestamp;
+  /// `restarted` is true when the glasses' clock jumped.
+  private func observeDelay(of sample: CMSampleBuffer, arrival: CMTime) -> (delay: CMTime?, restarted: Bool) {
     let source = CMSampleBufferGetPresentationTimeStamp(sample)
     guard source.isNumeric else {
       if !loggedTimingSource {
         loggedTimingSource = true
         Self.log("frames carry no capture timestamp — stamping arrival time instead")
       }
-      return nil
+      return (nil, false)
     }
     let delay = CMTimeSubtract(arrival, source)
     if !loggedTimingSource {
@@ -609,13 +735,29 @@ final class MWDATSegmentWriter {
         )
       )
     }
-    if let lowest = recentMinDelay, abs(CMTimeSubtract(delay, lowest).seconds) <= Self.clockResyncSeconds {
-      if delay < lowest { recentMinDelay = delay }
-    } else {
-      // First frame, or the glasses' clock jumped: start over from here.
+
+    // Decode order is what arrives in order, so step on the decode time when
+    // there is one; presentation time can step back across reordered frames.
+    let decode = CMSampleBufferGetDecodeTimeStamp(sample)
+    let stepTime = decode.isNumeric ? decode : source
+    var restarted = false
+    if let lastTime = lastSourceTime, let lastArrival = lastSourceArrival {
+      let captureStep = CMTimeSubtract(stepTime, lastTime).seconds
+      let arrivalStep = CMTimeSubtract(arrival, lastArrival).seconds
+      // A stall: arrival jumps, capture does not. A restart: capture jumps
+      // back, or forward by far more than the time that actually passed.
+      restarted = captureStep < -Self.clockResyncSeconds / 2
+        || captureStep - arrivalStep > Self.clockResyncSeconds
+    }
+    lastSourceTime = stepTime
+    lastSourceArrival = arrival
+
+    if restarted || recentMinDelay == nil {
+      recentMinDelay = delay
+    } else if let lowest = recentMinDelay, delay < lowest {
       recentMinDelay = delay
     }
-    return delay
+    return (delay, restarted)
   }
 
   /// Where on the host clock a frame belongs.
@@ -642,29 +784,38 @@ final class MWDATSegmentWriter {
 
   private func append(
     _ retimed: CMSampleBuffer,
-    to segment: Segment?,
+    to segment: Segment,
     pts: CMTime,
     dts: CMTime,
     keyframe: Bool,
     original sample: CMSampleBuffer
   ) {
-    guard let segment else { return }
+    if segment.passthrough, segment.awaitingKeyframe, !keyframe {
+      segment.skippedToKeyframe += 1
+      return
+    }
     guard segment.videoInput.isReadyForMoreMediaData else {
       segment.droppedNotReady += 1
+      if segment.passthrough { segment.awaitingKeyframe = true }
       return
     }
 
     if segment.videoInput.append(retimed) {
       segment.videoSamples += 1
-      if keyframe, segment.passthrough { segment.keyframes += 1 }
+      if keyframe {
+        segment.awaitingKeyframe = false
+        if segment.passthrough { segment.keyframes += 1 }
+      }
       segment.lastVideoPTS = pts
       segment.lastVideoDTS = dts
       let duration = CMSampleBufferGetDuration(sample)
       segment.lastPTS = duration.isNumeric && duration.value > 0
         ? CMTimeAdd(pts, duration)
         : CMTimeAdd(pts, Self.fallbackFrameDuration)
+      drainAudio(into: segment, before: segment.lastPTS)
     } else {
       segment.videoAppendFailures += 1
+      if segment.passthrough { segment.awaitingKeyframe = true }
       if segment.videoAppendFailures == 1 {
         Self.log(
           "VIDEO append FAILED (first) at pts=\(pts.seconds) "
@@ -673,6 +824,29 @@ final class MWDATSegmentWriter {
         )
       }
     }
+  }
+
+  /// Finishes the open segment once frames have stopped for
+  /// `idleFinishSeconds`. Armed lazily by the first frame; one timer for the
+  /// writer's life.
+  private func armIdleTimer() {
+    guard idleTimer == nil else { return }
+    let timer = DispatchSource.makeTimerSource(queue: queue)
+    timer.schedule(deadline: .now() + 1, repeating: 1)
+    timer.setEventHandler { [weak self] in
+      guard let self, self.running, let segment = self.current,
+            let last = self.lastVideoArrival
+      else { return }
+      let idle = CMTimeSubtract(CMClockGetTime(CMClockGetHostTimeClock()), last).seconds
+      guard idle > Self.idleFinishSeconds else { return }
+      Self.log(String(format: "no frames for %.1fs — finishing the segment where it stands", idle))
+      // The mic kept running through the gap; that sound goes under the frozen
+      // last frame rather than being lost.
+      self.drainAudio(into: segment, before: .positiveInfinity)
+      self.rotate(completion: self.takePendingCuts())
+    }
+    timer.resume()
+    idleTimer = timer
   }
 
   // MARK: - Cut / stop (called from the bridge)
@@ -729,10 +903,28 @@ final class MWDATSegmentWriter {
     return { cuts.forEach { $0() } }
   }
 
+  /// Finish and report the in-flight segment now, keeping its footage — for
+  /// when the stream is about to be torn down underneath it (stall recovery, a
+  /// rebuilt pipeline). Call before `stopAndDiscard()`, which then finds
+  /// nothing left to throw away.
+  ///
+  /// Holds `self` strongly: the bridge drops its reference straight after, and
+  /// a weak capture would let the writer go before this ever ran.
+  func finishCurrentSegment() {
+    queue.async { [self] in
+      guard let segment = current else { return }
+      drainAudio(into: segment, before: .positiveInfinity)
+      rotate(completion: takePendingCuts())
+    }
+  }
+
   /// Stop everything and discard the in-flight segment.
+  ///
+  /// Holds `self` strongly for the same reason as `finishCurrentSegment()`:
+  /// with a weak capture the writer was usually gone by the time this ran, so
+  /// nothing was cancelled and the half-written file stayed in tmp.
   func stopAndDiscard() {
-    queue.async { [weak self] in
-      guard let self else { return }
+    queue.async { [self] in
       if self.audioRunning {
         self.audioEngine.inputNode.removeTap(onBus: 0)
         self.audioEngine.stop()
@@ -741,7 +933,11 @@ final class MWDATSegmentWriter {
       self.running = false
       self.rotateTimer?.cancel()
       self.rotateTimer = nil
+      self.idleTimer?.cancel()
+      self.idleTimer = nil
       self.rotateDue = false
+      self.priming = []
+      self.pendingAudio = []
       // Nothing will ever end the segment these were waiting on. Settle them
       // so the JS promises behind them do not hang.
       self.takePendingCuts()?()
@@ -951,7 +1147,7 @@ final class MWDATSegmentWriter {
       "rotating: video=\(segment.videoSamples) samples "
         + "(failed=\(segment.videoAppendFailures), notReady=\(segment.droppedNotReady)) "
         + "fps=\(String(format: "%.1f", fps)) "
-        + "mode=\(segment.passthrough ? "passthrough keyframes=\(segment.keyframes)" : "encode") "
+        + "mode=\(segment.passthrough ? "passthrough keyframes=\(segment.keyframes) skippedToKeyframe=\(segment.skippedToKeyframe)" : "encode") "
         + "audio=\(segment.audioSamples) samples (failed=\(segment.audioAppendFailures), "
         + "preSession=\(segment.audioPreSessionDrops), peak=\(segment.audioPeak)) "
         + "span=\(finished.durationSec)s worstGap=\(String(format: "%.2f", segment.longestGapSec))s "
@@ -976,8 +1172,9 @@ final class MWDATSegmentWriter {
 
     segment.videoInput.markAsFinished()
     segment.audioInput?.markAsFinished()
-    segment.writer.finishWriting { [weak self] in
-      guard let self else { return }
+    // Strong: a segment finished on the way into a teardown still has to be
+    // reported, after the bridge has already let go of this writer.
+    segment.writer.finishWriting { [self] in
       if segment.writer.status == .completed {
         let size = (try? FileManager.default.attributesOfItem(atPath: finished.path)[.size]) as? Int ?? -1
         Self.log("segment WROTE \(finished.durationSec)s \(size) bytes → \(finished.path)")
