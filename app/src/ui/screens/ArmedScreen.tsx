@@ -13,7 +13,6 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Camera, useCameraDevice } from 'react-native-vision-camera';
 import type { CaptureStatus } from '../../core/CaptureController';
-import { bump } from '../../debug/jsProbe';
 import { useGlassesLease } from '../../device/glassesLease';
 import type { CaptureSession } from '../../services/capture';
 import { buildCaptureSession } from '../../services/capture';
@@ -35,7 +34,6 @@ const RECOVERY_DELAY_MS = 4000;
  * controls are a quiet clip / extended affordance, not a camera shutter.
  */
 export function ArmedScreen({ navigation }: Props) {
-  bump('render.Armed');
   const [session, setSession] = useState<CaptureSession | null>(null);
   const [status, setStatus] = useState<CaptureStatus>({
     state: 'idle',

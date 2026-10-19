@@ -13,7 +13,6 @@ import {
 import Video from 'react-native-video';
 import { clipStore, deliverablePath, isCaptioning } from '../../core/ClipStore';
 import { entitlementStore } from '../../core/EntitlementStore';
-import { bump } from '../../debug/jsProbe';
 import { captionQueue } from '../../phase2/CaptionQueue';
 import { captionStyleLabel } from '../../phase2/captionStyles';
 import type { Clip } from '../../types';
@@ -25,7 +24,6 @@ import { colors, radius, spacing, type } from '../theme';
 type Props = NativeStackScreenProps<RootStackParamList, 'Player'>;
 
 export function PlayerScreen({ route, navigation }: Props) {
-  bump('render.Player');
   const { clip: openedClip } = route.params;
   // The route param is a snapshot from the moment the card was tapped. The
   // captioning job for this clip may still be running, so the live copy is
@@ -163,21 +161,13 @@ export function PlayerScreen({ route, navigation }: Props) {
           // Derived from focus and an explicit tap only. No player event feeds
           // this, so there is no cycle.
           paused={!isFocused || userPaused}
-          onLoad={(d: { duration: number }) => {
-            bump('video.onLoad');
-            setProgress({ current: 0, total: d.duration });
-          }}
-          onEnd={() => {
-            bump('video.onEnd');
-            setAtEnd(true);
-          }}
-          onProgress={(d: { currentTime: number; seekableDuration: number }) => {
-            bump('video.onProgress');
-            setProgress({ current: d.currentTime, total: d.seekableDuration });
-          }}
-          onBuffer={() => bump('video.onBuffer')}
-          onError={() => bump('video.onError')}
-          onPlaybackStateChanged={() => bump('video.onPlaybackStateChanged')}
+          onLoad={(d: { duration: number }) =>
+            setProgress({ current: 0, total: d.duration })
+          }
+          onEnd={() => setAtEnd(true)}
+          onProgress={(d: { currentTime: number; seekableDuration: number }) =>
+            setProgress({ current: d.currentTime, total: d.seekableDuration })
+          }
           resizeMode="contain"
           ignoreSilentSwitch="ignore"
           playInBackground={false}

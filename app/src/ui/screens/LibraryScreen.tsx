@@ -24,7 +24,6 @@ import {
 import { entitlementStore } from '../../core/EntitlementStore';
 import { captionQueue } from '../../phase2/CaptionQueue';
 import type { Clip } from '../../types';
-import { bump } from '../../debug/jsProbe';
 import { ProBadge, RecDot, RecRings } from '../components';
 import type { RootStackParamList } from '../navigation';
 import { colors, radius, spacing, type } from '../theme';
@@ -34,7 +33,6 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Library'>;
 type Tab = 'recent' | 'saved';
 
 export function LibraryScreen({ navigation }: Props) {
-  bump('render.Library');
   const [clips, setClips] = useState<Clip[]>([]);
   const [isPro, setIsPro] = useState(false);
   const [tab, setTab] = useState<Tab>('recent');
