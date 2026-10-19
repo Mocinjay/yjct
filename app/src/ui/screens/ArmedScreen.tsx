@@ -222,7 +222,9 @@ export function ArmedScreen({ navigation }: Props) {
   // session that never settles. After the last attempt the banner stands and
   // Retry is the wearer's call.
   useEffect(() => {
-    if (status.state === 'armed') {
+    // A re-arm during an extended recording resumes it, landing in 'recording'
+    // rather than 'armed' — still a recovery that worked.
+    if (status.state === 'armed' || status.state === 'recording') {
       recoveryAttempts.current = 0;
       return;
     }
