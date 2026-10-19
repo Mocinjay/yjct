@@ -66,6 +66,7 @@ jest.mock('../src/native/ClipStitcher', () => ({
 import {
   CaptureController,
   isCaptureLive,
+  type CaptureStatus,
 } from '../src/core/CaptureController';
 import { clipStore } from '../src/core/ClipStore';
 import { entitlementStore } from '../src/core/EntitlementStore';
@@ -308,6 +309,106 @@ describe('CaptureController', () => {
     expect(mockStitch).toHaveBeenCalledTimes(1);
     const clips = await clipStore.list();
     expect(clips).toHaveLength(1);
+  });
+
+  it('a superseded arm that fails late leaves the newer arm armed', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10, false);
+    const states: string[] = [];
+    controller.subscribe(s => states.push(s.state));
+    const realStart = source.start.bind(source);
+    let rejectFirst: (e: Error) => void = () => {};
+    let calls = 0;
+    source.start = async (onSegment, onError) => {
+      calls += 1;
+      await realStart(onSegment, onError);
+      if (calls === 1) {
+        await new Promise<void>((_, reject) => {
+          rejectFirst = reject;
+        });
+      }
+    };
+
+    const first = controller.arm();
+    await settle();
+    await controller.arm();
+    rejectFirst(new Error('stale open failed'));
+    await first;
+
+    expect(states[states.length - 1]).toBe('armed');
+    // Still capturing: the wake word saves the window.
+    source.emit();
+    wake.fire();
+    await settle();
+    await settle();
+    expect(mockStitch).toHaveBeenCalledTimes(1);
+    await controller.disarm();
+  });
+
+  it('a disarm while an arm is in flight is not undone by that arm', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10, false);
+    const states: string[] = [];
+    controller.subscribe(s => states.push(s.state));
+    const realStart = source.start.bind(source);
+    let resolveStart: () => void = () => {};
+    source.start = async (onSegment, onError) => {
+      await realStart(onSegment, onError);
+      await new Promise<void>(resolve => {
+        resolveStart = resolve;
+      });
+    };
+
+    const arming = controller.arm();
+    await settle();
+    await controller.disarm();
+    resolveStart();
+    await arming;
+
+    expect(states[states.length - 1]).toBe('idle');
+  });
+
+  it('a re-arm after a feed drop carries on an interrupted extended recording', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10, false);
+    let last: CaptureStatus | null = null;
+    controller.subscribe(s => {
+      last = s;
+    });
+
+    await controller.arm();
+    source.emit();
+    source.emit();
+    controller.startClip();
+    const since = last!.recordingSince;
+    const recorded: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      recorded.push(source.emit());
+    }
+    source.fail('The glasses feed stalled');
+    await controller.arm();
+
+    try {
+      expect(last!.state).toBe('recording');
+      expect(last!.recordingSince).toBe(since);
+      for (let i = 0; i < 2; i++) {
+        recorded.push(source.emit());
+      }
+      wake.fire(); // the stop word
+      await settle();
+      await settle();
+
+      expect(mockStitch).toHaveBeenCalledTimes(1);
+      const [paths] = mockStitch.mock.calls[0];
+      // look-back (2) + recorded across the drop (5) + in-flight cut (1)
+      expect(paths).toHaveLength(8);
+      expect(paths.slice(2, 7)).toEqual(recorded);
+    } finally {
+      await controller.disarm();
+    }
   });
 });
 

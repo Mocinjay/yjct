@@ -45,7 +45,7 @@ export class MWDATSource implements DeviceVideoSource {
     // from it — held the same footage twice.
     this.clearSubscriptions();
     const emitter = mwdatEvents();
-    this.subscriptions = [
+    const subscriptions = [
       emitter.addListener('MWDATSegment', (event: MWDATSegmentEvent) => {
         onSegment({
           path: event.path,
@@ -57,10 +57,16 @@ export class MWDATSource implements DeviceVideoSource {
         onError(new Error(event.message));
       }),
     ];
+    this.subscriptions = subscriptions;
     try {
       await MWDATNative.start(SEGMENT_SECONDS);
     } catch (e) {
-      this.clearSubscriptions();
+      // Only while they are still this call's: a superseded start that fails
+      // late must not strip the listeners a newer start attached (whatever
+      // replaced ours already removed them).
+      if (this.subscriptions === subscriptions) {
+        this.clearSubscriptions();
+      }
       throw e;
     }
   }

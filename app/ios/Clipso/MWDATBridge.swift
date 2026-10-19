@@ -69,10 +69,13 @@ final class MWDATBridge: RCTEventEmitter {
   /// been released and will throw; a new caller starts its own instead of
   /// joining it.
   private var openEpoch = 0
-  /// An arm is between start() and its writer attaching. Only counted when
-  /// the app backgrounds: a wearer who taps arm and pockets the phone wants
-  /// that arm to finish, even though nothing records yet.
-  private var armInFlight = false
+  /// The arm currently between start() and its writer attaching, if any.
+  /// Only counted when the app backgrounds: a wearer who taps arm and pockets
+  /// the phone wants that arm to finish, even though nothing records yet. A
+  /// token, not a flag: an older arm that ends late must not clear a newer
+  /// arm's claim.
+  private var armInFlightToken: Int?
+  private var armToken = 0
   /// Bumped whenever the pipeline is released on purpose — stopPreview, an
   /// app-lifecycle release, stop(). An open checks it after every wait and
   /// abandons itself if it moved: cancelling a recovery does not stop the
@@ -139,7 +142,7 @@ final class MWDATBridge: RCTEventEmitter {
   /// Set once the watchdog has declared the feed stalled, cleared the moment
   /// frames come back. While it is set, `stream.state` is known to be lying —
   /// the SDK keeps reporting `.streaming` on a link that has delivered nothing
-  /// for a minute — so `performOpenPipeline()` must not take it at its word.
+  /// for a minute — so `performOpenPipeline(epoch:)` must not take it at its word.
   private var pipelineStalled = false
   /// The segment length the user armed with, so a stall recovery can restore
   /// the writer instead of coming back with a live preview and no capture.
@@ -411,6 +414,10 @@ final class MWDATBridge: RCTEventEmitter {
 
   @objc private func appWillEnterForeground() {
     appInBackground = false
+    // An arm that finished while backgrounded could not start the mic — iOS
+    // refuses to start audio capture from the background — and the writer has
+    // been recording video only since.
+    writer?.retryAudioIfNeeded()
   }
 
   /// True while segments are actually being written — i.e. the wearer is armed
@@ -437,7 +444,7 @@ final class MWDATBridge: RCTEventEmitter {
     // what made "say Clipso while using another app" impossible, so an active
     // capture now keeps the session. Preview-only sessions still release —
     // they hold the glasses' capture slot for nothing.
-    if reason == "didEnterBackground", bridge.isCaptureIntended || bridge.armInFlight {
+    if reason == "didEnterBackground", bridge.isCaptureIntended || bridge.armInFlightToken != nil {
       log("app lifecycle (\(reason)) — KEEPING glasses session, capture is armed")
       bridge.sendEvent(
         withName: Event.streamState,
@@ -818,9 +825,17 @@ final class MWDATBridge: RCTEventEmitter {
         // it is relaunched. Not mid-recovery, though: resetting a running loop
         // on every JS re-arm kept it from ever running out.
         if recoveryTask == nil { recoveryAttempts = 0 }
-        armInFlight = true
-        defer { armInFlight = false }
+        armToken += 1
+        let token = armToken
+        armInFlightToken = token
+        defer { if armInFlightToken == token { armInFlightToken = nil } }
         try await openPipelineIfNeeded()
+        // stopRecording()/stop() while the open ran, or a newer arm that took
+        // over: attaching now would record with nothing in JS listening.
+        guard armInFlightToken == token else {
+          Self.log("start() superseded while opening — not attaching a writer")
+          throw CancellationError()
+        }
         try attachWriter(segmentSeconds: segmentSeconds.doubleValue)
         resolve(nil)
       } catch {
@@ -865,7 +880,7 @@ final class MWDATBridge: RCTEventEmitter {
       // one, must bring the preview back without silently resuming capture.
       // On the main actor so a recovery mid-open reads this before it attaches.
       activeSegmentSeconds = nil
-      armInFlight = false
+      armInFlightToken = nil
       resolve(nil)
     }
   }
@@ -914,7 +929,7 @@ final class MWDATBridge: RCTEventEmitter {
     recoveryTask = nil
     recoveryAttempts = 0
     activeSegmentSeconds = nil
-    armInFlight = false
+    armInFlightToken = nil
     pipelineEpoch += 1
     stopping = true
     teardown()
@@ -951,14 +966,17 @@ final class MWDATBridge: RCTEventEmitter {
     }
     openGeneration += 1
     let generation = openGeneration
-    openEpoch = pipelineEpoch
+    // Captured here, not inside the open: a release between now and the
+    // task's first run must abandon it, not be adopted as its baseline.
+    let epoch = pipelineEpoch
+    openEpoch = epoch
     let task = Task { @MainActor in
       // Cleared by the open itself the moment it ends. Its starter may resume
       // only after a newer open began, and clearing then dropped that one's
       // handle; a waiter that resumed first found this finished, failed
       // handle still set and coalesced onto it.
       defer { if openGeneration == generation { openTask = nil } }
-      try await performOpenPipeline()
+      try await performOpenPipeline(epoch: epoch)
     }
     openTask = task
     try await task.value
@@ -983,7 +1001,8 @@ final class MWDATBridge: RCTEventEmitter {
   }
 
   @MainActor
-  private func performOpenPipeline() async throws {
+  private func performOpenPipeline(epoch: Int) async throws {
+    try ensureOpenStillWanted(epoch)
     // A stalled feed invalidates both reuse checks below. The SDK goes on
     // reporting `.streaming` with a `.started` session on a link that has
     // delivered no frame in a minute, so honouring that here left the app
@@ -1015,7 +1034,6 @@ final class MWDATBridge: RCTEventEmitter {
     stopping = true
     teardown()
     stopping = false
-    let epoch = pipelineEpoch
 
     let wearables = Wearables.shared
     Self.log(
@@ -1246,7 +1264,7 @@ final class MWDATBridge: RCTEventEmitter {
     // once the stream is genuinely `.streaming`, and name the cause otherwise.
     if newStream.state != .streaming {
       Self.log("waiting for stream to reach .streaming (45s max)…")
-      let streaming = await waitForStreaming(newStream, timeoutSeconds: 45)
+      let streaming = await waitForStreaming(newStream, epoch: epoch, timeoutSeconds: 45)
       try ensureOpenStillWanted(epoch)
       Self.log("waitForStreaming → \(streaming), state=\(String(describing: newStream.state))")
       guard streaming else {
@@ -1401,7 +1419,7 @@ final class MWDATBridge: RCTEventEmitter {
   /// Runs at most `maxRecoveryAttempts` times with a widening backoff, and only
   /// while the app still wants frames. Each attempt starts with a teardown, and
   /// running out of attempts ends with one, so nothing half-open is left for
-  /// the reuse guards in `performOpenPipeline()` to mistake for a live stream.
+  /// the reuse guards in `performOpenPipeline(epoch:)` to mistake for a live stream.
   @MainActor
   private func attemptStallRecovery() async {
     guard recoveryTask == nil, !stopping else { return }
@@ -1695,8 +1713,13 @@ final class MWDATBridge: RCTEventEmitter {
   /// failure surfaced as "last state: stopped; cause: no error reported".
   /// A stop only means failure once the stream has been seen to leave
   /// `.stopped`; before that, keep waiting (or until an error, or timeout).
+  ///
+  /// Gives up as soon as the pipeline is released: a 45 s wait otherwise kept
+  /// a released open alive long enough to fail a newer arm's promise.
+  @MainActor
   private func waitForStreaming(
     _ stream: MWDATCamera.Stream,
+    epoch: Int,
     timeoutSeconds: UInt64
   ) async -> Bool {
     let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
@@ -1704,6 +1727,10 @@ final class MWDATBridge: RCTEventEmitter {
     var everLeftStopped = false
 
     while Date() < deadline {
+      if epoch != pipelineEpoch {
+        Self.log("waitForStreaming: pipeline released — abandoning the wait")
+        return false
+      }
       let state = stream.state
       if state != loggedState {
         Self.log("waitForStreaming: \(String(describing: state))")

@@ -21,6 +21,7 @@ jest.mock('../src/native/MWDATNative', () => ({
   },
 }));
 
+import { MWDATNative } from '../src/native/MWDATNative';
 import { MWDATSource } from '../src/device/MWDATSource';
 
 function emit(name: string, event: unknown): void {
@@ -57,5 +58,26 @@ describe('MWDATSource', () => {
     emit('MWDATSegment', { path: '/a.mp4', startedAt: 0, durationSec: 5 });
 
     expect(segments).toEqual([]);
+  });
+
+  it('keeps a newer start\'s listeners when a superseded start fails late', async () => {
+    const source = new MWDATSource();
+    const segments: string[] = [];
+    const onSegment = (s: { path: string }) => segments.push(s.path);
+    let rejectFirst: (e: Error) => void = () => {};
+    (MWDATNative.start as jest.Mock).mockImplementationOnce(
+      () =>
+        new Promise<void>((_, reject) => {
+          rejectFirst = reject;
+        }),
+    );
+
+    const first = source.start(onSegment, () => {});
+    await source.start(onSegment, () => {});
+    rejectFirst(new Error('stale open failed'));
+    await expect(first).rejects.toThrow('stale open failed');
+    emit('MWDATSegment', { path: '/a.mp4', startedAt: 0, durationSec: 5 });
+
+    expect(segments).toEqual(['/a.mp4']);
   });
 });

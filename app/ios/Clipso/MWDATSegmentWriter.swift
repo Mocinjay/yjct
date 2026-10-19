@@ -385,6 +385,17 @@ final class MWDATSegmentWriter {
     }
   }
 
+  /// A fresh audio budget for a writer still running deaf. The rotation retries
+  /// spend theirs while the app is backgrounded, where iOS refuses to start a
+  /// recording session; the bridge calls this on return to the foreground.
+  func retryAudioIfNeeded() {
+    queue.async { [weak self] in
+      guard let self, self.running, !self.audioRunning else { return }
+      self.audioStartAttempts = 0
+      self.startAudio()
+    }
+  }
+
   private static func requestRecordPermission(_ completion: @escaping (Bool) -> Void) {
     if #available(iOS 17.0, *) {
       switch AVAudioApplication.shared.recordPermission {

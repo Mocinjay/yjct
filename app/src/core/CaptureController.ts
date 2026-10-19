@@ -86,6 +86,12 @@ export class CaptureController {
   private armedSince: number | null = null;
   private maxRecordingTimer: ReturnType<typeof setTimeout> | null = null;
   /**
+   * Bumped by every arm() and disarm(). An arm that finds it moved after an
+   * await has been superseded and leaves the state to whoever moved it: a
+   * stale arm's late failure used to disarm the newer arm that had succeeded.
+   */
+  private armGeneration = 0;
+  /**
    * `onClipSaved` fires once a clip is in the library. Post-capture work
    * (auto-captioning) hangs off this rather than being called from here, so
    * the capture loop keeps no dependency on Phase 2 — see services/capture.ts.
@@ -109,22 +115,52 @@ export class CaptureController {
   }
 
   async arm(): Promise<void> {
+    const generation = ++this.armGeneration;
     this.sessionClipCount = 0;
-    this.setStatus({ state: 'arming', bufferedSeconds: 0 });
+    // A feed drop mid extended recording leaves the window pinned. The re-arm
+    // carries on with that recording, so the stop word or button still saves
+    // it from where it began, rather than arming over a stale pin that the
+    // next stop would save from.
+    const resumeSince = this.buffer.isPinned
+      ? this.status.recordingSince ?? Date.now()
+      : undefined;
+    // Kept through 'arming' so a second re-arm still knows when it began.
+    this.setStatus({ state: 'arming', bufferedSeconds: 0, recordingSince: resumeSince });
     try {
       await this.source.prepare();
+      if (generation !== this.armGeneration) {
+        return;
+      }
       await this.source.start(
         seg => this.onSegment(seg),
         err => this.setStatus({ ...this.status, state: 'error', lastError: err.message }),
       );
+      if (generation !== this.armGeneration) {
+        return;
+      }
       await this.wakeWord.start(detection => {
         this.onWakePhrase(detection).catch(err =>
           this.setStatus({ ...this.status, state: 'error', lastError: String(err) }),
         );
       });
+      if (generation !== this.armGeneration) {
+        return;
+      }
       this.armedSince = Date.now();
-      this.setStatus({ ...this.status, state: 'armed' });
+      if (resumeSince !== undefined && this.buffer.isPinned) {
+        this.setStatus({ ...this.status, state: 'recording', recordingSince: resumeSince });
+        // The cap may have fired while the feed was down, when it could not
+        // stop anything: what is left of it runs from now.
+        this.scheduleMaxRecordingTimer(
+          MAX_CLIP_RECORDING_SECONDS * 1000 - (Date.now() - resumeSince),
+        );
+      } else {
+        this.setStatus({ ...this.status, state: 'armed', recordingSince: undefined });
+      }
     } catch (err) {
+      if (generation !== this.armGeneration) {
+        return;
+      }
       await this.disarm();
       this.setStatus({
         state: 'error',
@@ -136,6 +172,7 @@ export class CaptureController {
   }
 
   async disarm(): Promise<void> {
+    this.armGeneration += 1;
     this.clearMaxRecordingTimer();
     await this.wakeWord.stop().catch(() => {});
     await this.source.stop().catch(() => {});
@@ -207,10 +244,12 @@ export class CaptureController {
       await Promise.all(segments.map(s => RNFS.unlink(s.path).catch(() => {})));
       this.sessionClipCount += 1;
       // Whatever the state is now — still 'error', or 'armed' again if a
-      // re-arm finished meanwhile — it stays.
+      // re-arm finished meanwhile — it stays, and so does the start of an
+      // extended recording begun since.
       this.setStatus({
         ...this.status,
-        recordingSince: undefined,
+        recordingSince:
+          this.status.state === 'recording' ? this.status.recordingSince : undefined,
         lastClip: clip,
         sessionClipCount: this.sessionClipCount,
       });
@@ -292,7 +331,8 @@ export class CaptureController {
    * recording into the clip until `stopClip()`.
    */
   startClip(): void {
-    if (this.status.state !== 'armed') {
+    // Not while a save-while-down is still flushing the buffer it would pin.
+    if (this.status.state !== 'armed' || this.saving) {
       return;
     }
     this.buffer.pin();
@@ -301,11 +341,7 @@ export class CaptureController {
       state: 'recording',
       recordingSince: Date.now(),
     });
-    this.maxRecordingTimer = setTimeout(() => {
-      this.stopClip().catch(err =>
-        this.setStatus({ ...this.status, state: 'error', lastError: String(err) }),
-      );
-    }, MAX_CLIP_RECORDING_SECONDS * 1000);
+    this.scheduleMaxRecordingTimer(MAX_CLIP_RECORDING_SECONDS * 1000);
   }
 
   /** Stop recording and save [trigger − window … now] as one clip. */
@@ -411,6 +447,16 @@ export class CaptureController {
     if (this.status.state === 'armed') {
       this.setStatus({ ...this.status, bufferedSeconds: this.buffer.totalBufferedSeconds });
     }
+  }
+
+  /** The safety cap on an extended recording, replacing any earlier one. */
+  private scheduleMaxRecordingTimer(delayMs: number): void {
+    this.clearMaxRecordingTimer();
+    this.maxRecordingTimer = setTimeout(() => {
+      this.stopClip().catch(err =>
+        this.setStatus({ ...this.status, state: 'error', lastError: String(err) }),
+      );
+    }, Math.max(0, delayMs));
   }
 
   private clearMaxRecordingTimer(): void {
