@@ -36,11 +36,9 @@ export interface CaptureStatus {
   /** Epoch ms of the trigger, set while state === 'recording'. */
   recordingSince?: number;
   /**
-   * Epoch ms of the last successful `arm()` — how long this session has been
-   * listening. Deliberately NOT capped at the look-back window: the window
-   * bounds what a trigger clips, not how long the wearer has been live, and
-   * showing the capped number as the session clock made it look like capture
-   * stopped at 30s.
+   * Epoch ms of the last successful `arm()`: the session clock shown as LIVE
+   * m:ss. Not capped at the look-back window, because the window bounds what a
+   * trigger saves, not how long capture has been running.
    */
   armedSince?: number;
   lastError?: string;
@@ -86,9 +84,9 @@ export class CaptureController {
   private armedSince: number | null = null;
   private maxRecordingTimer: ReturnType<typeof setTimeout> | null = null;
   /**
-   * Bumped by every arm() and disarm(). An arm that finds it moved after an
-   * await has been superseded and leaves the state to whoever moved it: a
-   * stale arm's late failure used to disarm the newer arm that had succeeded.
+   * Bumped by every arm() and disarm(). An arm that finds it changed after an
+   * await has been superseded and must not touch the state (e.g. a stale arm
+   * failing late must not disarm a newer arm that succeeded).
    */
   private armGeneration = 0;
   /**
@@ -162,11 +160,7 @@ export class CaptureController {
         return;
       }
       await this.disarm();
-      this.setStatus({
-        state: 'error',
-        bufferedSeconds: 0,
-        lastError: err instanceof Error ? err.message : String(err),
-      });
+      this.setStatus({ state: 'error', bufferedSeconds: 0, lastError: errorMessage(err) });
       throw err;
     }
   }
@@ -174,11 +168,37 @@ export class CaptureController {
   async disarm(): Promise<void> {
     this.armGeneration += 1;
     this.clearMaxRecordingTimer();
+    // An extended recording still pinned here was cut short: a feed drop whose
+    // re-arm failed, or the capture screen going away mid-recording. Clearing
+    // the buffer would delete it, but its segments are on disk and stitching
+    // needs no stream, so it is saved as it stands. Taken before the first
+    // await so nothing can flush or clear it in between.
+    const interrupted =
+      this.buffer.isPinned && !this.saving ? this.buffer.flushFromPin() : [];
+    if (interrupted.length > 0) {
+      this.saving = true;
+    }
     await this.wakeWord.stop().catch(() => {});
     await this.source.stop().catch(() => {});
     this.buffer.clear();
     this.armedSince = null;
     this.setStatus({ state: 'idle', bufferedSeconds: 0 });
+    if (interrupted.length > 0) {
+      // Not awaited: a failed arm reports its error without waiting on a
+      // stitch. The state is left alone; only the clip is reported.
+      this.saveClip(interrupted)
+        .then(clip =>
+          this.setStatus({
+            ...this.status,
+            lastClip: clip,
+            sessionClipCount: this.sessionClipCount,
+          }),
+        )
+        .catch(err => this.setStatus({ ...this.status, lastError: errorMessage(err) }))
+        .finally(() => {
+          this.saving = false;
+        });
+    }
   }
 
   /**
@@ -207,9 +227,8 @@ export class CaptureController {
    *
    * The footage is already in the buffer and saving it needs no live stream,
    * so it is saved now, and the state the capture screen is recovering from is
-   * left alone. Waiting for a re-arm lost the clip whenever the re-arm failed
-   * — exactly when the glasses had been folded or taken off — because a failed
-   * arm clears the buffer.
+   * left alone. It is not left to the re-arm: that fails exactly when the
+   * glasses were folded or taken off, and a failed arm clears the look-back.
    */
   private async saveWhileDown(detection: WakeDetection): Promise<void> {
     if (this.saving) {
@@ -225,24 +244,12 @@ export class CaptureController {
         this.clearMaxRecordingTimer();
         segments = this.buffer.flushFromPin();
       } else {
-        segments = this.buffer.flushEndingAt(detection.segmentPath);
-        if (segments.length > 0) {
-          const last = segments[segments.length - 1];
-          trimEndSec = Math.max(
-            0,
-            last.durationSec -
-              (detection.endOffsetSec + WAKE_TRIM_PADDING_SECONDS),
-          );
-        }
+        ({ segments, trimEndSec } = this.windowEndingAt(detection));
       }
       if (segments.length === 0) {
         return;
       }
-      const clip = await this.stitch(segments, trimEndSec);
-      await clipStore.add(clip);
-      this.announceSaved(clip);
-      await Promise.all(segments.map(s => RNFS.unlink(s.path).catch(() => {})));
-      this.sessionClipCount += 1;
+      const clip = await this.saveClip(segments, trimEndSec);
       // Whatever the state is now — still 'error', or 'armed' again if a
       // re-arm finished meanwhile — it stays, and so does the start of an
       // extended recording begun since.
@@ -254,10 +261,7 @@ export class CaptureController {
         sessionClipCount: this.sessionClipCount,
       });
     } catch (err) {
-      this.setStatus({
-        ...this.status,
-        lastError: err instanceof Error ? err.message : String(err),
-      });
+      this.setStatus({ ...this.status, lastError: errorMessage(err) });
     } finally {
       this.saving = false;
     }
@@ -271,7 +275,7 @@ export class CaptureController {
    * to cut and the trailing dead air (0–5s of segment plus transcription time)
    * is trimmed off the last segment. Without one — the manual button, Android,
    * or a wake segment that has already been evicted — the in-flight segment is
-   * cut and the whole window saved, as before.
+   * cut and the whole window saved.
    */
   async captureNow(detection?: WakeDetection): Promise<Clip | null> {
     if (this.status.state !== 'armed' || this.saving) {
@@ -281,32 +285,20 @@ export class CaptureController {
     this.chime();
     this.setStatus({ ...this.status, state: 'saving' });
     try {
-      let segments: Segment[] = [];
-      let trimEndSec = 0;
-      if (detection) {
-        segments = this.buffer.flushEndingAt(detection.segmentPath);
-        if (segments.length > 0) {
-          const last = segments[segments.length - 1];
-          trimEndSec = Math.max(
-            0,
-            last.durationSec - (detection.endOffsetSec + WAKE_TRIM_PADDING_SECONDS),
-          );
-        }
-      }
+      let { segments, trimEndSec } = detection
+        ? this.windowEndingAt(detection)
+        : { segments: [] as Segment[], trimEndSec: 0 };
       if (segments.length === 0) {
         await this.source.cut();
         segments = this.buffer.flush();
+        trimEndSec = 0;
       }
       if (segments.length === 0) {
         throw new Error('Buffer is empty — nothing to clip yet.');
       }
-      const clip = await this.stitch(segments, trimEndSec);
-      await clipStore.add(clip);
-      this.announceSaved(clip);
-      await Promise.all(segments.map(s => RNFS.unlink(s.path).catch(() => {})));
-      this.sessionClipCount += 1;
+      const clip = await this.saveClip(segments, trimEndSec);
       this.setStatus({
-        state: 'armed',
+        ...this.stateAfterSave(),
         // Segments recorded after the wake word are kept as the next clip's
         // look-back, so the counter does not necessarily fall back to zero.
         bufferedSeconds: this.buffer.totalBufferedSeconds,
@@ -315,11 +307,7 @@ export class CaptureController {
       });
       return clip;
     } catch (err) {
-      this.setStatus({
-        ...this.status,
-        state: 'armed',
-        lastError: err instanceof Error ? err.message : String(err),
-      });
+      this.setStatus({ ...this.status, ...this.stateAfterSave(err) });
       return null;
     } finally {
       this.saving = false;
@@ -359,13 +347,9 @@ export class CaptureController {
       if (segments.length === 0) {
         throw new Error('Nothing recorded — buffer was empty.');
       }
-      const clip = await this.stitch(segments);
-      await clipStore.add(clip);
-      this.announceSaved(clip);
-      await Promise.all(segments.map(s => RNFS.unlink(s.path).catch(() => {})));
-      this.sessionClipCount += 1;
+      const clip = await this.saveClip(segments);
       this.setStatus({
-        state: 'armed',
+        ...this.stateAfterSave(),
         bufferedSeconds: 0,
         lastClip: clip,
         sessionClipCount: this.sessionClipCount,
@@ -374,13 +358,63 @@ export class CaptureController {
     } catch (err) {
       this.setStatus({
         ...this.status,
-        state: 'armed',
+        ...this.stateAfterSave(err),
         recordingSince: undefined,
-        lastError: err instanceof Error ? err.message : String(err),
       });
       return null;
     } finally {
       this.saving = false;
+    }
+  }
+
+  /**
+   * Where a save leaves the capture state. From 'saving' it returns to
+   * 'armed', carrying the save's own failure if it had one. Anything that
+   * landed during the stitch stands instead: a stream error (overwriting it
+   * would show LIVE over a dead feed and cancel the screen's recovery), the
+   * re-arm the screen started from it, or a disarm.
+   */
+  private stateAfterSave(err?: unknown): Pick<CaptureStatus, 'state' | 'lastError'> {
+    const { state, lastError } = this.status;
+    if (state === 'error' || state === 'arming' || state === 'idle') {
+      return { state, lastError };
+    }
+    return { state: 'armed', lastError: err === undefined ? undefined : errorMessage(err) };
+  }
+
+  /**
+   * The look-back window ending on the wake word: the segments up to the one
+   * it was heard in, with the dead air after the word trimmed off. Empty when
+   * that segment has already been evicted.
+   */
+  private windowEndingAt(detection: WakeDetection): {
+    segments: Segment[];
+    trimEndSec: number;
+  } {
+    const segments = this.buffer.flushEndingAt(detection.segmentPath);
+    const last = segments[segments.length - 1];
+    const trimEndSec = last
+      ? Math.max(0, last.durationSec - (detection.endOffsetSec + WAKE_TRIM_PADDING_SECONDS))
+      : 0;
+    return { segments, trimEndSec };
+  }
+
+  /**
+   * Stitches flushed segments into a clip and adds it to the library. The
+   * segment files are deleted whether or not that worked: they have already
+   * left the buffer, so nothing else will. (The stitched clip is kept even if
+   * the index write fails: it is already in memory and the next write saves
+   * it.)
+   */
+  private async saveClip(segments: Segment[], trimEndSec = 0): Promise<Clip> {
+    try {
+      const clip = await this.stitch(segments, trimEndSec);
+      await clipStore.add(clip);
+      this.sessionClipCount += 1;
+      this.announceSaved(clip);
+      return clip;
+    } finally {
+      await Promise.all(segments.map(s => RNFS.unlink(s.path).catch(() => {})));
     }
   }
 
@@ -411,10 +445,6 @@ export class CaptureController {
   }
 
   /**
-   * Post-capture work is never allowed to fail a capture that already
-   * succeeded — the clip is on disk and in the library either way.
-   */
-  /**
    * Sound the glasses so the wearer knows a trigger landed without looking at
    * the phone. Fired twice per clip: once the instant the trigger registers,
    * and again once the clip is in the library. The gap between them is a
@@ -429,8 +459,12 @@ export class CaptureController {
     this.source.chime?.().catch(() => {});
   }
 
+  /**
+   * Second tone (the clip is on disk and in the library, not merely heard),
+   * then post-capture work, which is never allowed to fail a capture that
+   * already succeeded.
+   */
   private announceSaved(clip: Clip): void {
-    // Second tone: the clip is on disk and in the library, not merely heard.
     this.chime();
     try {
       this.onClipSaved?.(clip);
@@ -490,6 +524,10 @@ export class CaptureController {
     };
     this.listeners.forEach(l => l(this.status));
   }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function defaultClipName(capturedAt: number): string {

@@ -18,7 +18,6 @@ import type { FeatureGrid } from '../phase2/climaxScoring';
  * of doing this on the phone.
  */
 export interface TranscribeResult {
-  transcript: string;
   words: TimedWord[];
 }
 
@@ -48,10 +47,6 @@ interface ClimaxEngineModule {
 
 const captionNative: CaptionEngineModule | undefined = NativeModules.CaptionEngine;
 const climaxNative: ClimaxEngineModule | undefined = NativeModules.ClimaxEngine;
-
-export function captionEngineAvailable(): boolean {
-  return Platform.OS === 'ios' && captionNative != null;
-}
 
 export function climaxEngineAvailable(): boolean {
   return Platform.OS === 'ios' && climaxNative != null;
@@ -89,8 +84,12 @@ export function extractFeatures(path: string): Promise<FeatureGrid> {
   return climaxNative.extractFeatures(path);
 }
 
+/**
+ * True when on-device captioning can run now: iOS, module linked, Speech
+ * authorised, and offline dictation installed for en-US.
+ */
 export function captionEngineUsable(): Promise<boolean> {
-  return captionEngineAvailable()
-    ? requireCaption().isAvailable()
+  return Platform.OS === 'ios' && captionNative != null
+    ? captionNative.isAvailable()
     : Promise.resolve(false);
 }

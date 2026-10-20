@@ -102,7 +102,6 @@ class FakeSource implements DeviceVideoSource {
 }
 
 class FakeWakeWord implements WakeWordProvider {
-  readonly name = 'fake';
   private cb: ((detection?: WakeDetection) => void) | null = null;
   async start(onDetected: (detection?: WakeDetection) => void) {
     this.cb = onDetected;
@@ -117,6 +116,19 @@ class FakeWakeWord implements WakeWordProvider {
 
 async function settle() {
   await new Promise<void>(resolve => setTimeout(resolve, 0));
+}
+
+/** Makes the next stitch wait until the returned function is called. */
+function holdNextStitch(): () => void {
+  let finish: () => void = () => {};
+  const gate = new Promise<void>(resolve => {
+    finish = resolve;
+  });
+  mockStitch.mockImplementationOnce(async (paths: string[], out: string) => {
+    await gate;
+    return { outputPath: out, thumbnailPath: out, durationSec: paths.length * 5 };
+  });
+  return finish;
 }
 
 describe('CaptureController', () => {
@@ -370,6 +382,85 @@ describe('CaptureController', () => {
     expect(states[states.length - 1]).toBe('idle');
   });
 
+  it('a stream error that lands while a clip stitches is not overwritten', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10, false);
+    let last: CaptureStatus | null = null;
+    controller.subscribe(s => {
+      last = s;
+    });
+    const finishStitch = holdNextStitch();
+
+    await controller.arm();
+    source.emit();
+    source.emit();
+    wake.fire();
+    await settle();
+    expect(last!.state).toBe('saving');
+    source.fail('The glasses feed stalled');
+    finishStitch();
+    await settle();
+    await settle();
+
+    // The capture screen only re-arms from 'error'; 'armed' here would show
+    // LIVE over a dead feed.
+    expect(last!.state).toBe('error');
+    expect(last!.lastError).toBe('The glasses feed stalled');
+    expect(last!.lastClip).toBeDefined();
+    await controller.disarm();
+  });
+
+  it('a disarm while a clip stitches is not undone when the save finishes', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10, false);
+    let last: CaptureStatus | null = null;
+    controller.subscribe(s => {
+      last = s;
+    });
+    const finishStitch = holdNextStitch();
+
+    await controller.arm();
+    source.emit();
+    const saving = controller.captureNow();
+    await settle();
+    await controller.disarm();
+    finishStitch();
+    expect(await saving).not.toBeNull();
+
+    expect(last!.state).toBe('idle');
+  });
+
+  it('deletes the flushed segments when the stitch fails', async () => {
+    const RNFS = require('react-native-fs');
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10, false);
+    let last: CaptureStatus | null = null;
+    controller.subscribe(s => {
+      last = s;
+    });
+    mockStitch.mockImplementationOnce(async () => {
+      throw new Error('stitch failed');
+    });
+
+    await controller.arm();
+    source.emit();
+    source.emit();
+    RNFS.unlink.mockClear();
+    expect(await controller.captureNow()).toBeNull();
+
+    // The buffer handed these over, so nothing else would ever delete them.
+    const [paths] = mockStitch.mock.calls[0];
+    expect(paths.length).toBeGreaterThan(0);
+    const unlinked = RNFS.unlink.mock.calls.map((c: string[]) => c[0]);
+    expect(unlinked).toEqual(expect.arrayContaining(paths));
+    expect(last!.state).toBe('armed');
+    expect(last!.lastError).toBe('stitch failed');
+    await controller.disarm();
+  });
+
   it('a re-arm after a feed drop carries on an interrupted extended recording', async () => {
     const source = new FakeSource();
     const wake = new FakeWakeWord();
@@ -409,6 +500,79 @@ describe('CaptureController', () => {
     } finally {
       await controller.disarm();
     }
+  });
+});
+
+describe('interrupted extended recording', () => {
+  beforeEach(async () => {
+    mockFiles.clear();
+    mockStitch.mockClear();
+    clipStore.resetCache();
+    await entitlementStore.clear();
+  });
+
+  it('is saved, not deleted, when the re-arm after a feed drop fails', async () => {
+    const RNFS = require('react-native-fs');
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10, false);
+    let last: CaptureStatus | null = null;
+    controller.subscribe(s => {
+      last = s;
+    });
+
+    await controller.arm();
+    source.emit();
+    source.emit();
+    controller.startClip();
+    const recorded: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      recorded.push(source.emit());
+    }
+    source.fail('The glasses stream stopped');
+    source.start = async () => {
+      throw new Error('No glasses found');
+    };
+    RNFS.unlink.mockClear();
+    await expect(controller.arm()).rejects.toThrow('No glasses found');
+    await settle();
+    await settle();
+
+    expect(mockStitch).toHaveBeenCalledTimes(1);
+    const [paths] = mockStitch.mock.calls[0];
+    // The pinned look-back and everything recorded since REC.
+    expect(paths.slice(-recorded.length)).toEqual(recorded);
+    expect(await clipStore.list()).toHaveLength(1);
+    // The failed arm still reports itself, so the screen's recovery runs.
+    expect(last!.state).toBe('error');
+    expect(last!.lastError).toBe('No glasses found');
+    expect(last!.lastClip).toBeDefined();
+    // Deleted only once they are in the clip.
+    const unlinked = RNFS.unlink.mock.calls.map((c: string[]) => c[0]);
+    expect(unlinked).toEqual(expect.arrayContaining(recorded));
+  });
+
+  it('is saved when the capture screen goes away mid-recording', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10, false);
+    let last: CaptureStatus | null = null;
+    controller.subscribe(s => {
+      last = s;
+    });
+
+    await controller.arm();
+    source.emit();
+    controller.startClip();
+    const recorded = [source.emit(), source.emit()];
+    await controller.disarm();
+    await settle();
+    await settle();
+
+    expect(mockStitch).toHaveBeenCalledTimes(1);
+    expect(mockStitch.mock.calls[0][0].slice(-2)).toEqual(recorded);
+    expect(last!.state).toBe('idle');
+    expect(last!.lastClip).toBeDefined();
   });
 });
 

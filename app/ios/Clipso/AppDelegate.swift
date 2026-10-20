@@ -23,6 +23,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     window = UIWindow(frame: UIScreen.main.bounds)
 
+    // A Live Activity outlives a crashed, force-quit or memory-killed run.
+    // Clear it before JS starts, so it cannot sit beside the next arm's banner.
+    LiveActivityBridge.endOrphanedActivities()
+
     factory.startReactNative(
       withModuleName: "Clipso",
       in: window,

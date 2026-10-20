@@ -97,9 +97,6 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
     AVMutableCompositionTrack *audioTrack = nil;
 
     CMTime cursor = kCMTimeZero;
-    NSUInteger srcAudioTrackTotal = 0;   // audio tracks seen across all segments
-    NSUInteger srcAudioUsableTotal = 0;  // ...of those, ones with real content
-    NSUInteger skippedEmptyAudio = 0;    // ...of those, ones skipped as empty
     for (NSUInteger index = 0; index < segmentPaths.count; index++) {
       NSString *path = segmentPaths[index];
       NSURL *url = [NSURL fileURLWithPath:path];
@@ -144,17 +141,13 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
         }
         videoTrack.preferredTransform = srcVideo.preferredTransform;
       }
-      NSArray<AVAssetTrack *> *srcAudioTracks =
-          [asset tracksWithMediaType:AVMediaTypeAudio];
-      AVAssetTrack *srcAudio = srcAudioTracks.firstObject;
-      srcAudioTrackTotal += srcAudioTracks.count;
+      AVAssetTrack *srcAudio = [asset tracksWithMediaType:AVMediaTypeAudio].firstObject;
 
       // The predicate is "has content", not "is non-nil". A zero-sample audio
       // track is present in the file but contributes no segments, and reading
       // it is exactly how an empty composition audio track gets created.
       if (!JVSTrackHasContent(srcAudio)) {
         if (srcAudio != nil) {
-          skippedEmptyAudio += 1;
           JVSLog(@"skipping EMPTY audio track in %@ (duration=%.3fs) - "
                  @"no audio output will be created for it",
                  path.lastPathComponent,
@@ -164,7 +157,6 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
                  path.lastPathComponent);
         }
       } else {
-        srcAudioUsableTotal += 1;
         if (audioTrack == nil) {
           audioTrack = [composition addMutableTrackWithMediaType:AVMediaTypeAudio
                                                preferredTrackID:kCMPersistentTrackID_Invalid];
@@ -204,32 +196,15 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
       return;
     }
 
-    NSUInteger compositionAudioTracks =
-        [composition tracksWithMediaType:AVMediaTypeAudio].count;
-    JVSLog(@"composed %lu segment(s): srcAudioTracks=%lu usable=%lu "
-           @"skippedEmpty=%lu compositionAudioTracks=%lu audioOutputSkipped=%@ "
-           @"duration=%.2fs",
-           (unsigned long)segmentPaths.count,
-           (unsigned long)srcAudioTrackTotal,
-           (unsigned long)srcAudioUsableTotal,
-           (unsigned long)skippedEmptyAudio,
-           (unsigned long)compositionAudioTracks,
-           compositionAudioTracks == 0 ? @"YES (video-only export)" : @"NO",
+    JVSLog(@"composed %lu segment(s): audio=%@ duration=%.2fs",
+           (unsigned long)segmentPaths.count, audioTrack != nil ? @"YES" : @"NO",
            CMTimeGetSeconds(cursor));
 
-    NSAssert(compositionAudioTracks != 1 || audioTrack != nil,
-             @"composition audio track present without a usable source");
-
     // Segments are the glasses' own HEVC, written as-is by MWDATSegmentWriter,
-    // and each one starts on a keyframe - so concatenating them needs no
-    // re-encode at all: passthrough copies the exact bits the glasses encoded.
-    // The previous path decoded every frame to BGRA and re-encoded it with no
-    // bitrate specified, spending a whole extra generation of quality on a
-    // pure concatenation.
-    //
-    // The one thing passthrough cannot do is join segments whose formats
-    // differ, which the SDK's ABR ladder can produce by stepping resolution
-    // down mid-session. That is what the transcode below is still here for.
+    // and each one starts on a keyframe, so passthrough concatenates them with
+    // no re-encode and no quality loss. It cannot join segments whose formats
+    // differ (the SDK's ABR ladder can step resolution down mid-session); only
+    // then does the transcode fallback run.
     [self exportPassthrough:composition
                  outputPath:outputPath
                  completion:^(BOOL ok, NSError *passthroughError) {
@@ -329,9 +304,6 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
     [reader addOutput:videoOutput];
 
     NSArray<AVAssetTrack *> *audioTracks = [readerAsset tracksWithMediaType:AVMediaTypeAudio];
-    JVSLog(@"Reader asset audio track count: %lu", (unsigned long)audioTracks.count);
-    JVSLog(@"Audio output type: AVAssetReaderTrackOutput");
-    JVSLog(@"Processing as video-only: %@", audioTracks.count == 0 ? @"YES" : @"NO");
 
     AVAssetReaderTrackOutput *audioOutput = nil;
     if (audioTracks.firstObject != nil) {
@@ -351,8 +323,6 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
       }
       [reader addOutput:output];
       audioOutput = output;
-    } else {
-      JVSLog(@"No audio track found. Continuing as video-only.");
     }
 
     [[NSFileManager defaultManager] removeItemAtPath:outputPath error:nil];
@@ -373,9 +343,8 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
       videoWidth = 504;
       videoHeight = 896;
     }
-    // Match MWDATSegmentWriter's 0.3 bits/pixel/frame and High profile.
-    // Specifying nothing let AVFoundation pick its own conservative default,
-    // which threw away most of what the segment writer had preserved.
+    // Match MWDATSegmentWriter's 0.3 bits/pixel/frame and High profile; left
+    // unset, AVFoundation picks a far lower default bitrate.
     NSInteger bitRate = MAX(4000000, (NSInteger)(videoWidth * videoHeight * 30.0 * 0.3));
     JVSLog(@"transcode fallback: %.0fx%.0f h264-high bitRate=%ld",
            videoWidth, videoHeight, (long)bitRate);
@@ -450,8 +419,6 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
     // leave crashes. `finishOnce` makes both impossible.
     __block BOOL videoDone = NO;
     __block BOOL audioDone = NO;
-    __block NSUInteger videoSamplesWritten = 0;
-    __block NSUInteger audioSamplesWritten = 0;
 
     dispatch_group_enter(writingGroup);
     [videoWriterInput requestMediaDataWhenReadyOnQueue:videoQueue usingBlock:^{
@@ -481,11 +448,12 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
           if (![videoWriterInput appendSampleBuffer:buffer]) {
             CFRelease(buffer);
             NSError *error = writer.error;
-            finishOnce();
+            // Fail first: settling first could let the group's notify run
+            // before `didFail` is set and finish a writer that has failed.
             failOnce(@"video_write", error.localizedDescription, error);
+            finishOnce();
             return;
           }
-          videoSamplesWritten += 1;
           CFRelease(buffer);
         }
       }
@@ -519,21 +487,19 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
             if (![audioWriterInput appendSampleBuffer:buffer]) {
               CFRelease(buffer);
               NSError *error = writer.error;
-              finishOnce();
               failOnce(@"audio_write", error.localizedDescription, error);
+              finishOnce();
               return;
             }
-            audioSamplesWritten += 1;
             CFRelease(buffer);
           }
         }
       }];
-    } else {
-      JVSLog(@"video-only: no audio reader output and no audio writer input "
-             @"were created; completion will not wait for audio");
     }
 
     dispatch_group_notify(writingGroup, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      // Claim the outcome: once `didFail` is set here, a late failOnce is a
+      // no-op, so the promise settles exactly once.
       @synchronized(writer) {
         if (didFail) { return; }
         didFail = YES;
@@ -545,19 +511,6 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
         return;
       }
 
-      JVSLog(@"writing finished: videoSamples=%lu audioSamples=%lu",
-             (unsigned long)videoSamplesWritten,
-             (unsigned long)audioSamplesWritten);
-      // An audio input that was added but received no samples writes an EMPTY
-      // audio track into the output file - the exact shape that made the source
-      // segments crash this stitcher in the first place. The composition-level
-      // empty-track removal above should make this unreachable; log loudly if
-      // it ever is not, so the clip is not quietly poisoned for downstream
-      // readers.
-      if (audioWriterInput != nil && audioSamplesWritten == 0) {
-        JVSLog(@"WARNING: audio input received zero samples; output clip may "
-               @"carry an empty audio track");
-      }
       [writer finishWritingWithCompletionHandler:^{
         if (writer.status != AVAssetWriterStatusCompleted) {
           NSError *error = writer.error;

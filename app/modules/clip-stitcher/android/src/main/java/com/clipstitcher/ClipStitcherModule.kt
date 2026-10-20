@@ -57,6 +57,9 @@ class ClipStitcherModule(reactContext: ReactApplicationContext) :
         }
         promise.resolve(result)
       } catch (e: Exception) {
+        // Delete the partial MP4 so a failed save does not leave an orphaned
+        // file in the clips directory.
+        File(outputPath).delete()
         promise.reject("stitch", e.message, e)
       }
     }
@@ -64,12 +67,26 @@ class ClipStitcherModule(reactContext: ReactApplicationContext) :
 
   private fun concat(paths: List<String>, outputPath: String, trimEndSec: Double) {
     val muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+    // release() in finally: a throw anywhere in remux (unreadable segment,
+    // muxer rejecting a sample) must not leak the muxer's native file handle.
+    try {
+      remux(muxer, paths, trimEndSec)
+    } finally {
+      // release() stops a still-started muxer first, and that stop can itself
+      // throw (e.g. a track received no samples); it must not mask the error
+      // that actually failed the remux.
+      runCatching { muxer.release() }
+    }
+  }
+
+  /** Writes every segment's samples into [muxer], back to back, then stops it. */
+  private fun remux(muxer: MediaMuxer, paths: List<String>, trimEndSec: Double) {
     var videoTrack = -1
     var audioTrack = -1
 
     // Track layout comes from the first segment; all segments share encoder settings.
-    run {
-      val probe = MediaExtractor()
+    val probe = MediaExtractor()
+    try {
       probe.setDataSource(paths[0])
       for (i in 0 until probe.trackCount) {
         val format = probe.getTrackFormat(i)
@@ -80,6 +97,7 @@ class ClipStitcherModule(reactContext: ReactApplicationContext) :
           audioTrack = muxer.addTrack(format)
         }
       }
+    } finally {
       probe.release()
     }
     require(videoTrack >= 0) { "First segment has no video track" }
@@ -91,59 +109,61 @@ class ClipStitcherModule(reactContext: ReactApplicationContext) :
 
     for ((pathIndex, path) in paths.withIndex()) {
       val extractor = MediaExtractor()
-      extractor.setDataSource(path)
-      var segmentEndUs = 0L
+      try {
+        extractor.setDataSource(path)
+        var segmentEndUs = 0L
 
-      // Samples past this are dropped. A trim that would swallow the whole
-      // segment is a bug upstream, not an instruction to emit nothing, so it
-      // is ignored rather than acted on.
-      val cutoffUs = if (pathIndex == paths.lastIndex && trimEndSec > 0) {
-        val durationUs = (0 until extractor.trackCount)
-          .map { extractor.getTrackFormat(it) }
-          .filter { it.containsKey(MediaFormat.KEY_DURATION) }
-          .maxOfOrNull { it.getLong(MediaFormat.KEY_DURATION) } ?: 0L
-        val cutoff = durationUs - (trimEndSec * 1_000_000).toLong()
-        if (cutoff > 0) cutoff else Long.MAX_VALUE
-      } else {
-        Long.MAX_VALUE
-      }
-
-      for (i in 0 until extractor.trackCount) {
-        val format = extractor.getTrackFormat(i)
-        val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
-        val dstTrack = when {
-          mime.startsWith("video/") -> videoTrack
-          mime.startsWith("audio/") && audioTrack >= 0 -> audioTrack
-          else -> continue
+        // Samples past this are dropped. A trim that would swallow the whole
+        // segment is a bug upstream, not an instruction to emit nothing, so it
+        // is ignored rather than acted on.
+        val cutoffUs = if (pathIndex == paths.lastIndex && trimEndSec > 0) {
+          val durationUs = (0 until extractor.trackCount)
+            .map { extractor.getTrackFormat(it) }
+            .filter { it.containsKey(MediaFormat.KEY_DURATION) }
+            .maxOfOrNull { it.getLong(MediaFormat.KEY_DURATION) } ?: 0L
+          val cutoff = durationUs - (trimEndSec * 1_000_000).toLong()
+          if (cutoff > 0) cutoff else Long.MAX_VALUE
+        } else {
+          Long.MAX_VALUE
         }
 
-        extractor.selectTrack(i)
-        while (true) {
-          info.size = extractor.readSampleData(buffer, 0)
-          if (info.size < 0 || extractor.sampleTime > cutoffUs) {
-            break
+        for (i in 0 until extractor.trackCount) {
+          val format = extractor.getTrackFormat(i)
+          val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+          val dstTrack = when {
+            mime.startsWith("video/") -> videoTrack
+            mime.startsWith("audio/") && audioTrack >= 0 -> audioTrack
+            else -> continue
           }
-          info.presentationTimeUs = extractor.sampleTime + offsetUs
-          info.offset = 0
-          info.flags = extractorFlagsToCodecFlags(extractor.sampleFlags)
-          muxer.writeSampleData(dstTrack, buffer, info)
-          segmentEndUs = maxOf(segmentEndUs, extractor.sampleTime)
-          extractor.advance()
-        }
-        extractor.unselectTrack(i)
 
-        if (format.containsKey(MediaFormat.KEY_DURATION)) {
-          val declared = minOf(format.getLong(MediaFormat.KEY_DURATION), cutoffUs)
-          segmentEndUs = maxOf(segmentEndUs, declared)
+          extractor.selectTrack(i)
+          while (true) {
+            info.size = extractor.readSampleData(buffer, 0)
+            if (info.size < 0 || extractor.sampleTime > cutoffUs) {
+              break
+            }
+            info.presentationTimeUs = extractor.sampleTime + offsetUs
+            info.offset = 0
+            info.flags = extractorFlagsToCodecFlags(extractor.sampleFlags)
+            muxer.writeSampleData(dstTrack, buffer, info)
+            segmentEndUs = maxOf(segmentEndUs, extractor.sampleTime)
+            extractor.advance()
+          }
+          extractor.unselectTrack(i)
+
+          if (format.containsKey(MediaFormat.KEY_DURATION)) {
+            val declared = minOf(format.getLong(MediaFormat.KEY_DURATION), cutoffUs)
+            segmentEndUs = maxOf(segmentEndUs, declared)
+          }
         }
+
+        offsetUs += segmentEndUs
+      } finally {
+        extractor.release()
       }
-
-      extractor.release()
-      offsetUs += segmentEndUs
     }
 
     muxer.stop()
-    muxer.release()
   }
 
   private fun extractorFlagsToCodecFlags(sampleFlags: Int): Int {

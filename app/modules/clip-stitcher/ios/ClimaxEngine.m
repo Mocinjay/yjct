@@ -250,21 +250,41 @@ RCT_EXPORT_METHOD(extractFeatures:(NSString *)path
     return;
   }
 
+  // Each buffer is written at its presentation time, so PCM index i is clip
+  // time i / 16 kHz and the audio signals line up with the video and the words
+  // even when the audio starts late or has gaps (left as silence). A gap under
+  // 10 ms is resampler rounding and is not padded, and padding is capped at the
+  // clip's duration so a bogus timestamp cannot request an unbounded allocation.
+  const NSUInteger gapSlackBytes = 160 * sizeof(int16_t);
+  double durationSec = CMTimeGetSeconds(asset.duration);
+  double maxAt = isfinite(durationSec) ? (durationSec + 1.0) * kCXAudioSampleRate : 0.0;
   NSMutableData *pcm = [NSMutableData data];
-  CMSampleBufferRef sample = NULL;
-  while ((sample = [output copyNextSampleBuffer])) {
-    CMBlockBufferRef block = CMSampleBufferGetDataBuffer(sample);
-    if (block != NULL) {
-      size_t length = CMBlockBufferGetDataLength(block);
-      void *bytes = malloc(length);
-      if (bytes != NULL) {
-        if (CMBlockBufferCopyDataBytes(block, 0, length, bytes) == kCMBlockBufferNoErr) {
-          [pcm appendBytes:bytes length:length];
-        }
-        free(bytes);
+  for (;;) {
+    @autoreleasepool {
+      CMSampleBufferRef sample = [output copyNextSampleBuffer];
+      if (sample == NULL) {
+        break;
       }
+      CMTime pts = CMSampleBufferGetPresentationTimeStamp(sample);
+      if (CMTIME_IS_NUMERIC(pts)) {
+        double at = MAX(0.0, CMTimeGetSeconds(pts)) * kCXAudioSampleRate;
+        NSUInteger startByte = (NSUInteger)llround(at) * sizeof(int16_t);
+        if (at <= maxAt && startByte > pcm.length + gapSlackBytes) {
+          [pcm increaseLengthBy:startByte - pcm.length];  // zero-filled: silence
+        }
+      }
+      CMBlockBufferRef block = CMSampleBufferGetDataBuffer(sample);
+      if (block != NULL) {
+        size_t length = CMBlockBufferGetDataLength(block);
+        NSUInteger offset = pcm.length;
+        [pcm increaseLengthBy:length];
+        if (CMBlockBufferCopyDataBytes(block, 0, length, (uint8_t *)pcm.mutableBytes + offset) !=
+            kCMBlockBufferNoErr) {
+          pcm.length = offset;
+        }
+      }
+      CFRelease(sample);
     }
-    CFRelease(sample);
   }
   NSUInteger sampleCount = pcm.length / sizeof(int16_t);
   if (sampleCount < kCXFFTSize) {
@@ -433,83 +453,90 @@ cleanup:
   double minInterval = 1.0 / kCXSampleFps;
   double lastSampled = -1e9;
 
-  CMSampleBufferRef sample = NULL;
-  while (count < capacity && (sample = [output copyNextSampleBuffer])) {
-    double t = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample));
-    if (!isfinite(t) || t - lastSampled < minInterval) {
-      CFRelease(sample);
-      continue;
-    }
-    lastSampled = t;
-
-    CVImageBufferRef pixels = CMSampleBufferGetImageBuffer(sample);
-    if (pixels == NULL) {
-      CFRelease(sample);
-      continue;
-    }
-    CVPixelBufferLockBaseAddress(pixels, kCVPixelBufferLock_ReadOnly);
-    size_t width = CVPixelBufferGetWidth(pixels);
-    size_t height = CVPixelBufferGetHeight(pixels);
-    size_t stride = CVPixelBufferGetBytesPerRow(pixels);
-    const uint8_t *base = CVPixelBufferGetBaseAddress(pixels);
-
-    // Subsample by striding rather than scaling: these are whole-frame
-    // statistics, so every Nth pixel carries the same information far cheaper.
-    int step = (int)MAX(1, (long)(MAX(width, height) / kCXVisualMaxEdge));
-    NSUInteger outW = (NSUInteger)((width + step - 1) / step);
-    NSUInteger outH = (NSUInteger)((height + step - 1) / step);
-    NSUInteger needed = outW * outH;
-    if (base != NULL && needed > 0) {
-      if (needed != grayCount) {
-        free(gray);
-        free(prevGray);
-        gray = malloc(needed);
-        prevGray = NULL;  // geometry changed; nothing to difference against
-        grayCount = needed;
+  // One pool per frame, so decoded BGRA frames are not held in autoreleased
+  // temporaries until the method returns.
+  while (count < capacity) {
+    @autoreleasepool {
+      CMSampleBufferRef sample = [output copyNextSampleBuffer];
+      if (sample == NULL) {
+        break;
       }
-      if (gray != NULL) {
-        memset(hist, 0, kCXHistogramBins * sizeof(double));
-        NSUInteger idx = 0;
-        for (size_t y = 0; y < height; y += step) {
-          const uint8_t *row = base + y * stride;
-          for (size_t x = 0; x < width && idx < needed; x += step) {
-            const uint8_t *px = row + x * 4;  // BGRA
-            // Rec.601 luma, integer weights.
-            uint8_t luma = (uint8_t)((px[2] * 77 + px[1] * 150 + px[0] * 29) >> 8);
-            gray[idx++] = luma;
-            hist[(luma * kCXHistogramBins) / 256] += 1.0;
-          }
-        }
-        for (NSUInteger b = 0; b < kCXHistogramBins; b++) {
-          hist[b] /= (double)MAX((NSUInteger)1, idx);
-        }
-
-        double diff = 0;
-        double scene = 0;
-        if (prevGray != NULL) {
-          long total = 0;
-          for (NSUInteger i = 0; i < needed; i++) {
-            total += abs((int)gray[i] - (int)prevGray[i]);
-          }
-          diff = (double)total / (double)needed / 255.0;
-          scene = 1.0 - CXHistogramCorrelation(hist, prevHist, kCXHistogramBins);
-        }
-        times[count] = t;
-        diffs[count] = diff;
-        scenes[count] = MAX(0.0, MIN(1.0, scene));
-        count += 1;
-
-        if (prevGray == NULL) {
-          prevGray = malloc(needed);
-        }
-        if (prevGray != NULL) {
-          memcpy(prevGray, gray, needed);
-        }
-        memcpy(prevHist, hist, kCXHistogramBins * sizeof(double));
+      double t = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample));
+      if (!isfinite(t) || t - lastSampled < minInterval) {
+        CFRelease(sample);
+        continue;
       }
+      lastSampled = t;
+
+      CVImageBufferRef pixels = CMSampleBufferGetImageBuffer(sample);
+      if (pixels == NULL) {
+        CFRelease(sample);
+        continue;
+      }
+      CVPixelBufferLockBaseAddress(pixels, kCVPixelBufferLock_ReadOnly);
+      size_t width = CVPixelBufferGetWidth(pixels);
+      size_t height = CVPixelBufferGetHeight(pixels);
+      size_t stride = CVPixelBufferGetBytesPerRow(pixels);
+      const uint8_t *base = CVPixelBufferGetBaseAddress(pixels);
+
+      // Subsample by striding rather than scaling: these are whole-frame
+      // statistics, so every Nth pixel carries the same information far cheaper.
+      int step = (int)MAX(1, (long)(MAX(width, height) / kCXVisualMaxEdge));
+      NSUInteger outW = (NSUInteger)((width + step - 1) / step);
+      NSUInteger outH = (NSUInteger)((height + step - 1) / step);
+      NSUInteger needed = outW * outH;
+      if (base != NULL && needed > 0) {
+        if (needed != grayCount) {
+          free(gray);
+          free(prevGray);
+          gray = malloc(needed);
+          prevGray = NULL;  // geometry changed; nothing to difference against
+          grayCount = needed;
+        }
+        if (gray != NULL) {
+          memset(hist, 0, kCXHistogramBins * sizeof(double));
+          NSUInteger idx = 0;
+          for (size_t y = 0; y < height; y += step) {
+            const uint8_t *row = base + y * stride;
+            for (size_t x = 0; x < width && idx < needed; x += step) {
+              const uint8_t *px = row + x * 4;  // BGRA
+              // Rec.601 luma, integer weights.
+              uint8_t luma = (uint8_t)((px[2] * 77 + px[1] * 150 + px[0] * 29) >> 8);
+              gray[idx++] = luma;
+              hist[(luma * kCXHistogramBins) / 256] += 1.0;
+            }
+          }
+          for (NSUInteger b = 0; b < kCXHistogramBins; b++) {
+            hist[b] /= (double)MAX((NSUInteger)1, idx);
+          }
+
+          double diff = 0;
+          double scene = 0;
+          if (prevGray != NULL) {
+            long total = 0;
+            for (NSUInteger i = 0; i < needed; i++) {
+              total += abs((int)gray[i] - (int)prevGray[i]);
+            }
+            diff = (double)total / (double)needed / 255.0;
+            scene = 1.0 - CXHistogramCorrelation(hist, prevHist, kCXHistogramBins);
+          }
+          times[count] = t;
+          diffs[count] = diff;
+          scenes[count] = MAX(0.0, MIN(1.0, scene));
+          count += 1;
+
+          if (prevGray == NULL) {
+            prevGray = malloc(needed);
+          }
+          if (prevGray != NULL) {
+            memcpy(prevGray, gray, needed);
+          }
+          memcpy(prevHist, hist, kCXHistogramBins * sizeof(double));
+        }
+      }
+      CVPixelBufferUnlockBaseAddress(pixels, kCVPixelBufferLock_ReadOnly);
+      CFRelease(sample);
     }
-    CVPixelBufferUnlockBaseAddress(pixels, kCVPixelBufferLock_ReadOnly);
-    CFRelease(sample);
   }
 
   if (count >= 2) {

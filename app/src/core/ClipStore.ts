@@ -1,14 +1,13 @@
 import RNFS from 'react-native-fs';
-import { FREE_RETENTION_HOURS } from '../config';
 import type { Clip } from '../types';
 
 const CLIPS_DIR = `${RNFS.DocumentDirectoryPath}/clips`;
 const INDEX_PATH = `${CLIPS_DIR}/index.json`;
 /**
  * Previous index, kept so a crash mid-write can never lose the whole library.
- * RNFS has no atomic replace, so persist() moves the live index aside before
- * moving the new one in; if we die in that window, this file is the recovery
- * point and `list()` falls back to it.
+ * RNFS has no atomic replace, so a write moves the live index aside before
+ * moving the new one in; if the app dies in that window, this file is the
+ * recovery point and `list()` falls back to it.
  */
 const BACKUP_PATH = `${CLIPS_DIR}/index.bak.json`;
 
@@ -19,17 +18,25 @@ const BACKUP_PATH = `${CLIPS_DIR}/index.bak.json`;
  * Clips are temporary by default. A free-tier clip carries an `expiresAt`
  * and is wiped by `sweepExpired()` unless the wearer saves or publishes it
  * first. Pro clips are created with `expiresAt: null` and are kept forever.
+ *
+ * Every change goes through `mutate()`, and index writes are queued one at a
+ * time. Captioning progress, UI edits and the launch sweep all write here
+ * concurrently, so neither rule is optional.
  */
 export class ClipStore {
   private clips: Clip[] | null = null;
+  /** The first read of the index, shared so concurrent callers parse it once. */
+  private loading: Promise<Clip[]> | null = null;
+  /**
+   * Tail of the index-write queue. A write is several native calls, and two
+   * interleaved ones collide on the temp and backup files (iOS will not move
+   * onto an existing file), so writes run one at a time.
+   */
+  private writes: Promise<void> = Promise.resolve();
   private listeners = new Set<() => void>();
 
   async ensureDir(): Promise<string> {
     await RNFS.mkdir(CLIPS_DIR);
-    return CLIPS_DIR;
-  }
-
-  get dir(): string {
     return CLIPS_DIR;
   }
 
@@ -42,52 +49,42 @@ export class ClipStore {
     if (this.clips) {
       return this.clips;
     }
-    await this.ensureDir();
-    this.clips = await readIndex();
-    return this.clips;
-  }
-
-  /** Temporary clips, newest first — the "Recent" tab. */
-  async listPending(): Promise<Clip[]> {
-    return (await this.list()).filter(isPending);
-  }
-
-  /** Kept clips, newest first — the "Saved" tab. */
-  async listSaved(): Promise<Clip[]> {
-    return (await this.list()).filter(c => !isPending(c));
+    // Concurrent first callers share one read. If each parsed its own copy,
+    // the last read to land would overwrite changes made off the first (e.g.
+    // bring back a clip the launch sweep had just deleted).
+    if (!this.loading) {
+      const load: Promise<Clip[]> = this.ensureDir()
+        .then(readIndex)
+        .then(clips => {
+          this.clips = this.clips ?? clips;
+          return this.clips;
+        })
+        .finally(() => {
+          // Only its own: a resetCache() may have started a newer load.
+          if (this.loading === load) {
+            this.loading = null;
+          }
+        });
+      this.loading = load;
+    }
+    return this.loading;
   }
 
   async add(clip: Clip): Promise<void> {
-    const clips = await this.list();
-    this.clips = [clip, ...clips];
-    await this.persist();
+    await this.mutate(clips => [clip, ...clips]);
   }
 
   async rename(id: string, name: string): Promise<void> {
-    const clips = await this.list();
-    this.clips = clips.map(c => (c.id === id ? { ...c, name } : c));
-    await this.persist();
+    await this.mutate(clips => clips.map(c => (c.id === id ? { ...c, name } : c)));
   }
 
   /** Keep this clip forever: clears the expiry clock. */
   async save(id: string): Promise<void> {
-    const clips = await this.list();
-    this.clips = clips.map(c =>
-      c.id === id ? { ...c, savedAt: c.savedAt ?? Date.now(), expiresAt: null } : c,
+    await this.mutate(clips =>
+      clips.map(c =>
+        c.id === id ? { ...c, savedAt: c.savedAt ?? Date.now(), expiresAt: null } : c,
+      ),
     );
-    await this.persist();
-  }
-
-  /** Back to temporary, with a fresh clock. No-op for a clip already pending. */
-  async unsave(id: string, retentionHours = FREE_RETENTION_HOURS): Promise<void> {
-    const clips = await this.list();
-    const now = Date.now();
-    this.clips = clips.map(c =>
-      c.id === id
-        ? { ...c, savedAt: null, expiresAt: now + retentionHours * 3600_000 }
-        : c,
-    );
-    await this.persist();
   }
 
   /**
@@ -96,13 +93,12 @@ export class ClipStore {
    * unfinished on the next launch, and CaptionQueue can pick it back up.
    */
   async setCaptionState(id: string, patch: CaptionPatch): Promise<void> {
-    const clips = await this.list();
-    if (!clips.some(c => c.id === id)) {
-      // The clip was deleted or swept while its job was running.
-      return;
-    }
-    this.clips = clips.map(c => (c.id === id ? { ...c, ...patch } : c));
-    await this.persist();
+    await this.mutate(clips =>
+      // A clip deleted or swept while its job ran stays gone.
+      clips.some(c => c.id === id)
+        ? clips.map(c => (c.id === id ? { ...c, ...patch } : c))
+        : clips,
+    );
   }
 
   /**
@@ -110,22 +106,22 @@ export class ClipStore {
    * user put on YouTube must not evaporate 24h later.
    */
   async markPublished(id: string, platform: string): Promise<void> {
-    const clips = await this.list();
-    this.clips = clips.map(c => {
-      if (c.id !== id) {
-        return c;
-      }
-      const publishedTo = c.publishedTo ?? [];
-      return {
-        ...c,
-        publishedTo: publishedTo.includes(platform)
-          ? publishedTo
-          : [...publishedTo, platform],
-        savedAt: c.savedAt ?? Date.now(),
-        expiresAt: null,
-      };
-    });
-    await this.persist();
+    await this.mutate(clips =>
+      clips.map(c => {
+        if (c.id !== id) {
+          return c;
+        }
+        const publishedTo = c.publishedTo ?? [];
+        return {
+          ...c,
+          publishedTo: publishedTo.includes(platform)
+            ? publishedTo
+            : [...publishedTo, platform],
+          savedAt: c.savedAt ?? Date.now(),
+          expiresAt: null,
+        };
+      }),
+    );
   }
 
   /**
@@ -136,17 +132,17 @@ export class ClipStore {
    * clips alone and only newly captured ones get a clock again.
    */
   async rescueExpiring(): Promise<number> {
-    const clips = await this.list();
-    const pending = clips.filter(isPending);
-    if (pending.length === 0) {
-      return 0;
-    }
+    let rescued = 0;
     const now = Date.now();
-    this.clips = clips.map(c =>
-      isPending(c) ? { ...c, savedAt: c.savedAt ?? now, expiresAt: null } : c,
-    );
-    await this.persist();
-    return pending.length;
+    await this.mutate(clips => {
+      rescued = clips.filter(isPending).length;
+      return rescued === 0
+        ? clips
+        : clips.map(c =>
+            isPending(c) ? { ...c, savedAt: c.savedAt ?? now, expiresAt: null } : c,
+          );
+    });
+    return rescued;
   }
 
   /**
@@ -155,41 +151,69 @@ export class ClipStore {
    * clips vanish silently.
    */
   async sweepExpired(now = Date.now()): Promise<Clip[]> {
-    const clips = await this.list();
-    const expired = clips.filter(c => c.expiresAt !== null && c.expiresAt <= now);
-    if (expired.length === 0) {
-      return [];
-    }
-    const expiredIds = new Set(expired.map(c => c.id));
-    this.clips = clips.filter(c => !expiredIds.has(c.id));
-    await this.persist();
+    let expired: Clip[] = [];
+    await this.mutate(clips => {
+      expired = clips.filter(c => c.expiresAt !== null && c.expiresAt <= now);
+      return expired.length === 0 ? clips : clips.filter(c => !expired.includes(c));
+    });
     for (const clip of expired) {
       await deleteClipFiles(clip);
     }
     return expired;
   }
 
+  /** Deletes a clip and its files. An unknown id is a no-op. */
   async remove(id: string): Promise<void> {
-    const clips = await this.list();
-    const clip = clips.find(c => c.id === id);
-    this.clips = clips.filter(c => c.id !== id);
-    await this.persist();
-    if (clip) {
-      await deleteClipFiles(clip);
+    let removed: Clip | undefined;
+    await this.mutate(clips => {
+      removed = clips.find(c => c.id === id);
+      return removed ? clips.filter(c => c !== removed) : clips;
+    });
+    if (removed) {
+      await deleteClipFiles(removed);
     }
   }
 
   /** Test seam — drops the in-memory cache so the next list() re-reads disk. */
   resetCache(): void {
     this.clips = null;
+    this.loading = null;
   }
 
-  private async persist(): Promise<void> {
+  /**
+   * Applies `change` to the current list and saves the result. The change
+   * runs synchronously against the list as it is once any pending load has
+   * finished, never against a snapshot taken before an await, so concurrent
+   * mutations compose instead of overwriting each other. Returning the same
+   * array means nothing changed: no write, no notification.
+   */
+  private async mutate(change: (clips: Clip[]) => Clip[]): Promise<void> {
+    await this.list();
+    const current = this.clips ?? [];
+    const next = change(current);
+    if (next === current) {
+      return;
+    }
+    this.clips = next;
+    await this.persist();
+  }
+
+  /**
+   * Queues a write of the in-memory list behind any write in progress. The
+   * list is serialized when the write starts, so the last write queued always
+   * saves the newest state. A failed write rejects only its own caller.
+   */
+  private persist(): Promise<void> {
+    const write = this.writes.then(() => this.writeIndex());
+    this.writes = write.catch(() => {});
+    return write;
+  }
+
+  private async writeIndex(): Promise<void> {
     const tmp = `${INDEX_PATH}.tmp`;
     await RNFS.writeFile(tmp, JSON.stringify(this.clips ?? []), 'utf8');
-    // Move the live index aside rather than deleting it: between here and the
-    // move below there is no index on disk, and that is exactly the window
-    // where a kill used to lose the entire library.
+    // Move the live index aside rather than deleting it, so there is never a
+    // moment with no index on disk for a kill to land in.
     if (await exists(INDEX_PATH)) {
       await deleteIfExists(BACKUP_PATH);
       await RNFS.moveFile(INDEX_PATH, BACKUP_PATH);
@@ -225,6 +249,15 @@ export function deliverablePath(clip: Clip): string {
   return clip.captionState === 'ready' && clip.captionedFilePath
     ? clip.captionedFilePath
     : clip.filePath;
+}
+
+/** True when the clip has a real captioned cut (mock-provider output does not count). */
+export function hasBurnedCaptions(clip: Clip): boolean {
+  return (
+    clip.captionState === 'ready' &&
+    Boolean(clip.captionedFilePath) &&
+    clip.captionProvider !== 'mock'
+  );
 }
 
 /** True while the clip is waiting on, or inside, the captioning pipeline. */

@@ -1,5 +1,4 @@
 #import <AVFoundation/AVFoundation.h>
-#import <AudioToolbox/AudioToolbox.h>
 #import <React/RCTBridgeModule.h>
 #import <Speech/Speech.h>
 #import <fcntl.h>
@@ -13,12 +12,16 @@
 /// console drops its connection partway through a long run, which loses exactly
 /// the part that matters.
 ///
-/// O_APPEND writes are atomic for line-sized payloads, so interleaving with the
-/// Swift writer's own appends cannot tear a line.
+/// Both this and the Swift DiagnosticLog open the file O_APPEND, and an O_APPEND
+/// write of a line-sized payload is atomic, so their lines can interleave but
+/// never tear or overwrite each other. Keep it that way on both sides.
 static void SWWDiag(NSString *message)
 {
   static NSString *path;
   static dispatch_queue_t queue;
+  // Formatters are expensive to build; one shared instance, only ever used on
+  // `queue`, serves every line.
+  static NSISO8601DateFormatter *formatter;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
     path = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
@@ -26,15 +29,17 @@ static void SWWDiag(NSString *message)
         stringByAppendingPathComponent:@"clipso-diagnostics.log"];
     queue = dispatch_queue_create("com.mocinjay.clipso.swwdiag",
                                   DISPATCH_QUEUE_SERIAL);
+    formatter = [NSISO8601DateFormatter new];
   });
   if (path == nil) {
     return;
   }
-  NSString *line = [NSString
-      stringWithFormat:@"%@ [SpeechWakeWord] %@\n",
-                       [[NSISO8601DateFormatter new] stringFromDate:[NSDate date]],
-                       message];
+  // Stamped when logged, not when the queue gets to it.
+  NSDate *now = [NSDate date];
   dispatch_async(queue, ^{
+    NSString *line = [NSString stringWithFormat:@"%@ [SpeechWakeWord] %@\n",
+                                                [formatter stringFromDate:now],
+                                                message];
     NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
     int fd = open(path.fileSystemRepresentation, O_WRONLY | O_APPEND | O_CREAT, 0644);
     if (fd < 0) {
@@ -143,10 +148,13 @@ static BOOL SWWWriteWAV(NSData *pcm, double sampleRate, NSURL *url)
  * swallow the gain that quiet speech needs, then backs the gain off if that
  * would push the peak into clipping.
  *
- * Returns nil if the asset has no readable audio; caller treats that as silence.
+ * Returns nil if the asset has no readable audio. Sets `*outSilent` when the
+ * audio decodes to exact zeros (a muted or interrupted mic), so the caller can
+ * skip recognition outright instead of running it on nothing.
  */
-static NSURL *SWWRenderBoostedAudio(AVAsset *asset, NSString *label)
+static NSURL *SWWRenderBoostedAudio(AVAsset *asset, NSString *label, BOOL *outSilent)
 {
+  *outSilent = NO;
   NSError *error = nil;
   AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:asset error:&error];
   if (reader == nil) {
@@ -217,6 +225,7 @@ static NSURL *SWWRenderBoostedAudio(AVAsset *asset, NSString *label)
   }
   float rms = (float)sqrt(sumSquares / (double)count);
   if (rms <= 0.0f || peak <= 0.0f) {
+    *outSilent = YES;
     return nil;
   }
 
@@ -250,20 +259,21 @@ static NSURL *SWWRenderBoostedAudio(AVAsset *asset, NSString *label)
   return url;
 }
 
-/**
- * Keyless wake-phrase detection using Apple's on-device Speech framework.
- *
- * Instead of fighting the camera for the microphone, JS feeds each rolling
- * 5s segment file here as it is recorded; we transcribe it (on-device when
- * the model is available) and JS matches "clipso" / "clip that" against the
- * text. No vendor, no API key, no audio-session conflict.
- */
-/// Shape JS expects from `transcribeFile` when nothing was heard.
+/// The `{transcript, words}` shape `transcribeFile` resolves with; nil
+/// arguments produce the empty "nothing heard" result.
 static NSDictionary *SWWTranscriptResult(NSString *text, NSArray *words)
 {
   return @{ @"transcript" : text ?: @"", @"words" : words ?: @[] };
 }
 
+/**
+ * Keyless wake-word detection using Apple's Speech framework.
+ *
+ * JS feeds each rolling segment file here as it is recorded; it is transcribed
+ * (on-device first, server as a fallback) and JS matches "Clipso" against the
+ * text. Working from recorded files means no vendor, no API key and no
+ * microphone contention with capture.
+ */
 @interface SpeechWakeWord : NSObject <RCTBridgeModule>
 @property (nonatomic, strong) SFSpeechRecognizer *recognizer;
 @property (nonatomic, strong) NSMutableSet<SFSpeechRecognitionTask *> *tasks;
@@ -339,18 +349,11 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
 
   NSURL *url = [NSURL fileURLWithPath:path];
 
-  // SFSpeechURLRecognitionRequest opens this file with its own AVAssetReader and
-  // constructs an AVAssetReaderAudioMixOutput over whatever audio tracks it
-  // finds. Handed a file with none, that initializer trips
-  //     [audioTracks count] >= 1
-  // which is an assertion, not a catchable error: it aborts the process from
-  // Speech's own worker thread, so the crash appears on a different thread each
-  // time and names no frame of ours. JS feeds every rolling segment through
-  // here, and glasses segments are routinely video-only (the toolkit exposes no
-  // microphone), so this is the normal path, not an edge case.
-  //
-  // The guard is "has content", not "exists": a writer input that received zero
-  // samples still leaves a track behind, and reading it is equally invalid.
+  // SFSpeechURLRecognitionRequest builds an AVAssetReaderAudioMixOutput over the
+  // file's audio tracks, and with none it hits an assertion that aborts the
+  // process from Speech's own thread - not a catchable error. Segments can be
+  // video-only (or carry a zero-sample audio track), so every file is checked
+  // for an audio track with real content before a request is created.
   if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
     SWWLog(@"file does not exist: %@ - treating as no speech", path.lastPathComponent);
     resolve(SWWTranscriptResult(@"", nil));
@@ -388,7 +391,16 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
   NSString *label = path.lastPathComponent;
   // Recognize from a level-normalized copy, never the segment itself — the
   // saved clip must keep the audio the wearer actually recorded.
-  NSURL *boosted = SWWRenderBoostedAudio(asset, label);
+  BOOL silent = NO;
+  NSURL *boosted = SWWRenderBoostedAudio(asset, label, &silent);
+  if (silent) {
+    // Digital silence cannot contain speech; recognizing it would cost an
+    // on-device pass plus a server retry for a guaranteed empty result.
+    SWWLog(@"skipping speech recognition for %@: audio is digital silence", label);
+    resolve(SWWTranscriptResult(@"", nil));
+    return;
+  }
+  // Any other nil (reader failure, no PCM) falls back to the original file.
   NSURL *recognitionURL = boosted ?: url;
 
   void (^cleanup)(void) = ^{
@@ -453,11 +465,9 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
   SFSpeechURLRecognitionRequest *request =
       [[SFSpeechURLRecognitionRequest alloc] initWithURL:url];
   request.shouldReportPartialResults = NO;
-  // Bias the recognizer toward our brand / trigger — "Clipso" is not in the
-  // default vocabulary, so without hints it becomes "clip so" / "calypso" /
-  // garbage. contextualStrings heavily favor these tokens in the lattice.
-  // Brand only — biasing toward "clip that" would just make the recognizer
-  // more likely to hear a phrase the matcher deliberately no longer acts on.
+  // "Clipso" is not in the default vocabulary, so without hints it comes back
+  // as "clip so" / "calypso" / garbage. Bias toward the brand only: it is the
+  // sole phrase the JS matcher acts on.
   request.contextualStrings = @[
     @"Clipso", @"clipso", @"yo Clipso", @"yo clipso", @"hey Clipso",
   ];

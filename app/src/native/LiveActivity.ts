@@ -7,11 +7,11 @@ import { NativeModules, Platform } from 'react-native';
  * and still see that Clipso is armed and how many clips have landed.
  *
  * Every call is best-effort: the activity is a convenience, and nothing about
- * capture should fail because the OS declined to show it (too old, disabled in
- * Settings, or over ActivityKit's update budget).
+ * capture should fail because the OS declined to show it (disabled in
+ * Settings, a start while backgrounded, or over ActivityKit's update budget).
+ * Off iOS every call resolves false.
  */
 interface LiveActivityNative {
-  isSupported(): Promise<boolean>;
   start(deviceName: string): Promise<boolean>;
   update(
     bufferedSeconds: number,
@@ -26,14 +26,7 @@ interface LiveActivityNative {
 const native: LiveActivityNative | undefined =
   Platform.OS === 'ios' ? NativeModules.LiveActivityBridge : undefined;
 
-export function liveActivityAvailable(): boolean {
-  return native != null;
-}
-
 export const LiveActivity = {
-  isSupported: (): Promise<boolean> =>
-    native?.isSupported().catch(() => false) ?? Promise.resolve(false),
-
   start: (deviceName: string): Promise<boolean> =>
     native?.start(deviceName).catch(() => false) ?? Promise.resolve(false),
 

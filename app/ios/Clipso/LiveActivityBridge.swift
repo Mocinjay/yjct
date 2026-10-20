@@ -1,9 +1,6 @@
+import ActivityKit
 import Foundation
 import React
-
-#if canImport(ActivityKit)
-import ActivityKit
-#endif
 
 /// Drives the Lock Screen / Dynamic Island "LIVE" activity from JS.
 ///
@@ -11,50 +8,47 @@ import ActivityKit
 /// case, phone pocketed, using something else — and still see that Clipso is
 /// listening and how many clips have landed.
 ///
-/// ActivityKit only permits a *start* while the app is in the foreground, so
-/// `start()` is called when the capture session arms, not when the app is
-/// backgrounded. Updates and `end()` work from either state.
+/// ActivityKit only permits a *start* while the app is in the foreground. JS
+/// calls `start()` when the wearer arms capture (they are in the app then),
+/// and keeps that one activity alive across automatic re-arms — stall recovery
+/// usually runs with the phone pocketed, where a fresh `start()` would be
+/// refused. `update()` and `end()` work from either state.
+///
+/// The app target's deployment floor (17.2) is above ActivityKit's (16.2), so
+/// no availability checks are needed here.
 @objc(LiveActivityBridge)
 class LiveActivityBridge: NSObject {
   @objc static func requiresMainQueueSetup() -> Bool { false }
 
-#if canImport(ActivityKit)
-  /// The one activity we run. Typed `Any` because the stored-property type
-  /// cannot itself carry an availability annotation.
-  private var activityBox: Any?
-
-  @available(iOS 16.2, *)
-  private var activity: Activity<ClipsoActivityAttributes>? {
-    get { activityBox as? Activity<ClipsoActivityAttributes> }
-    set { activityBox = newValue }
-  }
+  /// The one activity we run.
+  private var activity: Activity<ClipsoActivityAttributes>?
 
   /// ActivityKit budgets update frequency, and a rejected update is silently
   /// dropped. The buffer ticks every segment, so unchanged or too-frequent
   /// states are filtered here rather than spending the budget on them.
   private var lastPushedAt: TimeInterval = 0
-  private var lastState: [String: Any]?
+  private var lastClipCount: Int?
+  private var lastRecording: Bool?
   private static let minUpdateInterval: TimeInterval = 2.0
-#endif
 
   private static func log(_ message: String) {
     NSLog("[LiveActivity] %@", message)
     DiagnosticLog.write("[LiveActivity] \(message)")
   }
 
-  /// Whether a Live Activity can actually be shown: the OS is new enough AND
-  /// the user has not switched Live Activities off for Clipso in Settings.
-  @objc func isSupported(
-    _ resolve: @escaping RCTPromiseResolveBlock,
-    reject: @escaping RCTPromiseRejectBlock
-  ) {
-#if canImport(ActivityKit)
-    if #available(iOS 16.2, *) {
-      resolve(ActivityAuthorizationInfo().areActivitiesEnabled)
-      return
+  /// Ends every Clipso Live Activity that no bridge instance owns.
+  ///
+  /// An activity outlives the process that started it, so after a crash, a
+  /// force-quit or a background memory kill the old "LIVE" banner stays on the
+  /// Lock Screen with nothing capturing behind it, and the next arm would
+  /// stack a second one beside it. AppDelegate calls this at launch, before JS
+  /// can arm. `start()` calls it too, which covers a JS reload: the new bridge
+  /// instance does not know the old instance's activity.
+  static func endOrphanedActivities() {
+    for orphan in Activity<ClipsoActivityAttributes>.activities {
+      Self.log("ending orphaned activity \(orphan.id)")
+      Task { await orphan.end(nil, dismissalPolicy: .immediate) }
     }
-#endif
-    resolve(false)
   }
 
   @objc func start(
@@ -62,11 +56,6 @@ class LiveActivityBridge: NSObject {
     resolve: @escaping RCTPromiseResolveBlock,
     reject: @escaping RCTPromiseRejectBlock
   ) {
-#if canImport(ActivityKit)
-    guard #available(iOS 16.2, *) else {
-      resolve(false)
-      return
-    }
     guard ActivityAuthorizationInfo().areActivitiesEnabled else {
       Self.log("not started — Live Activities are disabled for Clipso in Settings")
       resolve(false)
@@ -77,6 +66,8 @@ class LiveActivityBridge: NSObject {
       resolve(true)
       return
     }
+    // Nothing is owned here, so anything ActivityKit still lists is left over.
+    Self.endOrphanedActivities()
     let initial = ClipsoActivityAttributes.ContentState(
       bufferedSeconds: 0,
       clipCount: 0,
@@ -89,7 +80,8 @@ class LiveActivityBridge: NSObject {
         content: .init(state: initial, staleDate: nil)
       )
       lastPushedAt = 0
-      lastState = nil
+      lastClipCount = nil
+      lastRecording = nil
       Self.log("started for \(deviceName)")
       resolve(true)
     } catch {
@@ -98,9 +90,6 @@ class LiveActivityBridge: NSObject {
       Self.log("start FAILED — \(error)")
       resolve(false)
     }
-#else
-    resolve(false)
-#endif
   }
 
   @objc func update(
@@ -111,39 +100,33 @@ class LiveActivityBridge: NSObject {
     resolve: @escaping RCTPromiseResolveBlock,
     reject: @escaping RCTPromiseRejectBlock
   ) {
-#if canImport(ActivityKit)
-    guard #available(iOS 16.2, *), let activity = activity else {
+    guard let activity else {
       resolve(false)
       return
     }
+    let clips = clipCount.intValue
     let isRecording = recording.boolValue
     // JS sends epoch milliseconds, 0 meaning "not recording".
     let since: Date? = recordingSince.doubleValue > 0
       ? Date(timeIntervalSince1970: recordingSince.doubleValue / 1000.0)
       : nil
 
-    let state: [String: Any] = [
-      "buffered": bufferedSeconds.intValue,
-      "clips": clipCount.intValue,
-      "rec": isRecording,
-      "since": since?.timeIntervalSince1970 ?? 0,
-    ]
-
     // A change in clip count or recording state is what the wearer is actually
     // waiting to see, so it bypasses the rate limit. A buffer tick does not.
-    let structural = lastState?["clips"] as? Int != clipCount.intValue
-      || lastState?["rec"] as? Bool != isRecording
+    // The first update after start() always counts (nil differs from any value).
+    let structural = lastClipCount != clips || lastRecording != isRecording
     let now = Date().timeIntervalSince1970
     if !structural, now - lastPushedAt < Self.minUpdateInterval {
       resolve(false)
       return
     }
     lastPushedAt = now
-    lastState = state
+    lastClipCount = clips
+    lastRecording = isRecording
 
     let content = ClipsoActivityAttributes.ContentState(
       bufferedSeconds: bufferedSeconds.intValue,
-      clipCount: clipCount.intValue,
+      clipCount: clips,
       recording: isRecording,
       recordingSince: since
     )
@@ -151,22 +134,19 @@ class LiveActivityBridge: NSObject {
       await activity.update(.init(state: content, staleDate: nil))
     }
     resolve(true)
-#else
-    resolve(false)
-#endif
   }
 
   @objc func end(
     _ resolve: @escaping RCTPromiseResolveBlock,
     reject: @escaping RCTPromiseRejectBlock
   ) {
-#if canImport(ActivityKit)
-    guard #available(iOS 16.2, *), let activity = activity else {
+    guard let activity else {
       resolve(false)
       return
     }
     self.activity = nil
-    lastState = nil
+    lastClipCount = nil
+    lastRecording = nil
     Self.log("ending")
     Task {
       // `.immediate` so disarming clears the Lock Screen right away; leaving a
@@ -174,8 +154,5 @@ class LiveActivityBridge: NSObject {
       await activity.end(nil, dismissalPolicy: .immediate)
     }
     resolve(true)
-#else
-    resolve(false)
-#endif
   }
 }

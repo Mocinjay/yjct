@@ -3,7 +3,7 @@ import { clipStore } from '../core/ClipStore';
 import { entitlementStore } from '../core/EntitlementStore';
 import { settingsStore } from '../core/SettingsStore';
 import type { Clip } from '../types';
-import { publishService } from './PublishService';
+import { getCaptioner } from './captioner';
 
 /**
  * Runs every new clip through captioning as soon as it is captured, so the
@@ -16,19 +16,23 @@ import { publishService } from './PublishService';
  * next launch — `resume()` picks those back up rather than leaving a clip
  * stuck mid-pipeline forever.
  *
- * One job at a time on purpose. Captioning is transcription plus a re-encode
- * on the other end; firing a whole armed session's clips at it in parallel
- * just makes every one of them slower.
+ * One job at a time on purpose. Captioning is a transcription plus a full
+ * re-encode; running a whole armed session's clips in parallel just makes
+ * every one of them slower.
  *
  * Nothing starts while the glasses are recording (`setCaptureActive`). A
  * caption burn is a full-clip export on the same media hardware the live
  * capture and the wake-word transcription use, and running it mid-session is
  * what cost captured footage frames. Clips queue up and caption once the
  * wearer disarms. A job already running when capture starts finishes.
+ *
+ * Every caption render goes through this queue, publishing included
+ * (`captionNow`): all providers write `<clip>.captioned.<style>.mp4`, so a
+ * second render of the same clip outside the queue would delete or overwrite
+ * the file this one records.
  */
 export class CaptionQueue {
   private pending: string[] = [];
-  private active: string | null = null;
   private draining = false;
   /**
    * Clips spoken for — queued or running. Held separately from `pending`
@@ -38,6 +42,12 @@ export class CaptionQueue {
    */
   private claimed = new Set<string>();
   private captureActive = false;
+  /**
+   * `captionNow()` callers waiting on a clip, keyed by clip id. Resolved
+   * whenever that clip's claim is released: its job finished, or a `push()`
+   * declined it.
+   */
+  private waiters = new Map<string, Array<() => void>>();
 
   /**
    * Queue a freshly captured clip. No-op for free tier — captioning is Pro,
@@ -56,6 +66,43 @@ export class CaptionQueue {
       return;
     }
     await this.push(clipId, { force: true });
+  }
+
+  /**
+   * Captions one clip for a caller that needs the result now (publishing),
+   * and resolves with the clip as stored once its job has ended. The caller
+   * checks `captionState` on the result; undefined means the clip is gone.
+   *
+   * - A clip already queued or running is joined, not rendered twice.
+   * - A clip that is already 'ready' comes back as it is.
+   * - The clip moves to the front of the queue: after a disarm the queue can
+   *   hold a whole session's clips, and the publish should not wait for all
+   *   of them.
+   * - It refuses while capture is live rather than waiting. The hold can last
+   *   as long as an extended recording, and a publish spinner must not hang
+   *   on it. (A capture that starts after the clip is queued holds it like
+   *   any other job.)
+   */
+  async captionNow(clipId: string): Promise<Clip | undefined> {
+    if (this.captureActive) {
+      throw new Error(
+        'Captions are paused while the glasses are recording. Stop recording ' +
+          'to publish with captions, or turn captions off.',
+      );
+    }
+    const finished = new Promise<void>(resolve => {
+      this.waiters.set(clipId, [...(this.waiters.get(clipId) ?? []), resolve]);
+    });
+    // Not forced: a clip that finished since the caller last looked is used,
+    // not re-rendered.
+    await this.push(clipId);
+    const at = this.pending.indexOf(clipId);
+    if (at > 0) {
+      this.pending.splice(at, 1);
+      this.pending.unshift(clipId);
+    }
+    await finished;
+    return (await clipStore.list()).find(c => c.id === clipId);
   }
 
   /**
@@ -128,6 +175,9 @@ export class CaptionQueue {
     } finally {
       if (!queued) {
         this.claimed.delete(clipId);
+        // A captionNow() that joined this claim while it was being decided
+        // has no job coming to resolve it.
+        this.settle(clipId);
       }
     }
     this.drain();
@@ -147,19 +197,26 @@ export class CaptionQueue {
           if (next === undefined) {
             break;
           }
-          this.active = next;
           try {
             await this.run(next);
           } finally {
             this.claimed.delete(next);
-            this.active = null;
+            this.settle(next);
           }
         }
       } finally {
-        this.active = null;
         this.draining = false;
       }
     })();
+  }
+
+  /** Wakes every captionNow() waiting on this clip. */
+  private settle(clipId: string): void {
+    const waiting = this.waiters.get(clipId);
+    if (waiting) {
+      this.waiters.delete(clipId);
+      waiting.forEach(resolve => resolve());
+    }
   }
 
   private async run(clipId: string): Promise<void> {
@@ -171,7 +228,7 @@ export class CaptionQueue {
     const style = (await settingsStore.get()).captionStyle;
     try {
       await clipStore.setCaptionState(clipId, { captionState: 'processing' });
-      const captioner = await publishService.getCaptioner();
+      const captioner = await getCaptioner();
       const { captionedFilePath } = await captioner.caption(clip.filePath, {
         style,
       });

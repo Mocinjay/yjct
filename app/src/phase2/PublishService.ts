@@ -1,13 +1,9 @@
-import { settingsStore } from '../core/SettingsStore';
-import { captionEngineUsable } from '../native/CaptionEngineNative';
-import { OnDeviceCaptioningProvider } from './OnDeviceCaptioningProvider';
+import { hasBurnedCaptions } from '../core/ClipStore';
 import type { Clip } from '../types';
-import type { CaptioningProvider } from './CaptioningProvider';
+import { captionQueue } from './CaptionQueue';
 import type { ClipHosting } from './ClipHosting';
 import { MockClipHosting } from './ClipHosting';
 import { connectorConfigStore } from './ConnectorConfig';
-import { HttpCaptioningProvider } from './HttpCaptioningProvider';
-import { MockCaptioningProvider } from './MockCaptioningProvider';
 import { PresignedUrlClipHosting } from './PresignedUrlClipHosting';
 import type {
   PublishPrivacy,
@@ -23,39 +19,18 @@ import { YouTubePublishTarget } from './targets/YouTubePublishTarget';
 export interface PublishOptions {
   caption: string;
   privacy: PublishPrivacy;
-  /** Run the (Pro) captioning step before publishing. */
+  /** Publish the captioned cut, captioning the clip first if it has none. */
   withCaptions: boolean;
 }
 
 /**
  * Phase 2 composition root. Targets and hosting are rebuilt from the stored
- * connector config on every listTargets() call, so pasting sandbox
- * credentials in Settings → Connections lights a connector up immediately.
- *
- * Swap the mock captioner for the real external infra here and nowhere else.
+ * connector config on every call, so pasting sandbox credentials in
+ * Settings → Connections lights a connector up immediately.
  */
 export class PublishService {
   // The mock target keeps state (fake job ids), so it persists across builds.
   private mockTarget = new MockPublishTarget();
-
-  /**
-   * Captioning runs on the phone when it can. Order matters:
-   *
-   *  1. on-device (iOS) — no server, no key, audio never leaves the device
-   *  2. the self-hosted HTTP service — Android, or iOS where on-device
-   *     recognition is unavailable for the locale
-   *  3. the mock — dev only, and it labels itself as such
-   */
-  async getCaptioner(): Promise<CaptioningProvider> {
-    if (await captionEngineUsable()) {
-      const { climaxEdit } = await settingsStore.get();
-      return new OnDeviceCaptioningProvider(climaxEdit);
-    }
-    const cfg = await connectorConfigStore.get();
-    return cfg.captioningUrl
-      ? new HttpCaptioningProvider(cfg.captioningUrl)
-      : new MockCaptioningProvider();
-  }
 
   async listTargets(): Promise<PublishTarget[]> {
     const cfg = await connectorConfigStore.get();
@@ -74,15 +49,10 @@ export class PublishService {
         accessToken: cfg.tiktok?.accessToken,
         auditCleared: cfg.tiktok?.auditCleared,
       }),
-      this.mockTarget,
+      // Dev only: it is always "configured", and a publish to it marks the
+      // clip as published (kept forever) with a fake URL.
+      ...(__DEV__ ? [this.mockTarget] : []),
     ];
-  }
-
-  async getHosting(): Promise<ClipHosting> {
-    const cfg = await connectorConfigStore.get();
-    return cfg.hostingPresignUrl
-      ? new PresignedUrlClipHosting(cfg.hostingPresignUrl)
-      : new MockClipHosting();
   }
 
   async publish(
@@ -91,35 +61,26 @@ export class PublishService {
     options: PublishOptions,
   ): Promise<{ publishId: string }> {
     await target.authenticate();
+    // Resolved before captioning, so a missing hosting config fails at once
+    // rather than after a full caption render.
+    const hosting = target.requiresHostedUrl ? await hostingFor(target) : null;
 
     let filePath = clip.filePath;
     if (options.withCaptions) {
-      if (clip.captionState === 'ready' && clip.captionedFilePath) {
-        // Auto-captioning already burned this clip. Re-running would
-        // re-transcribe and re-encode it for an identical result.
-        filePath = clip.captionedFilePath;
-      } else {
-        const { captionStyle } = await settingsStore.get();
-        const captioner = await this.getCaptioner();
-        const captioned = await captioner.caption(filePath, {
-          style: captionStyle,
-        });
-        filePath = captioned.captionedFilePath;
-      }
+      filePath = hasBurnedCaptions(clip)
+        ? clip.captionedFilePath!
+        : await captionedCut(clip.id);
     }
 
-    let hostedUrl: string | undefined;
-    if (target.requiresHostedUrl) {
-      const hosting = await this.getHosting();
-      hostedUrl = (await hosting.upload(filePath)).hostedUrl;
-    }
+    const hostedUrl = hosting
+      ? (await hosting.upload(filePath)).hostedUrl
+      : undefined;
 
     return target.uploadAndPublish(
       {
         localFilePath: filePath,
         hostedUrl,
         title: clip.name,
-        durationSec: clip.durationSec,
       },
       options.caption,
       options.privacy,
@@ -129,6 +90,41 @@ export class PublishService {
   checkStatus(target: PublishTarget, publishId: string): Promise<PublishStatus> {
     return target.checkStatus(publishId);
   }
+}
+
+/**
+ * Captions through CaptionQueue rather than calling a captioner directly. The
+ * queue may already be rendering this clip into the same output file, it
+ * holds renders while the glasses record, and the cut it produces is recorded
+ * on the clip: reused next time and deleted with the clip, never orphaned.
+ * A clip the queue has already finished (a mock copy, say) comes back as is.
+ */
+async function captionedCut(clipId: string): Promise<string> {
+  const clip = await captionQueue.captionNow(clipId);
+  if (clip?.captionState !== 'ready' || !clip.captionedFilePath) {
+    throw new Error(clip?.captionError ?? 'Captioning did not finish.');
+  }
+  return clip.captionedFilePath;
+}
+
+/**
+ * Where a platform that pulls from a URL gets the clip. The presign endpoint
+ * when one is set; otherwise only the dev mock platform can publish, with
+ * fake hosting. A real platform handed the fake `.invalid` URL would fail
+ * late, with a platform error that says nothing about hosting.
+ */
+async function hostingFor(target: PublishTarget): Promise<ClipHosting> {
+  const { hostingPresignUrl } = await connectorConfigStore.get();
+  if (hostingPresignUrl) {
+    return new PresignedUrlClipHosting(hostingPresignUrl);
+  }
+  if (target.platform === 'mock') {
+    return new MockClipHosting();
+  }
+  throw new Error(
+    `${target.displayName} needs the clip at a public URL — add a clip ` +
+      'hosting presign endpoint in Settings → Connections.',
+  );
 }
 
 export const publishService = new PublishService();

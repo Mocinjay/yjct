@@ -11,5 +11,10 @@
 CLIPSO_ENTITLEMENTS = Clipso/Clipso.entitlements
 CODE_SIGN_ENTITLEMENTS = $(CLIPSO_ENTITLEMENTS)
 
+// The MockDeviceKit camera feed is used only by the dev-only simulator mock
+// (ConnectScreen AUTO_MOCK = __DEV__ && simulator); keep it out of Release.
+// mockEnable() already handles the file being absent.
+EXCLUDED_SOURCE_FILE_NAMES = $(inherited) MockFeed.mp4
+
 // Per-developer signing. Untracked — see Signing.xcconfig.example.
 #include? "Signing.xcconfig"

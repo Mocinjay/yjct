@@ -12,9 +12,19 @@ import VideoToolbox
 ///
 /// Pipeline model: `startPreview()` opens the glasses session + camera stream
 /// and emits throttled JPEG preview frames; `start(segmentSeconds)` attaches
-/// the segment writer (and glasses-mic audio) to the same live stream. So the
+/// the segment writer (and the phone-mic audio) to the same live stream. So the
 /// Connect screen can show the wearer's view first, and arming upgrades the
 /// running stream to recording without renegotiating the glasses link.
+///
+/// Threading: pipeline state (session, camera, stream, writer, openTask,
+/// recovery, pipelineEpoch, arm tokens, activeSegmentSeconds) is written only
+/// on the main actor, and RN methods that change it hop there. Elsewhere: the
+/// SDK frame thread bumps `frameCount`/`lastFrameAt` and reads `writer` and the
+/// preview flags to hand each frame on; `healthQueue` owns the watchdog
+/// counters and sets `stallReported`/`pipelineStalled` (teardown resets them on
+/// main); `previewDecodeQueue` owns the HEVC decoder; `previewQueue`
+/// JPEG-encodes one frame at a time. Those cross-thread reads of flags and of
+/// `writer` are deliberately unsynchronised.
 @objc(MWDATBridge)
 final class MWDATBridge: RCTEventEmitter {
   private enum Event {
@@ -56,12 +66,9 @@ final class MWDATBridge: RCTEventEmitter {
   private var camera: MWDATCamera.Camera?
   private var stream: MWDATCamera.Stream?
 
-  /// In-flight pipeline open so concurrent callers coalesce onto one attempt.
-  /// `openPipelineIfNeeded()` is reachable from `startPreview()`, `start()`,
-  /// the retry button, and any React effect that re-fires — and it tears the
-  /// existing session down before rebuilding. A second caller mid-negotiation
-  /// used to stop the first (stop chime), create another (start chime), then
-  /// the first failure tore *that* one down: a self-sustaining restart loop.
+  /// In-flight open: concurrent callers (startPreview, start, recovery,
+  /// re-firing effects) coalesce onto it instead of each tearing the session
+  /// down and rebuilding it, which loops the glasses' stop/start chime.
   private var openTask: Task<Void, Error>?
   /// Identifies the newest open, so only that open clears `openTask`.
   private var openGeneration = 0
@@ -75,12 +82,13 @@ final class MWDATBridge: RCTEventEmitter {
   /// token, not a flag: an older arm that ends late must not clear a newer
   /// arm's claim.
   private var armInFlightToken: Int?
+  /// Source of armInFlightToken values; bumped by every start().
   private var armToken = 0
-  /// Bumped whenever the pipeline is released on purpose — stopPreview, an
-  /// app-lifecycle release, stop(). An open checks it after every wait and
-  /// abandons itself if it moved: cancelling a recovery does not stop the
-  /// open the recovery is running, and without this the glasses reopened
-  /// behind a wearer who had left the screen or pocketed the phone.
+  /// Bumped whenever the pipeline is released on purpose — stopPreview or an
+  /// app-lifecycle release. An open checks it after every wait and abandons
+  /// itself if it moved: cancelling a recovery does not stop the open the
+  /// recovery is running, and without this the glasses would reopen behind a
+  /// wearer who had left the screen or pocketed the phone.
   private var pipelineEpoch = 0
 
   /// Consumes the session state stream for the life of the session. Held so
@@ -88,11 +96,15 @@ final class MWDATBridge: RCTEventEmitter {
   /// one of the ways a dead session keeps driving live logic.
   private var sessionStateTask: Task<SessionStartOutcome, Never>?
 
+  /// Per-stream SDK listeners; dropped in teardown().
   private var listenerTokens: [any AnyListenerToken] = []
+  /// Registration/devices listeners, held while JS observes the emitter
+  /// (startObserving → stopObserving).
   private var observerTokens: [any AnyListenerToken] = []
+  /// Attached only while armed; nil in preview-only mode.
   private var writer: MWDATSegmentWriter?
-  /// Set while stop() is tearing down, so device-initiated state changes can
-  /// be told apart from our own.
+  /// Set while our own teardown runs, so device-initiated state changes can be
+  /// told apart from it.
   private var stopping = false
 
   /// Last error the stream reported, captured so a start failure can name the
@@ -120,12 +132,9 @@ final class MWDATBridge: RCTEventEmitter {
   /// No preview work while the app is in the background: nothing is on screen,
   /// and an armed capture keeps the stream (and its frames) running there.
   private var appInBackground = false
-  /// Backpressure for the preview encoder. `previewQueue` is serial, so an
-  /// encode that runs longer than the emit interval used to build a backlog of
-  /// frames that were already stale by the time they crossed the bridge — the
-  /// preview then ran further and further behind the wearer. Never keep more
-  /// than one frame in flight; drop the rest. Guarded by a lock because the
-  /// flag is set on the SDK's frame thread and cleared on `previewQueue`.
+  /// At most one preview frame is being encoded; later frames are dropped, not
+  /// queued, so the preview never lags the wearer. Set on the frame/decode
+  /// thread, cleared on `previewQueue`, hence the lock.
   private let previewLock = NSLock()
   private var previewInFlight = false
   private var lastPreviewAt: TimeInterval = 0
@@ -148,7 +157,7 @@ final class MWDATBridge: RCTEventEmitter {
   /// the writer instead of coming back with a live preview and no capture.
   /// This is the recording INTENT, not the writer: teardown() leaves it alone,
   /// because a recovery's own teardown must not erase what it is restoring.
-  /// Only the wearer stopping (stopRecording/stop) or recovery giving up
+  /// Only the wearer stopping (stopRecording) or recovery giving up
   /// clears it. Main actor only.
   private var activeSegmentSeconds: Double?
   /// Single-flight stall recovery, bounded. Glasses that are folded, flat, or
@@ -191,24 +200,16 @@ final class MWDATBridge: RCTEventEmitter {
   private static var requestedResolution: StreamingResolution = .high
   /// Below this average, a `.high` stream is judged unable to hold 30 fps.
   private static let minimumHighFps = 26.0
-  /// Creating a CIContext allocates a GPU context and is documented as
-  /// expensive; it must be made once and reused. Building one per frame (~7/s)
-  /// churned enough memory for the OS to terminate the app with
-  /// "Terminated due to memory issue".
+  /// One shared CIContext: each one allocates a GPU context, and making one per
+  /// frame exhausted memory.
   private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
-  /// Preview encoding is skipped entirely while nothing is displaying it.
-  /// `startObserving`/`stopObserving` cannot express this: they fire for the
-  /// emitter as a whole, and segment/error listeners are always attached, so
-  /// preview kept encoding and crossing the bridge on every screen - including
-  /// while a clip was playing, which starved the JS thread and froze the UI.
-  /// Off until a view asks for frames. Defaulting to on meant every frame was
-  /// converted, encoded and sent from app launch until something mounted,
-  /// which RN reports as "Sending `MWDATPreviewFrame` with no listeners
-  /// registered".
+  /// Preview work runs only while JS has a preview visible (setPreviewEnabled).
+  /// startObserving/stopObserving cannot gate it: the always-attached
+  /// segment/error listeners keep the emitter observed on every screen. Off
+  /// until a view asks.
   private var previewEnabled = false
-  private var memoryWatch: DispatchSourceTimer?
-  private var memoryTick: UInt64 = 0
-  private let memoryWatchQueue = DispatchQueue(label: "com.mocinjay.clipso.mwdat.mem")
+  /// Frames from the current stream; incremented on the SDK frame thread,
+  /// reset in teardown().
   private var frameCount = 0
   private var previewEmitCount = 0
   private var previewFailLogged = false
@@ -220,169 +221,6 @@ final class MWDATBridge: RCTEventEmitter {
   private static func log(_ message: String) {
     NSLog("[MWDAT] %@", message)
     DiagnosticLog.write("[MWDAT] \(message)")
-  }
-
-  /// The app's memory footprint as iOS accounts it when deciding to terminate
-  /// (`phys_footprint`, the same number the memory-limit killer uses), split
-  /// into the categories that say *which* subsystem is growing:
-  ///
-  /// - `internal`: ordinary heap/anonymous memory. Ours — objects we allocated
-  ///   and are retaining. A leak in Swift/ObjC/JS shows up here.
-  /// - `compressed`: pages the memory compressor has squeezed. Still counts
-  ///   against the limit, so a heap leak under pressure shifts here.
-  /// - `external`: file-backed and IOSurface-backed memory, which is where
-  ///   CoreAnimation render surfaces, offscreen composites and video buffers
-  ///   live. Growth here is the graphics pipeline, NOT a heap leak.
-  ///
-  /// The split is the whole point: 100+MB/s of `external` means surfaces are
-  /// piling up in the compositor, and no amount of auditing our object graph
-  /// would ever find it.
-  static func memoryBreakdown() -> (footprint: Double, heap: Double, compressed: Double, external: Double, malloc: Double) {
-    var info = task_vm_info_data_t()
-    var count = mach_msg_type_number_t(
-      MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size
-    )
-    let result = withUnsafeMutablePointer(to: &info) {
-      $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-        task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
-      }
-    }
-    guard result == KERN_SUCCESS else { return (-1, -1, -1, -1, -1) }
-    let mb = 1024.0 * 1024.0
-
-    // Splits `heap` one level further. `malloc_zone_statistics(nil, ...)`
-    // aggregates every malloc zone — that is native ObjC/Swift/C++ allocation,
-    // which includes AVFoundation and react-native-video. Hermes keeps its GC
-    // heap in mmap'd regions OUTSIDE the malloc zones, so it shows up in
-    // `heap` but NOT in `malloc`. So:
-    //   malloc tracks heap  -> the leak is native (player / AVFoundation)
-    //   malloc stays flat   -> the leak is the JS heap (our React code)
-    // That fork decides which half of the codebase to look at, and nothing
-    // else we can log distinguishes them.
-    var mstats = malloc_statistics_t()
-    malloc_zone_statistics(nil, &mstats)
-
-    return (
-      Double(info.phys_footprint) / mb,
-      Double(info.`internal`) / mb,
-      Double(info.compressed) / mb,
-      Double(info.external) / mb,
-      Double(mstats.size_in_use) / mb
-    )
-  }
-
-  /// Resident memory grouped by the kernel's VM tag, biggest first.
-  ///
-  /// The footprint split already proved the growth is anonymous memory that is
-  /// neither malloc (flat) nor IOSurface/file-backed (`external`, flat), and the
-  /// JS probe proved the JS thread is idle with one render and no event storm.
-  /// What is left is a native allocator calling vm_allocate directly, and every
-  /// such region carries a tag saying who asked for it — CoreMedia, VideoToolbox,
-  /// CoreAnimation, Hermes' GC and so on all use distinct tags.
-  ///
-  /// So this names the culprit instead of inferring it. Tags are printed
-  /// numerically; the meanings live in <mach/vm_statistics.h> (VM_MEMORY_*).
-  static func vmTagBreakdown(top: Int = 6) -> String {
-    var address: vm_address_t = 0
-    var totals: [UInt32: UInt64] = [:]
-
-    while true {
-      var size: vm_size_t = 0
-      var depth: natural_t = 1
-      var info = vm_region_submap_info_data_64_t()
-      var count = mach_msg_type_number_t(
-        MemoryLayout<vm_region_submap_info_data_64_t>.size / MemoryLayout<Int32>.size
-      )
-      let kr = withUnsafeMutablePointer(to: &info) { infoPtr in
-        infoPtr.withMemoryRebound(to: Int32.self, capacity: Int(count)) { intPtr in
-          vm_region_recurse_64(mach_task_self_, &address, &size, &depth, intPtr, &count)
-        }
-      }
-      guard kr == KERN_SUCCESS else { break }
-      if info.is_submap == 0 {
-        // Resident, not virtual: reserved-but-untouched address space is not
-        // what the memory-limit killer counts.
-        totals[info.user_tag, default: 0] +=
-          UInt64(info.pages_resident) * UInt64(vm_page_size)
-      }
-      let next = address &+ vm_address_t(size)
-      if next <= address { break }
-      address = next
-    }
-
-    return totals
-      .sorted { $0.value > $1.value }
-      .prefix(top)
-      .map { "\(Self.vmTagName($0.key))=\(String(format: "%.1f", Double($0.value) / 1048576.0))" }
-      .joined(separator: " ")
-  }
-
-  /// The VM_MEMORY_* tags worth recognising here. The video ones are the point:
-  /// VIDEOBITSTREAM and the CM_* pools are CoreMedia/VideoToolbox, so if the
-  /// growth lands there it is the decode pipeline rather than anything of ours.
-  private static func vmTagName(_ tag: UInt32) -> String {
-    switch tag {
-    case 0: return "untagged"
-    case 1, 2, 3, 4, 7, 11: return "malloc\(tag)"
-    case 21: return "IOKIT"
-    case 30: return "STACK"
-    case 33: return "DYLIB"
-    case 42: return "COREGRAPHICS"
-    case 51: return "COREANIMATION"
-    case 52: return "CGIMAGE"
-    case 63: return "JAVASCRIPTCORE"
-    case 68: return "COREIMAGE"
-    case 70: return "IMAGEIO"
-    case 82: return "SWIFT_RUNTIME"
-    case 83: return "SWIFT_METADATA"
-    case 88: return "IOSURFACE"
-    case 90: return "AUDIO"
-    case 91: return "VIDEOBITSTREAM"
-    case 92: return "CM_XPC"
-    case 93: return "CM_RPC"
-    case 94: return "CM_MEMORYPOOL"
-    case 95: return "CM_READCACHE"
-    case 96: return "CM_CRABS"
-    default: return "tag\(tag)"
-    }
-  }
-
-  /// Samples memory on a timer so a growth curve is visible in the log without
-  /// attaching Instruments. Every line is tagged MEM so it can be grepped out.
-  private func startMemoryWatch() {
-    guard memoryWatch == nil else { return }
-    let timer = DispatchSource.makeTimerSource(queue: memoryWatchQueue)
-    // 2s. The 0.5s cadence existed to resolve a 175MB -> 488MB jump while the
-    // leak was open; that is closed, and the sampler is not free — `vmTagBreakdown`
-    // walks every VM region, which takes the task's map lock and contends with
-    // every allocation the video pipeline makes. Sample slowly enough to still
-    // show a curve, and walk the regions only occasionally.
-    timer.schedule(deadline: .now() + 2, repeating: 2)
-    timer.setEventHandler { [weak self] in
-      guard let self else { return }
-      let m = Self.memoryBreakdown()
-      Self.log(
-        String(
-          format: "MEM footprint=%.1fMB heap=%.1f malloc=%.1f compressed=%.1f external=%.1f "
-            + "previewEnabled=%@ previewEmits=%d frames=%d recording=%@",
-          m.footprint,
-          m.heap,
-          m.malloc,
-          m.compressed,
-          m.external,
-          self.previewEnabled ? "YES" : "NO",
-          self.previewEmitCount,
-          self.frameCount,
-          self.writer != nil ? "YES" : "NO"
-        )
-      )
-      self.memoryTick &+= 1
-      if self.memoryTick % 10 == 0 {
-        Self.log("VMTAGS \(Self.vmTagBreakdown())")
-      }
-    }
-    timer.resume()
-    memoryWatch = timer
   }
 
   // MARK: - App lifecycle
@@ -420,11 +258,6 @@ final class MWDATBridge: RCTEventEmitter {
     writer?.retryAudioIfNeeded()
   }
 
-  /// True while segments are actually being written — i.e. the wearer is armed
-  /// and the rolling buffer is live. A preview-only session has a stream but no
-  /// writer, and nothing is lost by dropping that one on background.
-  @objc static var isCapturing: Bool { current?.isCaptureIntended ?? false }
-
   /// Armed, whether or not a writer exists this instant: a stall recovery or
   /// a re-arm tears the writer down and brings it back only once the stream
   /// reopens. The intent outlives those teardowns and is cleared only when the
@@ -439,11 +272,9 @@ final class MWDATBridge: RCTEventEmitter {
           bridge.deviceSession != nil || bridge.stream != nil
             || bridge.recoveryTask != nil || bridge.openTask != nil
     else { return }
-    // Backgrounding while armed is the whole point of the product: the wearer
-    // is out in the world with the phone in a pocket. Tearing down here is
-    // what made "say Clipso while using another app" impossible, so an active
-    // capture now keeps the session. Preview-only sessions still release —
-    // they hold the glasses' capture slot for nothing.
+    // An armed capture survives backgrounding (clipping with the phone
+    // pocketed is the product); preview-only sessions release, since they hold
+    // the glasses' capture slot for nothing.
     if reason == "didEnterBackground", bridge.isCaptureIntended || bridge.armInFlightToken != nil {
       log("app lifecycle (\(reason)) — KEEPING glasses session, capture is armed")
       bridge.sendEvent(
@@ -455,11 +286,7 @@ final class MWDATBridge: RCTEventEmitter {
     log("app lifecycle (\(reason)) — releasing glasses session")
     // A recovery, or an open, still in flight would reopen the glasses in the
     // background.
-    bridge.recoveryTask?.cancel()
-    bridge.pipelineEpoch += 1
-    bridge.stopping = true
-    bridge.teardown()
-    bridge.stopping = false
+    bridge.releasePipeline()
     // Tell JS the feed is gone so ConnectScreen can clear its "previewing"
     // latch and reopen when we return to the foreground. Without this, the
     // UI keeps showing a dead preview and never retries.
@@ -511,7 +338,6 @@ final class MWDATBridge: RCTEventEmitter {
   }
 
   override func startObserving() {
-    startMemoryWatch()
     guard case .success = Self.configureResult else { return }
     let wearables = Wearables.shared
     observerTokens.append(
@@ -520,9 +346,10 @@ final class MWDATBridge: RCTEventEmitter {
       }
     )
     observerTokens.append(
+      // No payload: JS answers by calling getDiagnostics(); building one here
+      // would read pipeline state off the main actor.
       wearables.addDevicesListener { [weak self] _ in
-        guard let self else { return }
-        self.sendEvent(withName: Event.devices, body: self.diagnosticsPayload())
+        self?.sendEvent(withName: Event.devices, body: nil)
       }
     )
   }
@@ -720,24 +547,37 @@ final class MWDATBridge: RCTEventEmitter {
     }
   }
 
+  /// `operation`'s result, or nil if `seconds` pass first.
+  ///
+  /// Deliberately not a task group: a group waits for every child before it
+  /// returns, so an operation that ignores cancellation — an SDK call that never
+  /// answers — would hold the "timeout" open for as long as it hangs. Here the
+  /// loser is cancelled and abandoned.
   private static func withTimeout<T: Sendable>(
     seconds: UInt64,
     _ operation: @escaping @Sendable () async -> T?
   ) async -> T? {
-    await withTaskGroup(of: T?.self) { group in
-      group.addTask { await operation() }
-      group.addTask {
-        try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
-        return nil
-      }
-      let result = await group.next() ?? nil
-      group.cancelAll()
-      return result
+    let (results, sink) = AsyncStream<T?>.makeStream()
+    let work = Task {
+      let value = await operation()
+      sink.yield(value)
     }
+    let timer = Task {
+      try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+      sink.yield(nil)
+    }
+    // The first yield wins; once finished, the loser's yield is a no-op.
+    var iterator = results.makeAsyncIterator()
+    let result = await iterator.next() ?? nil
+    sink.finish()
+    work.cancel()
+    timer.cancel()
+    return result
   }
 
   // MARK: - Preview / recording
 
+  /// Opens (or reuses) the glasses pipeline for the preview; no recording.
   @objc(startPreview:reject:)
   func startPreview(
     _ resolve: @escaping RCTPromiseResolveBlock,
@@ -771,13 +611,7 @@ final class MWDATBridge: RCTEventEmitter {
     Task { @MainActor in
       // Never kill the pipeline out from under an active recording —
       // including one a stall recovery is still rebuilding.
-      if !isCaptureIntended {
-        recoveryTask?.cancel()
-        pipelineEpoch += 1
-        stopping = true
-        teardown()
-        stopping = false
-      }
+      if !isCaptureIntended { releasePipeline() }
       resolve(nil)
     }
   }
@@ -805,6 +639,8 @@ final class MWDATBridge: RCTEventEmitter {
     previewDecodeQueue.async { [weak self] in self?.previewDecoder = nil }
   }
 
+  /// Arms capture: opens or reuses the pipeline, then attaches the segment
+  /// writer. A newer start() supersedes one still opening.
   @objc(start:resolve:reject:)
   func start(
     _ segmentSeconds: NSNumber,
@@ -830,7 +666,7 @@ final class MWDATBridge: RCTEventEmitter {
         armInFlightToken = token
         defer { if armInFlightToken == token { armInFlightToken = nil } }
         try await openPipelineIfNeeded()
-        // stopRecording()/stop() while the open ran, or a newer arm that took
+        // stopRecording() while the open ran, or a newer arm that took
         // over: attaching now would record with nothing in JS listening.
         guard armInFlightToken == token else {
           Self.log("start() superseded while opening — not attaching a writer")
@@ -855,11 +691,15 @@ final class MWDATBridge: RCTEventEmitter {
     _ resolve: @escaping RCTPromiseResolveBlock,
     reject _: @escaping RCTPromiseRejectBlock
   ) {
-    guard let writer else {
-      resolve(nil)
-      return
+    // Main actor, where `writer` is assigned; cut() itself runs on the
+    // writer's queue.
+    Task { @MainActor in
+      guard let writer else {
+        resolve(nil)
+        return
+      }
+      writer.cut { resolve(nil) }
     }
-    writer.cut { resolve(nil) }
   }
 
   /// Detach the segment writer only. Keeps the glasses session + camera stream
@@ -908,33 +748,17 @@ final class MWDATBridge: RCTEventEmitter {
     _ resolve: @escaping RCTPromiseResolveBlock,
     reject _: @escaping RCTPromiseRejectBlock
   ) {
-    guard let stream, stream.state == .streaming else {
-      Self.log("chime() — no streaming session, skipped")
-      resolve(false)
-      return
+    // Main actor, where `stream` is assigned and cleared.
+    Task { @MainActor in
+      guard let stream, stream.state == .streaming else {
+        Self.log("chime() — no streaming session, skipped")
+        resolve(false)
+        return
+      }
+      let issued = stream.capturePhoto(format: .jpeg)
+      Self.log("chime() — capturePhoto \(issued ? "issued" : "refused by SDK")")
+      resolve(issued)
     }
-    let issued = stream.capturePhoto(format: .jpeg)
-    Self.log("chime() — capturePhoto \(issued ? "issued" : "refused by SDK")")
-    resolve(issued)
-  }
-
-  @objc(stop:reject:)
-  func stop(
-    _ resolve: @escaping RCTPromiseResolveBlock,
-    reject _: @escaping RCTPromiseRejectBlock
-  ) {
-    // An in-flight rebuild would otherwise reopen the pipeline moments after
-    // the wearer asked for it to be down.
-    recoveryTask?.cancel()
-    recoveryTask = nil
-    recoveryAttempts = 0
-    activeSegmentSeconds = nil
-    armInFlightToken = nil
-    pipelineEpoch += 1
-    stopping = true
-    teardown()
-    stopping = false
-    resolve(nil)
   }
 
   // MARK: - Pipeline internals
@@ -1003,16 +827,13 @@ final class MWDATBridge: RCTEventEmitter {
   @MainActor
   private func performOpenPipeline(epoch: Int) async throws {
     try ensureOpenStillWanted(epoch)
-    // A stalled feed invalidates both reuse checks below. The SDK goes on
-    // reporting `.streaming` with a `.started` session on a link that has
-    // delivered no frame in a minute, so honouring that here left the app
-    // wedged: re-arming logged "pipeline already open" and changed nothing,
-    // and only a force-quit brought the feed back.
+    // After a stall the SDK still reports a started session and a .streaming
+    // stream, so the reuse checks below cannot be trusted: rebuild.
     if pipelineStalled {
       Self.log("pipeline claims open but the feed stalled — rebuilding it")
     } else {
-      // Reuse a live stream even if we only asked for preview earlier. Tearing
-      // it down here is what made the glasses "shut off" on the way into Live.
+      // Reuse a live, watched stream rather than renegotiating (which costs
+      // the glasses' stop/start chime).
       if let stream, stream.state == .streaming || stream.state == .starting, healthTimer != nil {
         Self.log(
           "pipeline already open (stream \(stream.state), session=\(deviceSession.map { String(describing: $0.state) } ?? "nil"))"
@@ -1030,10 +851,7 @@ final class MWDATBridge: RCTEventEmitter {
     // Keep what the writer has, in case it is attached to the stream being
     // replaced.
     writer?.finishCurrentSegment()
-    // Our own teardown, not a device-initiated drop — suppress the error event.
-    stopping = true
-    teardown()
-    stopping = false
+    teardownQuietly()
 
     let wearables = Wearables.shared
     Self.log(
@@ -1107,10 +925,7 @@ final class MWDATBridge: RCTEventEmitter {
     deviceSession = session
     Self.log("createSession OK — starting session")
 
-    // Subscribed BEFORE start() so `.starting`/`.started` cannot land before
-    // we are listening. Consuming only *after* start() missed a prompt
-    // `.started`, burned the full 60s timeout, then tore down a live session
-    // — which is the restart loop.
+    // Subscribe before start() so a prompt .started is not missed.
     let states = session.stateStream()
     let startedSignal = Self.watchSessionStates(states)
     sessionStateTask = startedSignal
@@ -1147,16 +962,12 @@ final class MWDATBridge: RCTEventEmitter {
       }
     }
 
-    // `.hvc1`: the glasses' own HEVC encode, delivered compressed. The segment
-    // writer stores it as-is — no decode, no re-encode on the phone — exactly
-    // how Meta's CameraAccess sample records. `.raw` had the SDK decode every
-    // frame and the writer encode it again as H.264: a full generation of
-    // quality lost, and a realtime encoder that dropped frames whenever
-    // captioning or transcription held the hardware. The preview decodes for
-    // itself (MWDATPreviewDecoder), and only while something is showing it.
-    //
-    // 30 fps is the glasses' top streaming rate. `.high` (720x1280) needs the
-    // Wi-Fi link; see `requestedResolution` for when this asks for less.
+    // .hvc1: the glasses' own HEVC, written as-is by the segment writer, as in
+    // Meta's CameraAccess sample. `.raw` would mean a phone-side decode and
+    // H.264 re-encode: a generation of quality lost, and a realtime encoder
+    // that drops frames under load. The preview decodes for itself
+    // (MWDATPreviewDecoder), only while visible. 30 fps is the glasses'
+    // maximum; see `requestedResolution` for the size.
     let resolution = Self.requestedResolution
     let config = StreamConfiguration(videoCodec: .hvc1, resolution: resolution, frameRate: 30)
     Self.log("addCamera(codec: hvc1, resolution: \(resolution), fps: 30)…")
@@ -1177,10 +988,8 @@ final class MWDATBridge: RCTEventEmitter {
       newStream.videoFramePublisher.listen { [weak self] frame in
         guard let self else { return }
         self.frameCount += 1
-        self.lastFrameAt = Date().timeIntervalSince1970
-        if self.frameCount == 1 || self.frameCount % 100 == 0 {
-          Self.log("video frame #\(self.frameCount)")
-        }
+        self.lastFrameAt = CACurrentMediaTime()
+        // First frame only; the HEALTH line reports the rate after that.
         if self.frameCount == 1 {
           Self.logFrameDiagnostics(frame)
         }
@@ -1204,15 +1013,11 @@ final class MWDATBridge: RCTEventEmitter {
             withName: Event.error,
             body: ["message": "The glasses stream stopped (folded, out of range, or taken over)."]
           )
-          // Since SDK 0.9 a stopped stream stays stopped: taking the glasses off
-          // ends it (hingesClosed) instead of pausing it until they are back
-          // on, and nothing restarts it. Waiting for the 10s no-frame watchdog
-          // cost that long again, with LIVE showing over a dead feed, and the
-          // session-started reuse guard made a re-arm keep the dead stream.
-          // Rebuild now — but only a stream that was live and watched (a health
-          // timer runs only once the stream reached .streaming; a stream that
-          // never got there fails its own open), and only while it is still the
-          // bridge's stream: our own teardown clears `stream` first.
+          // Since SDK 0.9 a stopped stream stays stopped (e.g. glasses taken
+          // off → hingesClosed), so rebuild now rather than after the 10s
+          // watchdog. Only for the bridge's current, watched stream: our own
+          // teardown clears `stream` first, and a stream that never reached
+          // .streaming (no health timer yet) fails its own open.
           Task { @MainActor [weak self, weak newStream] in
             guard let self, let newStream, self.stream === newStream,
                   !self.stopping, self.healthTimer != nil
@@ -1288,13 +1093,16 @@ final class MWDATBridge: RCTEventEmitter {
     startHealthWatch()
   }
 
-  /// Reports the feed's real frame rate to JS once a second, and raises an
-  /// error when frames stop arriving even though nothing else says anything is
-  /// wrong. Without it a stalled link is indistinguishable from a quiet scene:
-  /// the UI keeps claiming LIVE over a frozen picture.
+  /// Reports the feed's real frame rate to JS once a second while a preview is
+  /// visible, and raises an error when frames stop arriving even though nothing
+  /// else says anything is wrong. Without it a stalled link is
+  /// indistinguishable from a quiet scene: the UI keeps claiming LIVE over a
+  /// frozen picture.
   private func startHealthWatch() {
     guard healthTimer == nil else { return }
-    lastFrameAt = Date().timeIntervalSince1970
+    // Host time (CACurrentMediaTime), not wall-clock: these are only compared
+    // as intervals, and a wall-clock step would fake a stall.
+    lastFrameAt = CACurrentMediaTime()
     lastHealthAt = lastFrameAt
     frameCountAtLastHealth = frameCount
     stallReported = false
@@ -1317,7 +1125,7 @@ final class MWDATBridge: RCTEventEmitter {
     timer.schedule(deadline: .now() + 1, repeating: 1)
     timer.setEventHandler { [weak self] in
       guard let self else { return }
-      let now = Date().timeIntervalSince1970
+      let now = CACurrentMediaTime()
       let elapsed = max(0.001, now - self.lastHealthAt)
       let delivered = self.frameCount - self.frameCountAtLastHealth
       let fps = Double(max(0, delivered)) / elapsed
@@ -1325,14 +1133,17 @@ final class MWDATBridge: RCTEventEmitter {
       self.lastHealthAt = now
 
       let sinceFrame = now - self.lastFrameAt
-      self.sendEvent(
-        withName: Event.streamHealth,
-        body: [
-          "fps": (fps * 10).rounded() / 10,
-          "secondsSinceFrame": (sinceFrame * 10).rounded() / 10,
-          "recording": self.writer != nil,
-        ]
-      )
+      // Only GlassesPreview listens, and only while it is showing the feed.
+      if self.previewEnabled, !self.appInBackground {
+        self.sendEvent(
+          withName: Event.streamHealth,
+          body: [
+            "fps": (fps * 10).rounded() / 10,
+            "secondsSinceFrame": (sinceFrame * 10).rounded() / 10,
+            "recording": self.writer != nil,
+          ]
+        )
+      }
       // The delivered rate, in the diagnostics log: the only record of what
       // the link actually carried, as opposed to what was asked for.
       self.healthTicks += 1
@@ -1348,8 +1159,7 @@ final class MWDATBridge: RCTEventEmitter {
       if sinceFrame < 1 { self.judgeResolution(fps: fps) }
       self.healthyTicks = sinceFrame < 1 ? self.healthyTicks + 1 : 0
       if self.healthyTicks == Self.recoveryBudgetResetSeconds {
-        // Recovered stalls used to spend the budget for good: after three, the
-        // next drop got no recovery at all.
+        // A stream that stays healthy earns back the full recovery budget.
         DispatchQueue.main.async { [weak self] in
           guard let self, self.recoveryTask == nil, self.recoveryAttempts > 0 else { return }
           Self.log("stream healthy for \(Self.recoveryBudgetResetSeconds)s — recovery budget restored")
@@ -1441,8 +1251,9 @@ final class MWDATBridge: RCTEventEmitter {
             + "(recording=\(activeSegmentSeconds != nil))"
         )
         try? await Task.sleep(nanoseconds: UInt64(backoffSeconds) * 1_000_000_000)
-        // A stop() during the backoff means the wearer no longer wants frames;
-        // rebuilding here would restart the glasses behind their back.
+        // A release (stopPreview, app lifecycle) during the backoff means the
+        // wearer no longer wants frames; rebuilding here would restart the
+        // glasses behind their back.
         guard !Task.isCancelled, !stopping else { return }
 
         // A JS re-arm may be rebuilding the pipeline, or have rebuilt it,
@@ -1458,10 +1269,7 @@ final class MWDATBridge: RCTEventEmitter {
         // The footage up to the dropout is kept, not discarded with the
         // writer: those seconds are the likeliest ones to be clipped.
         writer?.finishCurrentSegment()
-        // Our own teardown, not a device-initiated drop — suppress the error event.
-        stopping = true
-        teardown()
-        stopping = false
+        teardownQuietly()
         do {
           openingForRecovery = true
           defer { openingForRecovery = false }
@@ -1482,14 +1290,11 @@ final class MWDATBridge: RCTEventEmitter {
         }
       }
 
-      // A failed attempt can leave its session, camera and stopped stream
-      // behind with no health timer. Left there, the next arm reused them as an
-      // "already open" pipeline and reported LIVE over a feed that never came.
-      // The recording is down for good now; the next arm sets the intent again.
+      // Out of attempts: tear down what the failed attempts left (a session
+      // and stopped stream with no health timer would pass the reuse checks
+      // as open) and drop the recording intent; the next arm sets it again.
       activeSegmentSeconds = nil
-      stopping = true
-      teardown()
-      stopping = false
+      teardownQuietly()
       sendEvent(
         withName: Event.error,
         body: [
@@ -1509,8 +1314,8 @@ final class MWDATBridge: RCTEventEmitter {
     guard writer == nil else { return }
     let newWriter = MWDATSegmentWriter(
       segmentSeconds: segmentSeconds,
+      // The writer logs each segment it writes; this only forwards it to JS.
       onSegment: { [weak self] segment in
-        Self.log("segment written: \(segment.durationSec)s \(segment.path)")
         self?.sendEvent(
           withName: Event.segment,
           body: [
@@ -1525,10 +1330,25 @@ final class MWDATBridge: RCTEventEmitter {
       }
     )
     writer = newWriter
-    // Audio is best-effort and retries itself each rotation. A mic failure must
-    // not abort arming or tear down the glasses video stream — that read as
-    // "glasses shut off instead of recording".
+    // Audio is best-effort and retries each rotation; a mic failure must not
+    // abort arming or stop the video stream.
     newWriter.startAudio()
+  }
+
+  /// Our own teardown, not a device-initiated drop: `stopping` keeps the
+  /// stream-state listener from reporting it as an error or recovering it.
+  private func teardownQuietly() {
+    stopping = true
+    teardown()
+    stopping = false
+  }
+
+  /// Releases the pipeline on purpose (stopPreview, app lifecycle): stops any
+  /// recovery, abandons any in-flight open, and tears down.
+  private func releasePipeline() {
+    recoveryTask?.cancel()
+    pipelineEpoch += 1
+    teardownQuietly()
   }
 
   private func teardown() {
@@ -1567,9 +1387,8 @@ final class MWDATBridge: RCTEventEmitter {
     lastStreamError = nil
   }
 
-  /// One-shot anatomy dump of the first frame the glasses deliver. Whether the
-  /// SDK hands us decoded pixel buffers or compressed HEVC decides whether the
-  /// preview can render at all, and it is not knowable from the API surface.
+  /// One-shot dump of the first frame of each stream: codec fourCC, size,
+  /// keyframe flag — what the glasses actually delivered.
   private static func logFrameDiagnostics(_ frame: VideoFrame) {
     let sample = frame.sampleBuffer
     var parts: [String] = []
@@ -1607,12 +1426,6 @@ final class MWDATBridge: RCTEventEmitter {
     parts.append("samples=\(CMSampleBufferGetNumSamples(sample))")
     parts.append("dataReady=\(CMSampleBufferDataIsReady(sample))")
 
-    if let image = frame.makeUIImage() {
-      parts.append("makeUIImage=\(Int(image.size.width))x\(Int(image.size.height))")
-    } else {
-      parts.append("makeUIImage=NIL")
-    }
-
     log("FRAME ANATOMY — " + parts.joined(separator: " "))
   }
 
@@ -1622,6 +1435,8 @@ final class MWDATBridge: RCTEventEmitter {
   /// CoreImage render, JPEG encode, and a base64 string across the bridge.
   /// Capping the edge cuts all three, which is what buys the frame rate below.
   private static let previewMaxEdge: CGFloat = 448
+  /// Made once, like `ciContext`, rather than for every JPEG.
+  private static let previewColorSpace = CGColorSpaceCreateDeviceRGB()
 
   /// ~8 fps JPEG preview of the wearer's view. Recording does not depend on
   /// any of this: segments are written from the compressed frames directly.
@@ -1644,7 +1459,7 @@ final class MWDATBridge: RCTEventEmitter {
   /// Throttles decoded frames down to the preview rate and JPEG-encodes one at
   /// a time on `previewQueue`.
   private func emitPreview(_ pixelBuffer: CVPixelBuffer) {
-    let now = Date().timeIntervalSince1970
+    let now = CACurrentMediaTime()
     guard now - lastPreviewAt > 0.12 else { return }
 
     previewLock.lock()
@@ -1673,7 +1488,7 @@ final class MWDATBridge: RCTEventEmitter {
       }
       let jpeg = Self.ciContext.jpegRepresentation(
         of: image,
-        colorSpace: CGColorSpaceCreateDeviceRGB(),
+        colorSpace: Self.previewColorSpace,
         options: [
           kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.4,
         ]
@@ -1697,25 +1512,11 @@ final class MWDATBridge: RCTEventEmitter {
     }
   }
 
-  /// `Stream` exposes only an `Announcer` (no `stateStream()` like
-  /// `DeviceSession`), and `state` is a plain synchronous property — so poll it
-  /// rather than bridging a callback into a continuation. Polling also removes
-  /// any chance of missing a terminal state that landed before we started
-  /// watching.
-  ///
-  /// `.stopped` must NOT be treated as terminal on its own. As of SDK 0.8.0
-  /// `Stream.start()` is synchronous and fire-and-forget, and a stream created
-  /// by `addCamera` sits in `.stopped` until the glasses answer and the SDK
-  /// walks it through `.waitingForDevice` → `.starting` → `.streaming`. So the
-  /// very first reading after `start()` is virtually always `.stopped`, and
-  /// bailing on it aborts every stream ~0 ms after it is asked to start —
-  /// before the SDK has had any chance to report an error, which is why the
-  /// failure surfaced as "last state: stopped; cause: no error reported".
-  /// A stop only means failure once the stream has been seen to leave
-  /// `.stopped`; before that, keep waiting (or until an error, or timeout).
-  ///
-  /// Gives up as soon as the pipeline is released: a 45 s wait otherwise kept
-  /// a released open alive long enough to fail a newer arm's promise.
+  /// Polls stream.state (Stream has no async state sequence) until .streaming.
+  /// A new stream sits in .stopped until the glasses answer, so .stopped means
+  /// failure only after the stream has left it. An SDK error or a release of the
+  /// pipeline (epoch change) ends the wait early; otherwise it gives up after
+  /// `timeoutSeconds`.
   @MainActor
   private func waitForStreaming(
     _ stream: MWDATCamera.Stream,
@@ -1768,46 +1569,33 @@ final class MWDATBridge: RCTEventEmitter {
     return stream.state == .streaming
   }
 
+  /// True once the auto-selector picks a device. On timeout, whether it has
+  /// one by then.
   private static func waitForActiveDevice(
     _ selector: AutoDeviceSelector,
     timeoutSeconds: UInt64
   ) async -> Bool {
-    await withTaskGroup(of: Bool.self) { group in
-      group.addTask {
-        for await device in selector.activeDeviceStream() where device != nil {
-          return true
-        }
-        return false
+    let resolved: Bool? = await withTimeout(seconds: timeoutSeconds) {
+      for await device in selector.activeDeviceStream() where device != nil {
+        return true
       }
-      group.addTask {
-        try? await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
-        return selector.activeDevice != nil
-      }
-      let result = await group.next() ?? false
-      group.cancelAll()
-      return result
+      return false
     }
+    return resolved ?? (selector.activeDevice != nil)
   }
 
+  /// True once the device list is non-empty. On timeout, whether it is by then.
   private static func waitForDevice(
     _ wearables: any WearablesInterface,
     timeoutSeconds: UInt64
   ) async -> Bool {
-    await withTaskGroup(of: Bool.self) { group in
-      group.addTask {
-        for await devices in wearables.devicesStream() where !devices.isEmpty {
-          return true
-        }
-        return false
+    let appeared: Bool? = await withTimeout(seconds: timeoutSeconds) {
+      for await devices in wearables.devicesStream() where !devices.isEmpty {
+        return true
       }
-      group.addTask {
-        try? await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
-        return !wearables.devices.isEmpty
-      }
-      let result = await group.next() ?? false
-      group.cancelAll()
-      return result
+      return false
     }
+    return appeared ?? !wearables.devices.isEmpty
   }
 
   /// Begins consuming the session state stream immediately, so transitions that
@@ -1831,20 +1619,18 @@ final class MWDATBridge: RCTEventEmitter {
     }
   }
 
+  /// `signal`'s outcome, or `.timedOut`. Built on `withTimeout`, not a task
+  /// group: `Task.value` ignores cancellation, so a group would wait for the
+  /// session to start or stop however long that took. The abandoned waiter
+  /// ends when teardown() cancels `sessionStateTask`.
   private static func waitForStarted(
     _ signal: Task<SessionStartOutcome, Never>,
     timeoutSeconds: UInt64
   ) async -> SessionStartOutcome {
-    await withTaskGroup(of: SessionStartOutcome.self) { group in
-      group.addTask { await signal.value }
-      group.addTask {
-        try? await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
-        return .timedOut
-      }
-      let result = await group.next() ?? .timedOut
-      group.cancelAll()
-      return result
+    let outcome: SessionStartOutcome? = await withTimeout(seconds: timeoutSeconds) {
+      await signal.value
     }
+    return outcome ?? .timedOut
   }
 }
 

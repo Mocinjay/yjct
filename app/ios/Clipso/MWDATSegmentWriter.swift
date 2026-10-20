@@ -1,6 +1,7 @@
 import AVFoundation
 import AudioToolbox
 import CoreMedia
+import Darwin
 import Foundation
 
 /// Appends diagnostics to a file inside the app container, so a capture run can
@@ -10,32 +11,53 @@ import Foundation
 /// The live console (`devicectl device process launch --console`) reliably drops
 /// its connection partway through a long capture run, which loses exactly the
 /// tail that matters — the segment rotation and its writer error.
+///
+/// MWDATBridge and LiveActivityBridge log through this too, and SpeechWakeWord.m
+/// appends to the same file through its own descriptor.
 enum DiagnosticLog {
   private static let queue = DispatchQueue(label: "com.mocinjay.clipso.diaglog")
-  private static let url: URL? = FileManager.default
+  private static let path: String? = FileManager.default
     .urls(for: .documentDirectory, in: .userDomainMask).first?
-    .appendingPathComponent("clipso-diagnostics.log")
+    .appendingPathComponent("clipso-diagnostics.log").path
+  /// Past this size the file is emptied and starts over. A capture run can
+  /// last hours, and the tail is the part that is read.
+  private static let maxBytes: UInt64 = 8 * 1024 * 1024
+
+  // Both used only on `queue`. The descriptor is opened once with O_APPEND, so
+  // every write lands at the current end of the file even though
+  // SpeechWakeWord.m appends to the same file through its own descriptor. A
+  // seek-then-write here would overwrite any line it appended in between.
+  private static let formatter = ISO8601DateFormatter()
+  private static var handle: FileHandle?
 
   /// Truncate at the start of a capture run so each run reads cleanly.
   static func reset() {
-    guard let url else { return }
-    queue.async { try? Data().write(to: url) }
+    queue.async { try? Self.openHandle()?.truncate(atOffset: 0) }
   }
 
   static func write(_ message: String) {
-    guard let url else { return }
-    let stamp = ISO8601DateFormatter().string(from: Date())
-    let line = "\(stamp) \(message)\n"
+    // Stamped when logged, not when the queue gets to it.
+    let now = Date()
     queue.async {
-      guard let data = line.data(using: .utf8) else { return }
-      if let handle = try? FileHandle(forWritingTo: url) {
-        defer { try? handle.close() }
-        _ = try? handle.seekToEnd()
-        try? handle.write(contentsOf: data)
-      } else {
-        try? data.write(to: url)
+      guard let handle = Self.openHandle() else { return }
+      if let size = try? handle.seekToEnd(), size > Self.maxBytes {
+        try? handle.truncate(atOffset: 0)
       }
+      let line = "\(Self.formatter.string(from: now)) \(message)\n"
+      try? handle.write(contentsOf: Data(line.utf8))
     }
+  }
+
+  /// The shared append-only descriptor, opened (and the file created) on first
+  /// use. Queue-only.
+  private static func openHandle() -> FileHandle? {
+    if let handle { return handle }
+    guard let path else { return nil }
+    let fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+    guard fd >= 0 else { return nil }
+    let opened = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    handle = opened
+    return opened
   }
 }
 
@@ -43,13 +65,13 @@ enum DiagnosticLog {
 /// `segmentSeconds` each — the same rolling-segment contract MockDeviceSource
 /// fulfils with the phone camera.
 ///
-/// The stream is requested as `.hvc1`, so frames arrive as the glasses' own
-/// HEVC encode and are written untouched (passthrough), the way Meta's
-/// CameraAccess sample records. The phone never decodes or re-encodes them,
-/// which removes a whole generation of quality loss and the realtime encoder
-/// that used to drop frames whenever captioning or transcription held the
-/// hardware. Decoded pixel buffers, if a stream ever delivers them, still go
-/// through an H.264 encoder.
+/// The bridge requests `.hvc1`, so frames arrive as the glasses' own HEVC and
+/// are written untouched (passthrough), the way Meta's CameraAccess sample
+/// records: no phone-side decode or re-encode, so no quality generation lost
+/// and no realtime encoder to drop frames under load. A frame that carries a
+/// decoded pixel buffer instead (the SDK does not document what MockDeviceKit
+/// delivers for `.hvc1`) is encoded to H.264 — the `passthrough == false`
+/// branches below. ClipStitcher's transcode fallback mirrors that bitrate.
 ///
 /// A compressed segment can only begin on a keyframe, so rotation waits for
 /// the first keyframe after the segment's time is up: segments run a little
@@ -72,14 +94,20 @@ final class MWDATSegmentWriter {
 
   private let audioEngine = AVAudioEngine()
   private var audioRunning = false
+  /// True once the running engine has delivered a buffer; only then does a new
+  /// segment get an audio track. Cleared by `markAudioStopped(_:)`.
   private var hasReceivedAudioSample = false
   /// Set when a segment carrying an audio track fails to finish. Video is the
   /// point of the feature, so subsequent segments drop audio rather than keep
   /// losing whole clips to the encoder.
   private var audioEncodingDisabled = false
   private var audioStartAttempts = 0
-  private var loggedFirstAudioSample = false
   private var audioConversionFailures = 0
+  /// Marks the mic down and back up around audio-session interruptions.
+  private var interruptionObserver: NSObjectProtocol?
+  /// The setup lines last logged by startSegment; they repeat verbatim every
+  /// segment, so they are logged only when they change.
+  private var lastSegmentSetup: String?
 
   /// Audio start is retried once per segment rotation. Six attempts covers the
   /// ~30s a wearer needs to answer the microphone permission prompt without
@@ -274,16 +302,10 @@ final class MWDATSegmentWriter {
   /// A valid AAC bitrate for this input format.
   ///
   /// AAC's encodable bitrate range depends on sample rate and channel count,
-  /// and AVAssetWriter does not clamp: ask for one outside the range and the
-  /// whole segment fails at `finishWriting` with the opaque "Cannot Encode
-  /// Media", taking the video track down with it. The glasses microphone
-  /// arrives over Bluetooth HFP at 16 kHz mono, where AAC tops out at 48 kbps
-  /// — so the previously hardcoded 96 kbps was simply unencodable. (The phone's
-  /// own mic runs at 44.1/48 kHz, where 96 kbps is fine, which is why this only
-  /// ever failed with the glasses connected.)
-  ///
-  /// Rather than hardcode another guess, ask the encoder what it accepts and
-  /// clamp into range.
+  /// and AVAssetWriter does not clamp: a bitrate outside the range fails the
+  /// whole segment at `finishWriting` ("Cannot Encode Media"), video included.
+  /// 96 kbps suits the phone mic at 44.1/48 kHz but not a 16 kHz route, where
+  /// AAC tops out at 48 kbps — so ask the encoder what it accepts and clamp.
   static func aacBitRate(sampleRate: Double, channels: UInt32) -> Int {
     let preferred = 96_000.0
     // Scaled fallback if the encoder cannot be interrogated: stays inside the
@@ -353,6 +375,28 @@ final class MWDATSegmentWriter {
     self.segmentSeconds = segmentSeconds
     self.onSegment = onSegment
     self.onError = onError
+    // A phone call or Siri stops the mic. Mark it down when the interruption
+    // begins and restart it when it ends; a call that outlasted the
+    // per-rotation retries would otherwise leave it down until foreground.
+    interruptionObserver = NotificationCenter.default.addObserver(
+      forName: AVAudioSession.interruptionNotification, object: nil, queue: nil
+    ) { [weak self] note in
+      guard let self,
+            let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+            let type = AVAudioSession.InterruptionType(rawValue: raw)
+      else { return }
+      switch type {
+      case .began: self.queue.async { self.markAudioStopped("audio session interrupted") }
+      case .ended: self.retryAudioIfNeeded()
+      @unknown default: break
+      }
+    }
+  }
+
+  deinit {
+    if let interruptionObserver {
+      NotificationCenter.default.removeObserver(interruptionObserver)
+    }
   }
 
   // MARK: - Audio
@@ -368,10 +412,8 @@ final class MWDATSegmentWriter {
       self.audioStartAttempts += 1
       let attempt = self.audioStartAttempts
 
-      // Ask for the microphone explicitly. Nothing in the app ever did, and
-      // activating a recording session while the permission is still
-      // undetermined fails outright ("Session activation failed") — which is
-      // how every segment ended up video-only and the wake word went deaf.
+      // Ask for the microphone first: activating a recording session while
+      // the permission is undetermined fails ("Session activation failed").
       Self.requestRecordPermission { granted in
         guard granted else {
           Self.log(
@@ -387,29 +429,52 @@ final class MWDATSegmentWriter {
 
   /// A fresh audio budget for a writer still running deaf. The rotation retries
   /// spend theirs while the app is backgrounded, where iOS refuses to start a
-  /// recording session; the bridge calls this on return to the foreground.
+  /// recording session; the bridge calls this on return to the foreground, and
+  /// the interruption observer calls it when a call or Siri ends.
   func retryAudioIfNeeded() {
     queue.async { [weak self] in
-      guard let self, self.running, !self.audioRunning else { return }
+      guard let self, self.running else { return }
+      self.noteEngineStoppedIfNeeded()
+      guard !self.audioRunning else { return }
       self.audioStartAttempts = 0
       self.startAudio()
     }
   }
 
+  /// AVAudioEngine stops by itself when the input route changes or another
+  /// client takes the session — a phone call, Siri, or react-native-video,
+  /// whose AudioSessionManager switches the category to `.playback` while any
+  /// `<Video>` is mounted — and never restarts on its own. Its tap then goes
+  /// quiet while `audioRunning` still claims a live mic. Queue-only.
+  private func noteEngineStoppedIfNeeded() {
+    guard audioRunning, !audioEngine.isRunning else { return }
+    markAudioStopped("audio engine stopped underneath the writer")
+  }
+
+  /// Back to "mic not running", so the next rotation (or the end of an
+  /// interruption) starts it again; a restarted engine must deliver a sample
+  /// before a segment gets an audio track. The retry budget is refreshed only
+  /// for an engine that actually delivered audio. One stopped again before its
+  /// first buffer must not be restarted every rotation: a mounted
+  /// react-native-video `<Video>` puts `.playback` back on every category change.
+  /// Queue-only.
+  private func markAudioStopped(_ reason: String) {
+    guard audioRunning else { return }
+    Self.log("\(reason) — the mic will be restarted")
+    audioEngine.inputNode.removeTap(onBus: 0)
+    audioEngine.stop()
+    audioRunning = false
+    if hasReceivedAudioSample { audioStartAttempts = 0 }
+    hasReceivedAudioSample = false
+  }
+
+  /// The app's deployment floor is iOS 17.2, so AVAudioApplication is always
+  /// available here.
   private static func requestRecordPermission(_ completion: @escaping (Bool) -> Void) {
-    if #available(iOS 17.0, *) {
-      switch AVAudioApplication.shared.recordPermission {
-      case .granted: completion(true)
-      case .denied: completion(false)
-      default: AVAudioApplication.requestRecordPermission(completionHandler: completion)
-      }
-    } else {
-      let session = AVAudioSession.sharedInstance()
-      switch session.recordPermission {
-      case .granted: completion(true)
-      case .denied: completion(false)
-      default: session.requestRecordPermission(completion)
-      }
+    switch AVAudioApplication.shared.recordPermission {
+    case .granted: completion(true)
+    case .denied: completion(false)
+    default: AVAudioApplication.requestRecordPermission(completionHandler: completion)
     }
   }
 
@@ -506,10 +571,10 @@ final class MWDATSegmentWriter {
     }
     queue.async { [weak self] in
       guard let self, self.running else { return }
-      self.hasReceivedAudioSample = true
       let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-      if !self.loggedFirstAudioSample {
-        self.loggedFirstAudioSample = true
+      // Reset when the engine stops, so a restarted mic logs this again.
+      if !self.hasReceivedAudioSample {
+        self.hasReceivedAudioSample = true
         Self.log("first mic sample: frames=\(buffer.frameLength) peak=\(peak) pts=\(pts.seconds)")
       }
       self.pendingAudio.append((sample, pts, peak))
@@ -696,10 +761,9 @@ final class MWDATSegmentWriter {
     to segment: Segment
   ) {
     var timing = Self.mapped(sample, offset: segment.clockOffset, arrival: arrival)
-    // Monotonic only. There used to be an upper clamp too — no more than ~2
-    // frames past the previous PTS — and it rewrote every real gap as 66 ms, so
-    // the file ran faster than real time, under-reported its duration and
-    // drifted ahead of the (unclamped) audio. A real gap is a real freeze.
+    // Monotonic only, never an upper clamp: a real gap is a real freeze, and
+    // shortening it would make the file run faster than real time and drift
+    // ahead of the audio.
     if segment.lastVideoDTS.isValid {
       let floor = CMTimeAdd(segment.lastVideoDTS, CMTime(value: 1, timescale: 30_000))
       if timing.dts < floor { timing.dts = floor }
@@ -779,12 +843,10 @@ final class MWDATSegmentWriter {
   /// Where on the host clock a frame belongs.
   ///
   /// Each frame carries the glasses' capture time. Arrival time on the phone is
-  /// that plus a transport delay that changes frame to frame, because the link
-  /// delivers in bursts. This writer used to stamp arrival time, which wrote the
-  /// burstiness straight into the file as uneven frame spacing — judder on top of
-  /// whatever the link really dropped. Now the glasses' spacing is kept and only
-  /// the offset onto the host clock comes from arrival, since the audio is from
-  /// the phone mic on the host clock and both tracks share one timeline.
+  /// that plus a transport delay that varies frame to frame (the link delivers
+  /// in bursts), so stamping arrival would write that burstiness into the file
+  /// as judder. The glasses' spacing is kept; only the offset onto the host
+  /// clock, which the phone-mic audio also uses, comes from arrival.
   private static func mapped(
     _ sample: CMSampleBuffer,
     offset: CMTime,
@@ -916,9 +978,8 @@ final class MWDATSegmentWriter {
 
   /// Stop everything and discard the in-flight segment.
   ///
-  /// Holds `self` strongly for the same reason as `finishCurrentSegment()`:
-  /// with a weak capture the writer was usually gone by the time this ran, so
-  /// nothing was cancelled and the half-written file stayed in tmp.
+  /// Holds `self` strongly for the same reason as `finishCurrentSegment()`, so
+  /// the in-flight segment is really cancelled and its file removed.
   func stopAndDiscard() {
     queue.async { [self] in
       if self.audioRunning {
@@ -954,12 +1015,12 @@ final class MWDATSegmentWriter {
     let dir = NSTemporaryDirectory()
     let path = (dir as NSString).appendingPathComponent("clipso-mwdat-\(UUID().uuidString).mp4")
     let url = URL(fileURLWithPath: path)
-    // AVAssetWriter refuses to initialize onto an existing file.
-    if FileManager.default.fileExists(atPath: path) {
-      try? FileManager.default.removeItem(at: url)
-    }
-
     let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+
+    // The source format, video input and audio input lines are identical for
+    // every segment of a stream. They are collected here and logged only when
+    // they differ from the last segment's (see `lastSegmentSetup`).
+    var setup: [String] = []
 
     let formatDescription = CMSampleBufferGetFormatDescription(firstSample)
     var width = 504
@@ -972,7 +1033,7 @@ final class MWDATSegmentWriter {
         height = Int(dims.height)
       }
       subType = Self.fourCC(CMFormatDescriptionGetMediaSubType(desc))
-      Self.log(
+      setup.append(
         "source video format: subtype='\(subType)' \(dims.width)x\(dims.height) "
           + "compressed=\(passthrough)"
       )
@@ -993,7 +1054,7 @@ final class MWDATSegmentWriter {
       videoInput = AVAssetWriterInput(
         mediaType: .video, outputSettings: nil, sourceFormatHint: formatDescription
       )
-      Self.log("video input: \(width)x\(height) '\(subType)' passthrough (no re-encode)")
+      setup.append("video input: \(width)x\(height) '\(subType)' passthrough (no re-encode)")
     } else {
       // Decoded pixels only reach here if the stream delivers them instead of
       // HEVC. 0.3 bits/pixel/frame at 30 fps, High profile: generous, because
@@ -1016,14 +1077,14 @@ final class MWDATSegmentWriter {
           ],
         ]
       )
-      Self.log("video input: \(width)x\(height) h264-high bitRate=\(bitRate) (raw frames)")
+      setup.append("video input: \(width)x\(height) h264-high bitRate=\(bitRate) (raw frames)")
     }
     videoInput.expectsMediaDataInRealTime = true
 
     // Audio is optional: it is captured phone-side via AVAudioEngine and can be
-    // absent entirely (engine never started, no route, permission). Adding an
-    // input that then receives zero samples leaves an empty AAC track, and
-    // finishWriting fails the whole segment over it — losing the video too.
+    // absent entirely (engine never started, no route, permission). An input
+    // that then receives zero samples leaves an empty AAC track, which
+    // finishWriting can reject — failing the whole segment, video included.
     // Inputs cannot be added after startWriting, so decide here.
     var audioInput: AVAssetWriterInput?
     if audioRunning, hasReceivedAudioSample, !audioEncodingDisabled {
@@ -1042,17 +1103,23 @@ final class MWDATSegmentWriter {
       )
       input.expectsMediaDataInRealTime = true
       audioInput = input
-      Self.log(
+      setup.append(
         "audio input: \(sampleRate)Hz ch=\(channels) bitRate=\(bitRate) "
           + "commonFormat=\(audioFormat.commonFormat.rawValue) "
           + "interleaved=\(audioFormat.isInterleaved)"
       )
     } else if audioEncodingDisabled {
-      Self.log("audio encoding previously failed — writing a video-only segment")
+      setup.append("audio encoding previously failed — writing a video-only segment")
     } else if audioRunning {
-      Self.log("audio engine has not produced samples yet — writing a video-only segment")
+      setup.append("audio engine has not produced samples yet — writing a video-only segment")
     } else {
-      Self.log("audio not running — writing a video-only segment")
+      setup.append("audio not running — writing a video-only segment")
+    }
+
+    let setupLog = setup.joined(separator: " | ")
+    if setupLog != lastSegmentSetup {
+      lastSegmentSetup = setupLog
+      setup.forEach { Self.log($0) }
     }
 
     guard writer.canAdd(videoInput) else {
@@ -1155,7 +1222,10 @@ final class MWDATSegmentWriter {
 
     // Audio is the only thing the wake word hears. If the mic never came up —
     // permission prompt still unanswered when we armed, transient session
-    // conflict — retry now rather than run the whole session deaf.
+    // conflict — or stopped since, retry now rather than run the session deaf.
+    // Runs before the next segment opens, so that segment is video-only
+    // instead of carrying an audio track that receives nothing.
+    noteEngineStoppedIfNeeded()
     if !audioRunning { startAudio() }
 
     // Nothing was written: finishing would either fail or emit an unplayable

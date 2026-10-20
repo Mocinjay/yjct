@@ -14,9 +14,14 @@
 /// a minute). Clips run to MAX_CLIP_RECORDING_SECONDS, so recognition is
 /// windowed and the word timings are shifted back onto the clip's timeline.
 static const double kCEWindowSeconds = 45.0;
-/// Windows overlap so a word straddling a seam is heard whole by one of them.
-/// The duplicate is dropped when the results are merged.
+/// Windows overlap so a word cut off at one window's edge is heard whole by its
+/// neighbour. The merge in transcribeClip splits the overlap at its midpoint.
 static const double kCEWindowOverlapSeconds = 1.0;
+/// How close to that midpoint a later window's word may start and still be
+/// weighed against the earlier window's, rather than dropped as a cut-in
+/// fragment. Both windows can time one word a few ms apart on either side of
+/// the midpoint, and it must not be dropped by both.
+static const double kCESeamToleranceSeconds = 0.1;
 static const double kCERecognitionSampleRate = 16000.0;
 /// Caption fade, matching the ASS `\fad(60,40)` the server burns.
 static const double kCEFadeInSeconds = 0.06;
@@ -34,6 +39,18 @@ static BOOL CETrackHasContent(AVAssetTrack *track)
     return NO;
   }
   return CMTimeCompare(range.duration, kCMTimeZero) > 0;
+}
+
+/// The audio track transcription and rendering both use, so they always agree
+/// on which one it is when a clip carries more than one.
+static AVAssetTrack *CEFirstAudioTrackWithContent(AVAsset *asset)
+{
+  for (AVAssetTrack *track in [asset tracksWithMediaType:AVMediaTypeAudio]) {
+    if (CETrackHasContent(track)) {
+      return track;
+    }
+  }
+  return nil;
 }
 
 static BOOL CELoadAssetKeys(AVAsset *asset, NSArray<NSString *> *keys)
@@ -110,10 +127,12 @@ static void CERideGain(int16_t *samples, NSUInteger count)
   float *gainDb = malloc(frames * sizeof(float));
   float *peaks = malloc(frames * sizeof(float));
   float *levels = malloc(frames * sizeof(float));
-  if (gainDb == NULL || peaks == NULL || levels == NULL) {
+  float *window = malloc((2 * kCEGainWindowFrames + 1) * sizeof(float));
+  if (gainDb == NULL || peaks == NULL || levels == NULL || window == NULL) {
     free(gainDb);
     free(peaks);
     free(levels);
+    free(window);
     return;
   }
 
@@ -136,9 +155,8 @@ static void CERideGain(int16_t *samples, NSUInteger count)
   // that second's loud end rather than the frame's own. Taking the loud end is
   // what keeps the gaps between words from being inflated along with the
   // words, without needing a separate rule for them.
-  float *window = malloc((2 * kCEGainWindowFrames + 1) * sizeof(float));
   float held = 0.0f;
-  for (NSUInteger f = 0; f < frames && window != NULL; f++) {
+  for (NSUInteger f = 0; f < frames; f++) {
     NSUInteger first = f > kCEGainWindowFrames ? f - kCEGainWindowFrames : 0;
     NSUInteger last = MIN(f + kCEGainWindowFrames, frames - 1);
     NSUInteger n = last - first + 1;
@@ -211,19 +229,29 @@ static void CERideGain(int16_t *samples, NSUInteger count)
   }
   free(gainDb);
   free(peaks);
+  free(levels);
 }
 
-/// Reads the whole audio track as 16 kHz mono 16-bit PCM and rides its level.
+/// A gap in buffer timestamps shorter than this (10 ms at 16 kHz) is resampler
+/// rounding, not missing audio, and is not padded.
+static const NSUInteger kCEGapSlackSamples = 160;
+
+/// Reads `track` as 16 kHz mono 16-bit PCM and rides its level.
 /// Glasses audio is quiet and far-field; recognition on the raw track misses
 /// words that a levelled copy hears. The clip's own audio is never touched -
 /// this is a throwaway copy for the recognizer.
-static NSData *CEReadNormalizedPCM(AVAsset *asset)
+///
+/// Every buffer is written at its presentation time, so sample N is clip time
+/// N / 16 kHz and a stretch with no audio (late start, or a gap between
+/// segments) stays in as silence rather than pulling later words early.
+/// Padding is capped at the clip's duration, so a bogus timestamp cannot
+/// request an unbounded allocation.
+static NSData *CEReadNormalizedPCM(AVAsset *asset, AVAssetTrack *track)
 {
   NSError *error = nil;
   AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:asset error:&error];
-  AVAssetTrack *track = [asset tracksWithMediaType:AVMediaTypeAudio].firstObject;
-  if (reader == nil || track == nil) {
-    CELog(@"pcm: no reader/track - %@", error.localizedDescription);
+  if (reader == nil) {
+    CELog(@"pcm: no reader - %@", error.localizedDescription);
     return nil;
   }
 
@@ -247,21 +275,37 @@ static NSData *CEReadNormalizedPCM(AVAsset *asset)
     return nil;
   }
 
+  // The caller has loaded "duration". An unknown duration disables padding,
+  // which reads the buffers back to back.
+  double durationSec = CMTimeGetSeconds(asset.duration);
+  double maxAt = isfinite(durationSec) ? (durationSec + 1.0) * kCERecognitionSampleRate : 0.0;
   NSMutableData *pcm = [NSMutableData data];
-  CMSampleBufferRef sample = NULL;
-  while ((sample = [output copyNextSampleBuffer])) {
-    CMBlockBufferRef block = CMSampleBufferGetDataBuffer(sample);
-    if (block != NULL) {
-      size_t length = CMBlockBufferGetDataLength(block);
-      void *bytes = malloc(length);
-      if (bytes != NULL) {
-        if (CMBlockBufferCopyDataBytes(block, 0, length, bytes) == kCMBlockBufferNoErr) {
-          [pcm appendBytes:bytes length:length];
-        }
-        free(bytes);
+  for (;;) {
+    @autoreleasepool {
+      CMSampleBufferRef sample = [output copyNextSampleBuffer];
+      if (sample == NULL) {
+        break;
       }
+      CMTime pts = CMSampleBufferGetPresentationTimeStamp(sample);
+      if (CMTIME_IS_NUMERIC(pts)) {
+        double at = MAX(0.0, CMTimeGetSeconds(pts)) * kCERecognitionSampleRate;
+        NSUInteger startByte = (NSUInteger)llround(at) * sizeof(int16_t);
+        if (at <= maxAt && startByte > pcm.length + kCEGapSlackSamples * sizeof(int16_t)) {
+          [pcm increaseLengthBy:startByte - pcm.length];  // zero-filled: silence
+        }
+      }
+      CMBlockBufferRef block = CMSampleBufferGetDataBuffer(sample);
+      if (block != NULL) {
+        size_t length = CMBlockBufferGetDataLength(block);
+        NSUInteger offset = pcm.length;
+        [pcm increaseLengthBy:length];
+        if (CMBlockBufferCopyDataBytes(block, 0, length, (uint8_t *)pcm.mutableBytes + offset) !=
+            kCMBlockBufferNoErr) {
+          pcm.length = offset;
+        }
+      }
+      CFRelease(sample);
     }
-    CFRelease(sample);
   }
   if (reader.status == AVAssetReaderStatusFailed || pcm.length < sizeof(int16_t) * 2) {
     CELog(@"pcm: nothing read (status=%ld)", (long)reader.status);
@@ -434,19 +478,15 @@ static CAKeyframeAnimation *CEOpacityAnimation(double start, double end, double 
   return animation;
 }
 
-#pragma mark - Module
-
 #pragma mark - Recognition collector
 
 /**
- * Collects a whole window's worth of recognition.
+ * Collects a whole window's recognition.
  *
- * The block form of `recognitionTaskWithRequest:` hands back one result and is
- * finished. Speech finalises per *utterance*, so on a clip with any pause in it
- * that first result is the opening utterance and the rest of the audio is
- * thrown away - which is why captions used to stop a second or two in. The
- * delegate form is the only one that reports every recognition plus a real
- * end-of-task, so it is what we use.
+ * Speech finalises per *utterance*, and the block form of
+ * `recognitionTaskWithRequest:` delivers only the first final result, so on a
+ * clip with any pause the rest of the window would be lost. The delegate form
+ * reports every result plus a real end-of-task.
  */
 @interface CERecognitionCollector : NSObject <SFSpeechRecognitionTaskDelegate>
 @property(nonatomic, strong) NSMutableArray<SFTranscription *> *finals;
@@ -510,6 +550,8 @@ static CAKeyframeAnimation *CEOpacityAnimation(double start, double end, double 
 
 @end
 
+#pragma mark - Module
+
 @interface CaptionEngine : NSObject <RCTBridgeModule>
 @property(nonatomic, strong) SFSpeechRecognizer *recognizer;
 @end
@@ -565,17 +607,13 @@ RCT_EXPORT_METHOD(transcribeClip:(NSString *)path
     return;
   }
 
-  // Checked before the recogniser, not after: video-only is normal for glasses
-  // capture, and a clip with no audio needs no speech recognition at all. The
-  // other order made a silent clip fail on devices that merely lack offline
-  // dictation, for a transcript that was always going to be empty.
-  BOOL hasAudio = NO;
-  for (AVAssetTrack *track in [asset tracksWithMediaType:AVMediaTypeAudio]) {
-    hasAudio = hasAudio || CETrackHasContent(track);
-  }
-  if (!hasAudio) {
+  // Checked before the recogniser: video-only is normal for glasses capture,
+  // and a silent clip must resolve empty even on a device without offline
+  // dictation.
+  AVAssetTrack *audioTrack = CEFirstAudioTrackWithContent(asset);
+  if (audioTrack == nil) {
     CELog(@"no usable audio track in %@ - no captions", path.lastPathComponent);
-    resolve(@{@"transcript" : @"", @"words" : @[]});
+    resolve(@{@"words" : @[]});
     return;
   }
 
@@ -586,7 +624,7 @@ RCT_EXPORT_METHOD(transcribeClip:(NSString *)path
   }
   if (!recognizer.supportsOnDeviceRecognition) {
     // Refuse rather than quietly falling back to Apple's servers. Captioning
-    // was moved onto the phone so the wearer's audio stays there.
+    // runs on the phone so the wearer's audio stays there.
     reject(@"on_device_unavailable",
            @"On-device speech recognition is unavailable for this locale. "
            @"Install the offline dictation language in Settings > General > Keyboard.",
@@ -594,9 +632,9 @@ RCT_EXPORT_METHOD(transcribeClip:(NSString *)path
     return;
   }
 
-  NSData *pcm = CEReadNormalizedPCM(asset);
+  NSData *pcm = CEReadNormalizedPCM(asset, audioTrack);
   if (pcm == nil) {
-    resolve(@{@"transcript" : @"", @"words" : @[]});
+    resolve(@{@"words" : @[]});
     return;
   }
 
@@ -606,7 +644,6 @@ RCT_EXPORT_METHOD(transcribeClip:(NSString *)path
       (NSUInteger)((kCEWindowSeconds - kCEWindowOverlapSeconds) * kCERecognitionSampleRate);
 
   NSMutableArray<NSDictionary *> *words = [NSMutableArray array];
-  NSMutableArray<NSString *> *transcripts = [NSMutableArray array];
   NSUInteger index = 0;
 
   for (NSUInteger first = 0; first < totalSamples; first += strideSamples) {
@@ -622,18 +659,30 @@ RCT_EXPORT_METHOD(transcribeClip:(NSString *)path
       continue;
     }
 
-    NSString *text = nil;
-    NSArray<NSDictionary *> *windowWords = [self recognizeURL:wav offset:offset text:&text];
+    NSArray<NSDictionary *> *windowWords = [self recognizeURL:wav offset:offset];
     [[NSFileManager defaultManager] removeItemAtURL:wav error:NULL];
 
-    if (text.length > 0) {
-      [transcripts addObject:text];
+    // The overlap is split at its midpoint. The previous window's audio was cut
+    // at its end, so a word it started after the midpoint may be truncated; it
+    // gives those up and this window, which heard them whole, supplies them.
+    // This window's audio starts mid-word, so its words from the first part of
+    // the overlap are dropped. Within kCESeamToleranceSeconds of the midpoint
+    // the end-overlap test decides instead, which also drops a word both
+    // windows heard and timed a few ms apart. The previous window gives nothing
+    // up unless this one has words to replace it.
+    double seam = offset + kCEWindowOverlapSeconds / 2.0;
+    double cutIn = seam - kCESeamToleranceSeconds;
+    if (offset > 0 && windowWords.count > 0 &&
+        [windowWords.lastObject[@"start"] doubleValue] >= cutIn) {
+      while (words.count > 0 && [words.lastObject[@"start"] doubleValue] >= seam) {
+        [words removeLastObject];
+      }
     }
     for (NSDictionary *word in windowWords) {
-      // Drop what the previous window already heard in the overlap.
+      double start = [word[@"start"] doubleValue];
       NSDictionary *last = words.lastObject;
-      if (last != nil &&
-          [word[@"start"] doubleValue] < [last[@"end"] doubleValue] - 0.02) {
+      if ((offset > 0 && start < cutIn) ||
+          (last != nil && start < [last[@"end"] doubleValue] - 0.02)) {
         continue;
       }
       [words addObject:word];
@@ -645,8 +694,8 @@ RCT_EXPORT_METHOD(transcribeClip:(NSString *)path
 
   CELog(@"transcribed %@ into %lu words across %lu windows",
         path.lastPathComponent, (unsigned long)words.count, (unsigned long)index);
-  // Timings only, never the words themselves. Captioning was moved on-device
-  // so the wearer's speech stays there, and NSLog goes to the shared system
+  // Timings only, never the words themselves. Captioning runs on-device so
+  // the wearer's speech stays there, and NSLog goes to the shared system
   // log that any attached tooling can read. The spans are what caption bugs
   // are actually diagnosed from.
   if (words.count > 0) {
@@ -657,17 +706,13 @@ RCT_EXPORT_METHOD(transcribeClip:(NSString *)path
     }
     CELog(@"  spans: %@", spans);
   }
-  resolve(@{
-    @"transcript" : [transcripts componentsJoinedByString:@" "],
-    @"words" : words,
-  });
+  resolve(@{@"words" : words});
 }
 
 /// One on-device recognition pass over a window, with timings shifted onto the
-/// clip's timeline. Returns an empty array for a silent window.
-- (NSArray<NSDictionary *> *)recognizeURL:(NSURL *)url
-                                   offset:(double)offset
-                                     text:(NSString **)outText
+/// clip's timeline. Returns an empty array for a silent window, or one Speech
+/// could not start a task for.
+- (NSArray<NSDictionary *> *)recognizeURL:(NSURL *)url offset:(double)offset
 {
   SFSpeechURLRecognitionRequest *request =
       [[SFSpeechURLRecognitionRequest alloc] initWithURL:url];
@@ -682,6 +727,12 @@ RCT_EXPORT_METHOD(transcribeClip:(NSString *)path
   CERecognitionCollector *collector = [[CERecognitionCollector alloc] init];
   SFSpeechRecognitionTask *task = [self.recognizer recognitionTaskWithRequest:request
                                                                      delegate:collector];
+  if (task == nil) {
+    // No task means no delegate callback, so waiting would block this serial
+    // queue - and every later transcribe and render call - forever.
+    CELog(@"window at %.1fs: could not create a recognition task", offset);
+    return @[];
+  }
   dispatch_semaphore_wait(collector.done, DISPATCH_TIME_FOREVER);
   (void)task;  // held only so it outlives the wait
 
@@ -691,7 +742,6 @@ RCT_EXPORT_METHOD(transcribeClip:(NSString *)path
   }
 
   NSMutableArray<NSDictionary *> *words = [NSMutableArray array];
-  NSMutableArray<NSString *> *spoken = [NSMutableArray array];
   // Speech may report each utterance on its own or cumulatively, and we cannot
   // tell which from the outside. Taking only what starts after everything kept
   // so far reads both the same way. Applied between results, never within one,
@@ -709,7 +759,6 @@ RCT_EXPORT_METHOD(transcribeClip:(NSString *)path
         @"start" : @(segment.timestamp + offset),
         @"end" : @(segment.timestamp + segment.duration + offset),
       }];
-      [spoken addObject:word];
       mark = MAX(mark, segment.timestamp + segment.duration);
     }
     covered = mark;
@@ -717,11 +766,6 @@ RCT_EXPORT_METHOD(transcribeClip:(NSString *)path
 
   CELog(@"window at %.1fs: %lu recognitions -> %lu words", offset,
         (unsigned long)transcriptions.count, (unsigned long)words.count);
-  // Built from the words we kept rather than joining formattedString, which
-  // would repeat itself whenever Speech reported cumulatively.
-  if (outText != NULL) {
-    *outText = [spoken componentsJoinedByString:@" "];
-  }
   return words;
 }
 
@@ -792,13 +836,7 @@ RCT_EXPORT_METHOD(renderEdit:(NSString *)sourcePath
     reject(@"no_video_track", @"The clip has no video track.", nil);
     return;
   }
-  AVAssetTrack *audioTrack = nil;
-  for (AVAssetTrack *candidate in [asset tracksWithMediaType:AVMediaTypeAudio]) {
-    if (CETrackHasContent(candidate)) {
-      audioTrack = candidate;
-      break;
-    }
-  }
+  AVAssetTrack *audioTrack = CEFirstAudioTrackWithContent(asset);
 
   AVMutableComposition *composition = [AVMutableComposition composition];
   AVMutableCompositionTrack *videoComp =
@@ -856,10 +894,8 @@ RCT_EXPORT_METHOD(renderEdit:(NSString *)sourcePath
     instruction.timeRange = outRange;
 
     if (![source isKindOfClass:[NSDictionary class]]) {
-      // The black beat. An empty range alone is not enough: with no frames to
-      // composite the renderer holds the previous one, so the "black" gap came
-      // out as a frozen frame. An instruction carrying no layers paints its
-      // backgroundColor instead, which is what actually produces black.
+      // The black beat. An empty range alone would hold the previous frame; an
+      // instruction with no layers paints its backgroundColor instead.
       [videoComp insertEmptyTimeRange:outRange];
       [audioComp insertEmptyTimeRange:outRange];
       instruction.backgroundColor = [UIColor blackColor].CGColor;
@@ -898,12 +934,9 @@ RCT_EXPORT_METHOD(renderEdit:(NSString *)sourcePath
 
   AVMutableVideoComposition *videoComposition = [AVMutableVideoComposition videoComposition];
   videoComposition.renderSize = render;
-  // Output frames land exactly where the source's do. Glasses capture is
-  // variable-rate - the link's quality ladder moves between 15 and 30 fps - and
-  // a fixed frameDuration resampled it: at round(nominalFrameRate), an average
-  // dragged down by every slow stretch, frames were duplicated in some places
-  // and dropped in others. frameDuration now only paces what has no source
-  // frames at all, the black beat of a climax edit.
+  // Output frames keep the source's timing: glasses capture is variable-rate
+  // (15-30 fps) and any fixed frameDuration would duplicate and drop frames.
+  // frameDuration only paces the black beat, which has no source frames.
   videoComposition.sourceTrackIDForFrameTiming = videoComp.trackID;
   videoComposition.frameDuration = CMTimeMake(1, 30);
   videoComposition.instructions = instructions;
@@ -1078,8 +1111,8 @@ RCT_EXPORT_METHOD(renderEdit:(NSString *)sourcePath
           break;
         }
         double shrunk = MAX(8.0, lineFont.pointSize * (available / lineWidth));
-        lineFont = [UIFont fontWithName:font.fontName size:shrunk]
-                       ?: [UIFont boldSystemFontOfSize:shrunk];
+        // Same face, smaller. Never boldSystemFont - see the fallback above.
+        lineFont = [font fontWithSize:shrunk];
         lineBase = CETextAttributes(lineFont, color, outlineScale, outlineColor);
         lineLit = highlightColor != nil ? CETextAttributes(lineFont, highlightColor,
                                                            outlineScale, outlineColor)

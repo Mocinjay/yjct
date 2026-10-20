@@ -8,8 +8,6 @@
  */
 @interface RCT_EXTERN_MODULE (LiveActivityBridge, NSObject)
 
-RCT_EXTERN_METHOD(isSupported:(RCTPromiseResolveBlock)resolve
-                  reject:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(start:(NSString *)deviceName
                   resolve:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject)
