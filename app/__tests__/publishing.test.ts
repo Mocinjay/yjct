@@ -1,6 +1,6 @@
-import type { Clip } from '../../types';
-import type { CaptioningProvider } from '../CaptioningProvider';
-import type { PublishableClip, PublishTarget } from '../PublishTarget';
+import type { Clip } from '../src/types';
+import type { CaptioningProvider } from '../src/phase2/CaptioningProvider';
+import type { PublishableClip, PublishTarget } from '../src/phase2/PublishTarget';
 
 const mockFiles = new Map<string, string>();
 
@@ -70,19 +70,19 @@ class FakeCaptioner implements CaptioningProvider {
 
 const mockCaptioner = new FakeCaptioner();
 
-jest.mock('../captioner', () => ({
+jest.mock('../src/phase2/captioner', () => ({
   getCaptioner: async () => mockCaptioner,
 }));
 
-import { clipStore } from '../../core/ClipStore';
-import { entitlementStore } from '../../core/EntitlementStore';
-import { settingsStore } from '../../core/SettingsStore';
-import { captionQueue } from '../CaptionQueue';
-import { connectorConfigStore } from '../ConnectorConfig';
-import { publishService } from '../PublishService';
-import { FacebookPublishTarget } from '../targets/FacebookPublishTarget';
-import { TikTokPublishTarget } from '../targets/TikTokPublishTarget';
-import { YouTubePublishTarget } from '../targets/YouTubePublishTarget';
+import { clipStore } from '../src/core/ClipStore';
+import { entitlementStore } from '../src/core/EntitlementStore';
+import { settingsStore } from '../src/core/SettingsStore';
+import { captionQueue } from '../src/phase2/CaptionQueue';
+import { connectorConfigStore } from '../src/phase2/ConnectorConfig';
+import { publishService } from '../src/phase2/PublishService';
+import { FacebookPublishTarget } from '../src/phase2/targets/FacebookPublishTarget';
+import { TikTokPublishTarget } from '../src/phase2/targets/TikTokPublishTarget';
+import { YouTubePublishTarget } from '../src/phase2/targets/YouTubePublishTarget';
 
 const INDEX = '/docs/clips/index.json';
 const fetchMock = jest.fn();

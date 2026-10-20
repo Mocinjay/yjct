@@ -52,7 +52,7 @@ const mockEngine = {
   analysisFails: false,
 };
 
-jest.mock('../../native/CaptionEngineNative', () => ({
+jest.mock('../src/native/CaptionEngineNative', () => ({
   climaxEngineAvailable: () => true,
   transcribeClip: async () => ({ words: [] }),
   extractFeatures: async () => {
@@ -75,9 +75,9 @@ jest.mock('../../native/CaptionEngineNative', () => ({
   },
 }));
 
-import { clipStore } from '../../core/ClipStore';
-import { settingsStore } from '../../core/SettingsStore';
-import { runTestRender } from '../testRender';
+import { clipStore } from '../src/core/ClipStore';
+import { settingsStore } from '../src/core/SettingsStore';
+import { runTestRender } from '../src/phase2/testRender';
 
 /** Every .mp4 left in the clips folder. */
 function videosOnDisk(): string[] {
