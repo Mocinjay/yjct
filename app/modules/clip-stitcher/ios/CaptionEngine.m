@@ -159,25 +159,33 @@ static void CERideGain(int16_t *samples, NSUInteger count)
   for (NSUInteger f = 0; f < frames; f++) {
     NSUInteger first = f > kCEGainWindowFrames ? f - kCEGainWindowFrames : 0;
     NSUInteger last = MIN(f + kCEGainWindowFrames, frames - 1);
-    NSUInteger n = last - first + 1;
 
+    // Exact-zero frames are digital silence, which the PCM reader inserts to
+    // pad gaps in the audio track. They say nothing about speech, and counting
+    // them would read every gap as a swing and lift the room tone after it.
+    NSUInteger m = 0;
     double sum = 0.0;
     double sumOfSquares = 0.0;
-    for (NSUInteger i = 0; i < n; i++) {
-      window[i] = levels[first + i];
-      double db = 20.0 * log10(MAX(levels[first + i], 1e-6f));
+    for (NSUInteger i = first; i <= last; i++) {
+      if (levels[i] <= 0.0f) {
+        continue;
+      }
+      window[m++] = levels[i];
+      double db = 20.0 * log10(levels[i]);
       sum += db;
       sumOfSquares += db * db;
     }
-    double mean = sum / (double)n;
-    float spread = (float)sqrt(MAX(sumOfSquares / (double)n - mean * mean, 0.0));
 
-    if (spread >= kCEModulationDb) {
-      qsort(window, n, sizeof(float), CECompareLevels);
-      float loud = window[n * 3 / 4];
-      if (loud > kCESilenceRMS) {
-        float wanted = 20.0f * log10f(kCETargetRMS / loud);
-        held = MIN(MAX(wanted, 0.0f), kCEMaxGainDb);
+    if (m >= 2) {
+      double mean = sum / (double)m;
+      float spread = (float)sqrt(MAX(sumOfSquares / (double)m - mean * mean, 0.0));
+      if (spread >= kCEModulationDb) {
+        qsort(window, m, sizeof(float), CECompareLevels);
+        float loud = window[m * 3 / 4];
+        if (loud > kCESilenceRMS) {
+          float wanted = 20.0f * log10f(kCETargetRMS / loud);
+          held = MIN(MAX(wanted, 0.0f), kCEMaxGainDb);
+        }
       }
     }
     // Otherwise room tone, which keeps the gain speech last needed rather than
