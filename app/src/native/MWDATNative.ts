@@ -14,6 +14,10 @@ export interface MWDATErrorEvent {
   message: string;
 }
 
+/**
+ * Payload of 'MWDATStreamState'. ConnectScreen listens for it to drop its
+ * preview latch when iOS releases the glasses session in the background.
+ */
 export interface MWDATStateEvent {
   state: string;
   reason?: string;
@@ -75,8 +79,6 @@ interface MWDATBridgeModule {
   chime(): Promise<boolean>;
   /** Stop the segment writer only — keeps the glasses camera stream alive. */
   stopRecording(): Promise<void>;
-  /** Tear down the whole glasses session (stream + writer). */
-  stop(): Promise<void>;
 }
 
 const native: MWDATBridgeModule | undefined = NativeModules.MWDATBridge;
@@ -115,7 +117,6 @@ export const MWDATNative = {
   cut: () => requireNative().cut(),
   chime: () => requireNative().chime(),
   stopRecording: () => requireNative().stopRecording(),
-  stop: () => requireNative().stop(),
 };
 
 export function mwdatEvents(): NativeEventEmitter {

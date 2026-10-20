@@ -48,6 +48,10 @@ export interface Clip {
   captionError?: string | null;
 }
 
+/**
+ * What recorded a clip. Only 'mwdat' (Meta glasses) is recorded now; 'mock'
+ * remains for clips captured by the phone-camera stand-in of earlier builds.
+ */
 export type DeviceKind = 'mock' | 'mwdat';
 
 export interface Segment {
@@ -61,7 +65,6 @@ export interface Segment {
 export interface Settings {
   /** Rolling buffer window the user wants captured, 30–90s. */
   bufferSeconds: number;
-  deviceKind: DeviceKind;
   wakeWord: WakeWordConfig;
   /** Look applied to auto-captions. Applies to clips captured from now on. */
   captionStyle: CaptionStyleKey;

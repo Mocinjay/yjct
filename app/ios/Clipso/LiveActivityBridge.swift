@@ -8,11 +8,13 @@ import React
 /// case, phone pocketed, using something else — and still see that Clipso is
 /// listening and how many clips have landed.
 ///
-/// ActivityKit only permits a *start* while the app is in the foreground. JS
-/// calls `start()` when the wearer arms capture (they are in the app then),
-/// and keeps that one activity alive across automatic re-arms — stall recovery
-/// usually runs with the phone pocketed, where a fresh `start()` would be
-/// refused. `update()` and `end()` work from either state.
+/// ActivityKit only permits a *start* while the app is in the foreground;
+/// `update()` and `end()` work from either state. A `start()` made from the
+/// background is refused and resolves `false`. That includes the automatic
+/// re-arm after a glasses stall, which usually runs with the phone pocketed.
+/// So the activity only survives such a re-arm if JS keeps it rather than
+/// ending it and starting a new one. ArmedScreen's `capturing` flag decides
+/// when JS starts and ends it.
 ///
 /// The app target's deployment floor (17.2) is above ActivityKit's (16.2), so
 /// no availability checks are needed here.

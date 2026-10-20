@@ -2,18 +2,17 @@ import { useEffect } from 'react';
 import { MWDATNative, mwdatAvailable } from '../native/MWDATNative';
 
 /**
- * Who currently needs the glasses camera running.
+ * Reference count of the screens that need the glasses camera running.
  *
- * The glasses session used to be opened by ConnectScreen and then never closed:
- * `stopPreview()` existed on the bridge but was not called anywhere in the app,
- * so once the feed opened it stayed open for the whole life of the process. The
- * wearer's camera, the Bluetooth link and the H.264 writer kept running while
- * the user browsed the Library, watched a clip, or sat in Settings.
+ * Screens acquire on FOCUS and release on blur, not on mount, because React
+ * Navigation keeps covered screens mounted (ArmedScreen stays mounted under the
+ * Library and the player). When the count stays at zero past a short grace
+ * period, the session is closed so the camera, the Bluetooth link and the
+ * encoder do not run while nothing needs them.
  *
- * Mount is the wrong signal for this — React Navigation keeps every screen
- * below the top of the stack mounted, so ArmedScreen is still mounted while the
- * player sits on top of it. Screens take a lease on FOCUS and drop it on blur;
- * when the last one drops, the session is torn down.
+ * A release that lands while recording cannot close anything (`stopPreview()`
+ * never kills a recording); MWDATSource.stop() calls `closeGlassesIfUnleased()`
+ * once recording ends.
  */
 let holders = 0;
 let pendingRelease: ReturnType<typeof setTimeout> | null = null;
@@ -47,8 +46,21 @@ function release(): void {
     }
     // `stopPreview()` is deliberately a no-op while a writer is attached, so a
     // manual extended recording in progress can never be killed by navigation.
+    // MWDATSource.stop() closes the session once that recording ends.
     MWDATNative.stopPreview().catch(() => {});
   }, RELEASE_GRACE_MS);
+}
+
+/**
+ * Closes the glasses session if no screen holds a lease and no release is
+ * still in its grace period (that timer closes it instead). Called when
+ * recording stops, because a release that landed while the writer was
+ * attached could not close anything.
+ */
+export function closeGlassesIfUnleased(): void {
+  if (holders === 0 && !pendingRelease && mwdatAvailable()) {
+    MWDATNative.stopPreview().catch(() => {});
+  }
 }
 
 /**

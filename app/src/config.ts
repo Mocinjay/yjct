@@ -42,9 +42,6 @@ export const WAKE_TRIM_PADDING_SECONDS = 0.3;
 
 export const DEFAULT_SETTINGS: Settings = {
   bufferSeconds: 30,
-  // Glasses-only: the phone-camera mock remains in the codebase for tests,
-  // but the product records exclusively from Meta glasses.
-  deviceKind: 'mwdat',
   wakeWord: {
     // Keyless OS speech recognition — say "Clipso" with zero setup, no
     // vendor key, no model download.

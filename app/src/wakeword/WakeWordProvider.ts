@@ -1,10 +1,12 @@
 /**
- * On-device wake-word detection against the app's own mic stream.
+ * On-device wake-word detection: from recorded segment files (iOS, via
+ * `feedSegment`) or the live mic (Android).
  *
  * There is deliberately NO cloud implementation and NO Meta AI / "Hey Meta"
  * integration — that hook does not exist for third parties. Detection must
  * be low-latency and low-battery, i.e. fully on-device.
  */
+
 /**
  * Where the trigger phrase landed, when the provider can tell.
  *
@@ -21,8 +23,6 @@ export interface WakeDetection {
 }
 
 export interface WakeWordProvider {
-  readonly name: string;
-
   /**
    * Begin listening; invoke `onDetected` every time the phrase is heard.
    * The detection argument is omitted when the provider has no word timings

@@ -11,7 +11,6 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Camera, useCameraDevice } from 'react-native-vision-camera';
 import type { CaptureStatus } from '../../core/CaptureController';
 import { useGlassesLease } from '../../device/glassesLease';
 import type { CaptureSession } from '../../services/capture';
@@ -42,13 +41,10 @@ export function ArmedScreen({ navigation }: Props) {
   });
   const [now, setNow] = useState(Date.now());
   const armedRef = useRef(false);
-  /** Sticky, unlike `armedRef`: stays true across a disarm. */
-  const hasArmedOnce = useRef(false);
   const recoveryAttempts = useRef(0);
   const isFocused = useIsFocused();
   useGlassesLease(isFocused);
   const insets = useSafeAreaInsets();
-  const device = useCameraDevice('back');
   const toast = useRef(new Animated.Value(0)).current;
   const lastToastClip = useRef<string | null>(null);
 
@@ -171,7 +167,6 @@ export function ArmedScreen({ navigation }: Props) {
       return;
     }
     armedRef.current = true;
-    hasArmedOnce.current = true;
     session.controller.arm().catch(() => {
       // Status listener already surfaces the error; clear the latch so
       // refocusing can retry instead of sitting there permanently unarmed.
@@ -192,14 +187,7 @@ export function ArmedScreen({ navigation }: Props) {
       return;
     }
     if (isFocused) {
-      // The mock path arms from the viewfinder's `onInitialized` instead, so on
-      // the FIRST visit leave it alone — arming before the camera is ready
-      // fails. On a return visit that callback has already fired and will not
-      // fire again, so re-arm here. `hasArmedOnce` is what distinguishes the
-      // two; `armedRef` cannot, since disarming resets it to false.
-      if (!session.mockSource || hasArmedOnce.current) {
-        arm();
-      }
+      arm();
       return;
     }
     // Never interrupt a manual extended recording or an in-flight save — those
@@ -247,7 +235,7 @@ export function ArmedScreen({ navigation }: Props) {
   // backgrounded the app from the Library, nothing here should wake capture.
   useEffect(() => {
     const sub = AppState.addEventListener('change', state => {
-      if (state !== 'active' || !isFocused || !session || session.mockSource) {
+      if (state !== 'active' || !isFocused || !session) {
         return;
       }
       if (
@@ -325,19 +313,7 @@ export function ArmedScreen({ navigation }: Props) {
           eye on the status/deck chrome rather than the footage. */}
       <View style={styles.stage}>
         <View style={[styles.viewfinder, recording && styles.viewfinderRec]}>
-          {session?.mockSource && device ? (
-            <Camera
-              ref={ref => session.mockSource?.attachCamera(ref)}
-              style={StyleSheet.absoluteFill}
-              device={device}
-              isActive
-              video
-              audio
-              onInitialized={arm}
-            />
-          ) : session && !session.mockSource ? (
-            <GlassesPreview style={StyleSheet.absoluteFill} />
-          ) : null}
+          {session ? <GlassesPreview style={StyleSheet.absoluteFill} /> : null}
 
           <Animated.View
             pointerEvents="none"

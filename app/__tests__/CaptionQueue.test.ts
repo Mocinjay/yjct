@@ -17,7 +17,11 @@ jest.mock('react-native-fs', () => ({
   writeFile: jest.fn(async (p: string, data: string) => {
     mockFiles.set(p, data);
   }),
+  // Like iOS (NSFileManager copyItemAtPath:toPath:), refuses to overwrite.
   copyFile: jest.fn(async (from: string, to: string) => {
+    if (mockFiles.has(to)) {
+      throw new Error(`file already exists: ${to}`);
+    }
     mockFiles.set(to, mockFiles.get(from) ?? '');
   }),
   moveFile: jest.fn(async (from: string, to: string) => {
@@ -51,10 +55,9 @@ jest.mock('@react-native-async-storage/async-storage', () => {
   };
 });
 
-/** Stands in for the external captioning infra behind the seam. */
+/** Stands in for whichever captioner `getCaptioner()` would pick. */
 class FakeCaptioner implements CaptioningProvider {
   name = 'http';
-  burnsCaptions = true;
   calls: { path: string; style?: string }[] = [];
   concurrent = 0;
   maxConcurrent = 0;
@@ -83,14 +86,16 @@ class FakeCaptioner implements CaptioningProvider {
 
 const mockCaptioner = new FakeCaptioner();
 
-jest.mock('../src/phase2/PublishService', () => ({
-  publishService: { getCaptioner: async () => mockCaptioner },
+jest.mock('../src/phase2/captioner', () => ({
+  getCaptioner: async () => mockCaptioner,
 }));
 
 import { clipStore, deliverablePath, isCaptioning } from '../src/core/ClipStore';
 import { entitlementStore } from '../src/core/EntitlementStore';
 import { settingsStore } from '../src/core/SettingsStore';
 import { captionQueue } from '../src/phase2/CaptionQueue';
+import { connectorConfigStore } from '../src/phase2/ConnectorConfig';
+import { MockCaptioningProvider } from '../src/phase2/MockCaptioningProvider';
 
 const INDEX = '/docs/clips/index.json';
 
@@ -408,5 +413,179 @@ describe('deliverablePath', () => {
       captionedFilePath: '/docs/clips/a.captioned.classic.mp4',
     });
     expect(deliverablePath(ready)).toBe('/docs/clips/a.captioned.classic.mp4');
+  });
+});
+
+describe('captionNow (publishing)', () => {
+  afterEach(() => {
+    captionQueue.setCaptureActive(false);
+  });
+
+  it('captions on demand and resolves with the finished clip', async () => {
+    seed([makeClip('a')]);
+
+    const clip = await captionQueue.captionNow('a');
+
+    expect(clip?.captionState).toBe('ready');
+    expect(clip?.captionedFilePath).toBe('/docs/clips/a.captioned.classic.mp4');
+    expect(mockCaptioner.calls).toHaveLength(1);
+  });
+
+  it('joins the job already in flight instead of rendering twice', async () => {
+    seed([makeClip('a')]);
+
+    await captionQueue.enqueue('a');
+    const clip = await captionQueue.captionNow('a');
+
+    expect(mockCaptioner.calls).toHaveLength(1);
+    expect(clip?.captionState).toBe('ready');
+  });
+
+  it('returns an already-ready clip without re-rendering', async () => {
+    seed([
+      makeClip('a', {
+        captionState: 'ready',
+        captionedFilePath: '/docs/clips/a.captioned.classic.mp4',
+      }),
+    ]);
+
+    const clip = await captionQueue.captionNow('a');
+
+    expect(mockCaptioner.calls).toHaveLength(0);
+    expect(clip?.captionedFilePath).toBe('/docs/clips/a.captioned.classic.mp4');
+  });
+
+  it('refuses while capture is live rather than hanging on the hold', async () => {
+    seed([makeClip('a')]);
+    captionQueue.setCaptureActive(true);
+
+    await expect(captionQueue.captionNow('a')).rejects.toThrow(/recording/);
+
+    expect(mockCaptioner.calls).toHaveLength(0);
+    expect((await clipById('a')).captionState).toBe('none');
+  });
+
+  it('jumps ahead of clips queued in the background', async () => {
+    seed([makeClip('a'), makeClip('b'), makeClip('c')]);
+    captionQueue.setCaptureActive(true);
+    for (const id of ['a', 'b', 'c']) {
+      await captionQueue.enqueue(id);
+    }
+    captionQueue.setCaptureActive(false);
+
+    await captionQueue.captionNow('c');
+    await drain();
+
+    // 'a' was already running when the publish asked; 'c' goes next, not 'b'.
+    expect(mockCaptioner.calls.map(c => c.path)).toEqual([
+      '/docs/clips/a.mp4',
+      '/docs/clips/c.mp4',
+      '/docs/clips/b.mp4',
+    ]);
+  });
+
+  it('resolves for a clip that no longer exists', async () => {
+    seed([]);
+
+    await expect(captionQueue.captionNow('gone')).resolves.toBeUndefined();
+  });
+
+  it('is released when the claim it joined ends without a job', async () => {
+    // enqueue() has claimed the clip and is still reading the index when the
+    // publish asks. That push then finds no clip and queues nothing, so no job
+    // will ever settle the publish; the push itself has to.
+    seed([]);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const list = clipStore.list.bind(clipStore);
+    const spy = jest.spyOn(clipStore, 'list').mockImplementationOnce(async () => {
+      await gate;
+      return list();
+    });
+    try {
+      const enqueued = captionQueue.enqueue('gone');
+      for (let i = 0; i < 50 && captionQueue.depth === 0; i++) {
+        await new Promise<void>(resolve => setImmediate(() => resolve()));
+      }
+      expect(captionQueue.depth).toBe(1);
+
+      const asked = captionQueue.captionNow('gone');
+      release();
+      await enqueued;
+
+      const hung = new Promise<'hung'>(resolve =>
+        setTimeout(() => resolve('hung'), 100),
+      );
+      await expect(Promise.race([asked, hung])).resolves.toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('surfaces a failed job to the caller', async () => {
+    seed([makeClip('a')]);
+    mockCaptioner.failWith = 'no speech engine';
+
+    const clip = await captionQueue.captionNow('a');
+
+    expect(clip?.captionState).toBe('failed');
+    expect(clip?.captionError).toBe('no speech engine');
+  });
+});
+
+describe('MockCaptioningProvider', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('replaces its own earlier copy on a same-style re-run', async () => {
+    // Recaption without changing style, or a job resumed after the app was
+    // killed mid-copy: the output path already exists, and copyFile on iOS
+    // will not overwrite it.
+    seed([makeClip('a')]);
+    mockFiles.set('/docs/clips/a.captioned.classic.mp4', 'stale copy');
+    jest.useFakeTimers({ doNotFake: ['setImmediate'] });
+
+    const captioning = new MockCaptioningProvider().caption('/docs/clips/a.mp4', {
+      style: 'classic',
+    });
+    await jest.advanceTimersByTimeAsync(1000);
+
+    await expect(captioning).resolves.toEqual({
+      captionedFilePath: '/docs/clips/a.captioned.classic.mp4',
+    });
+    expect(mockFiles.get('/docs/clips/a.captioned.classic.mp4')).toBe('video');
+  });
+});
+
+describe('getCaptioner', () => {
+  const { getCaptioner } = jest.requireActual<
+    typeof import('../src/phase2/captioner')
+  >('../src/phase2/captioner');
+  const dev = __DEV__;
+
+  afterEach(async () => {
+    (globalThis as unknown as { __DEV__: boolean }).__DEV__ = dev;
+    await connectorConfigStore.update({ captioningUrl: undefined });
+  });
+
+  // Jest has no CaptionEngine native module, so on-device is never usable here.
+
+  it('uses the captioning service when one is configured', async () => {
+    await connectorConfigStore.update({ captioningUrl: 'http://captions.local' });
+
+    expect((await getCaptioner()).name).toBe('http');
+  });
+
+  it('falls back to the mock in dev builds', async () => {
+    expect((await getCaptioner()).name).toBe('mock');
+  });
+
+  it('fails the job in release builds instead of faking a caption', async () => {
+    (globalThis as unknown as { __DEV__: boolean }).__DEV__ = false;
+
+    await expect(getCaptioner()).rejects.toThrow(/no captioning service URL/);
   });
 });

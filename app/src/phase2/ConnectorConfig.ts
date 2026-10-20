@@ -31,12 +31,14 @@ export interface ConnectorConfig {
   };
   /**
    * Presign endpoint for clip hosting: POST {fileName, contentType} →
-   * {uploadUrl, publicUrl}. When unset, the mock hosting is used.
+   * {uploadUrl, publicUrl}. Required by Instagram, Facebook and TikTok; when
+   * unset only the dev mock platform can publish (with fake hosting).
    */
   hostingPresignUrl?: string;
   /**
-   * Base URL of the captioning service (see server/captioning). When unset,
-   * the mock captioner is used.
+   * Base URL of the captioning service (see server/captioning). Only used
+   * when on-device captioning is unavailable: Android, or iOS without Speech
+   * permission or offline dictation for the language.
    */
   captioningUrl?: string;
 }

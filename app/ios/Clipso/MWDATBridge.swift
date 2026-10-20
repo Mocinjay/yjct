@@ -96,7 +96,7 @@ final class MWDATBridge: RCTEventEmitter {
   /// one of the ways a dead session keeps driving live logic.
   private var sessionStateTask: Task<SessionStartOutcome, Never>?
 
-  /// Per-stream SDK listeners; dropped in teardown().
+  /// SDK listeners for the open pipeline (stream and session); dropped in teardown().
   private var listenerTokens: [any AnyListenerToken] = []
   /// Registration/devices listeners, held while JS observes the emitter
   /// (startObserving → stopObserving).
@@ -1290,9 +1290,9 @@ final class MWDATBridge: RCTEventEmitter {
         }
       }
 
-      // Out of attempts: tear down what the failed attempts left (a session
-      // and stopped stream with no health timer would pass the reuse checks
-      // as open) and drop the recording intent; the next arm sets it again.
+      // Out of attempts: release what the failed attempts left (session,
+      // camera, stopped stream, listeners) so the glasses are free for the
+      // next arm, and drop the recording intent; the next arm sets it again.
       activeSegmentSeconds = nil
       teardownQuietly()
       sendEvent(

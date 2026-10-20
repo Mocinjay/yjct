@@ -140,34 +140,12 @@ export function normaliseWeights(w: ScoringWeights): ScoringWeights {
 }
 
 /**
- * Speech weight redistributed proportionally across the rest.
- *
- * Silent footage would otherwise have a quarter of every window's score pinned
- * to the same constant zero, which is not a measurement of anything.
- */
-export function weightsWithoutSpeech(w: ScoringWeights): ScoringWeights {
-  const rest = w.audio + w.visual + w.novelty;
-  if (rest <= 0) {
-    throw new Error('cannot drop speech weight: nothing left to carry it');
-  }
-  const share = w.speech / rest;
-  return normaliseWeights({
-    audio: w.audio * (1 + share),
-    visual: w.visual * (1 + share),
-    speech: 0,
-    novelty: w.novelty * (1 + share),
-  });
-}
-
-/**
- * Weights for whichever modalities this clip actually has.
- *
- * Glasses capture is routinely video-only — the toolkit exposes no microphone —
- * so "no audio at all" is a normal clip here, not an edge case. Zeroing an
- * absent modality and renormalising is exactly `weightsWithoutSpeech`
- * generalised (the algebra works out identical), and it is what stops a
- * missing modality from pinning a fixed fraction of every window's score to
- * the same zero.
+ * Weights for whichever modalities this clip actually has: an absent modality
+ * is zeroed and the rest renormalised, so its share is redistributed in
+ * proportion (the Python `without_speech`, generalised). A clip can lack a
+ * whole modality: audio when it has no mic track, speech when nothing is said.
+ * Without this the missing modality would pin a fixed fraction of every
+ * window's score to the same zero.
  */
 export function resolveWeights(
   w: ScoringWeights,

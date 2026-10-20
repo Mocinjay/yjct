@@ -7,9 +7,9 @@
  * sheet.
  *
  * Platform invariants the implementations must respect:
- *  - Instagram/TikTok require a CDN-hosted HTTPS URL (`requiresHostedUrl`);
- *    a local file path is never sufficient for them. YouTube accepts a
- *    direct file upload.
+ *  - Instagram, Facebook and TikTok pull the clip from a CDN-hosted HTTPS
+ *    URL (`requiresHostedUrl`); a local file path is never sufficient for
+ *    them. YouTube accepts a direct file upload.
  *  - TikTok: never post without a per-clip preview + explicit user consent
  *    step; until their manual audit clears, every post is forced private —
  *    `PublishStatus.actualPrivacy` must surface ACTUAL visibility to the
@@ -20,10 +20,9 @@ export type PublishPrivacy = 'public' | 'private' | 'unlisted';
 export interface PublishableClip {
   /** Local MP4 path (used by direct-upload targets like YouTube). */
   localFilePath: string;
-  /** CDN-fronted HTTPS URL (required by Instagram/TikTok-style targets). */
+  /** CDN-fronted HTTPS URL (set when `requiresHostedUrl`). */
   hostedUrl?: string;
   title: string;
-  durationSec: number;
 }
 
 export interface PublishStatus {

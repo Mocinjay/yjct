@@ -14,7 +14,6 @@ import { DEFAULT_CAPTION_STYLE } from './captionStyles';
  */
 export class HttpCaptioningProvider implements CaptioningProvider {
   readonly name = 'http';
-  readonly burnsCaptions = true;
 
   constructor(private baseUrl: string) {}
 

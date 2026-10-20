@@ -9,6 +9,7 @@ import {
   type MWDATSegmentEvent,
 } from '../native/MWDATNative';
 import type { DeviceVideoSource } from './DeviceVideoSource';
+import { closeGlassesIfUnleased } from './glassesLease';
 
 /**
  * Meta Wearables Device Access Toolkit source — Ray-Ban / Oakley Meta glasses
@@ -16,7 +17,8 @@ import type { DeviceVideoSource } from './DeviceVideoSource';
  *
  * The native side opens a wearables session, streams glasses video, muxes in
  * mic audio (glasses Bluetooth mic while connected), and reports fixed-length
- * segment files — identical contract to MockDeviceSource.
+ * segment files. This is the only source the app uses; tests drive the capture
+ * loop with fakes behind the same DeviceVideoSource contract.
  *
  * Requires one-time registration with the Meta AI app (Settings → “Connect
  * Meta glasses”) and Developer Mode in Meta AI during the developer preview.
@@ -26,12 +28,8 @@ export class MWDATSource implements DeviceVideoSource {
 
   private subscriptions: EmitterSubscription[] = [];
 
+  /** Rejects with the platform's own reason when the native bridge is missing. */
   async prepare(): Promise<void> {
-    if (!mwdatAvailable()) {
-      throw new Error(
-        'Meta glasses support is iOS-only for now. Switch the device to "Mock (phone camera)" in Settings.',
-      );
-    }
     await MWDATNative.prepare();
   }
 
@@ -39,10 +37,9 @@ export class MWDATSource implements DeviceVideoSource {
     onSegment: (segment: Segment) => void,
     onError: (e: Error) => void,
   ): Promise<void> {
-    // Re-arming from the error state calls start() again without a stop().
-    // Without this the previous arm's listeners stayed attached, every segment
-    // was delivered once per arm, and the ring buffer — and the clips stitched
-    // from it — held the same footage twice.
+    // Re-arming from the error state calls start() again without stop(); drop
+    // the previous listeners so each segment is delivered exactly once (twice
+    // would put the same footage in the buffer, and in the clip, twice).
     this.clearSubscriptions();
     const emitter = mwdatEvents();
     const subscriptions = [
@@ -87,13 +84,16 @@ export class MWDATSource implements DeviceVideoSource {
   async stop(): Promise<void> {
     this.clearSubscriptions();
     try {
-      // Soft stop: drop the rolling-buffer writer but keep the glasses stream.
-      // A full session teardown here is what made the glasses play their stop
-      // chime and refuse to re-arm when Live remounted or React cleaned up.
+      // Soft stop: detach the segment writer but keep the glasses stream, so a
+      // re-arm does not renegotiate the link (which plays the glasses' stop and
+      // start chimes).
       await MWDATNative.stopRecording();
     } catch {
       // native side already torn down
     }
+    // The stream is kept for a quick re-arm, but only while a screen still
+    // holds it.
+    closeGlassesIfUnleased();
   }
 
   private clearSubscriptions(): void {

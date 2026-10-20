@@ -4,17 +4,14 @@ import type { CaptionStyleKey } from './captionStyles';
 import { DEFAULT_CAPTION_STYLE } from './captionStyles';
 
 /**
- * Dev stand-in for the external captioning infra. Copies the clip untouched
- * after a delay so the Pro pipeline (clip → caption → publish) can be
- * exercised with no vendor. The real provider is external infra plugged in
- * behind CaptioningProvider — never hardcoded here.
- *
- * `burnsCaptions` is false: nothing is drawn on these frames, and the library
- * labels them as mock rather than showing a captions badge that isn't true.
+ * Dev stand-in captioner (dev builds only; see captioner.ts). Copies the clip
+ * untouched after a delay so the Pro pipeline (clip → caption → publish) can
+ * be exercised with no captioning engine. Its name, 'mock', is recorded on
+ * the clip, and the library labels those clips as mock rather than showing a
+ * captions badge that isn't true.
  */
 export class MockCaptioningProvider implements CaptioningProvider {
   readonly name = 'mock';
-  readonly burnsCaptions = false;
 
   async caption(
     clipFilePath: string,
@@ -26,6 +23,10 @@ export class MockCaptioningProvider implements CaptioningProvider {
       /\.mp4$/,
       `.captioned.${style}.mp4`,
     );
+    // copyFile will not overwrite on iOS; a same-style re-run (Recaption, or
+    // a job resumed after the app was killed mid-copy) must replace the old
+    // copy rather than fail on it.
+    await RNFS.unlink(captionedFilePath).catch(() => {});
     await RNFS.copyFile(clipFilePath, captionedFilePath);
     return { captionedFilePath };
   }

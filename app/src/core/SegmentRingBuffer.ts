@@ -11,14 +11,9 @@ export class SegmentRingBuffer {
   private pinnedFrom: number | null = null;
 
   constructor(
-    private windowSeconds: number,
-    private onEvict: (segment: Segment) => void,
+    private readonly windowSeconds: number,
+    private readonly onEvict: (segment: Segment) => void,
   ) {}
-
-  setWindowSeconds(seconds: number): void {
-    this.windowSeconds = seconds;
-    this.evict();
-  }
 
   push(segment: Segment): void {
     this.segments.push(segment);

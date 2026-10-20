@@ -29,7 +29,7 @@ export interface PublishOptions {
  * Settings → Connections lights a connector up immediately.
  */
 export class PublishService {
-  // The mock target keeps state (fake job ids), so it persists across builds.
+  // The mock target keeps state (fake job ids), so it outlives listTargets().
   private mockTarget = new MockPublishTarget();
 
   async listTargets(): Promise<PublishTarget[]> {
@@ -67,6 +67,8 @@ export class PublishService {
 
     let filePath = clip.filePath;
     if (options.withCaptions) {
+      // hasBurnedCaptions implies captionedFilePath is set. Anything else,
+      // a mock copy included, is resolved by the queue.
       filePath = hasBurnedCaptions(clip)
         ? clip.captionedFilePath!
         : await captionedCut(clip.id);
@@ -101,8 +103,11 @@ export class PublishService {
  */
 async function captionedCut(clipId: string): Promise<string> {
   const clip = await captionQueue.captionNow(clipId);
-  if (clip?.captionState !== 'ready' || !clip.captionedFilePath) {
-    throw new Error(clip?.captionError ?? 'Captioning did not finish.');
+  if (!clip) {
+    throw new Error('The clip was deleted before captioning finished.');
+  }
+  if (clip.captionState !== 'ready' || !clip.captionedFilePath) {
+    throw new Error(clip.captionError ?? 'Captioning did not finish.');
   }
   return clip.captionedFilePath;
 }

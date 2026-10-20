@@ -41,8 +41,6 @@ function findPhraseEndSec(words: TranscriptWord[]): number | null {
  * Android: continuous mic recognition with transcript events.
  */
 export class SpeechWakeWord implements WakeWordProvider {
-  readonly name = 'speech';
-
   private onDetected: ((detection?: WakeDetection) => void) | null = null;
   private lastFiredAt = 0;
   private subscription: { remove: () => void } | null = null;
@@ -119,8 +117,8 @@ export class SpeechWakeWord implements WakeWordProvider {
     this.lastFiredAt = now;
 
     // Android recognizes live from the mic and reports a bare transcript, so
-    // there is no segment and no timing to hand back — the clip just ends at
-    // the buffer boundary as before.
+    // there is no segment and no timing to hand back — the clip ends at the
+    // buffer boundary. The same applies when the recognizer gave no timings.
     const endOffsetSec = words ? findPhraseEndSec(words) : null;
     if (segmentPath === undefined || endOffsetSec === null) {
       this.onDetected();

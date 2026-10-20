@@ -156,17 +156,4 @@ describe('SegmentRingBuffer', () => {
     expect(buf.flushEndingAt('/tmp/seg_99.mp4')).toEqual([]);
     expect(buf.size).toBe(2);
   });
-
-  it('shrinking the window evicts immediately', () => {
-    const evicted: Segment[] = [];
-    const buf = new SegmentRingBuffer(90, s => evicted.push(s));
-    for (let i = 0; i < 8; i++) {
-      buf.push(seg(i)); // 40s buffered, window 90 → nothing evicted
-    }
-    expect(evicted).toHaveLength(0);
-
-    buf.setWindowSeconds(10);
-    expect(buf.totalBufferedSeconds).toBeLessThanOrEqual(15);
-    expect(evicted.length).toBeGreaterThan(0);
-  });
 });

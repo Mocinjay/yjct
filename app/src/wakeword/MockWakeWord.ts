@@ -5,8 +5,6 @@ import type { WakeDetection, WakeWordProvider } from './WakeWordProvider';
  * wired to `fire()`. Lets the whole capture loop run with no microphone.
  */
 export class MockWakeWord implements WakeWordProvider {
-  readonly name = 'mock';
-
   private onDetected: ((detection?: WakeDetection) => void) | null = null;
 
   async start(onDetected: (detection?: WakeDetection) => void): Promise<void> {

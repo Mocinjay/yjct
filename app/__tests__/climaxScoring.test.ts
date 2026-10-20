@@ -10,7 +10,6 @@ import {
   rankHooks,
   resolveWeights,
   speechFeatures,
-  weightsWithoutSpeech,
   windowMeans,
   wordsBetween,
 } from '../src/phase2/climaxScoring';
@@ -99,37 +98,36 @@ describe('weights', () => {
   });
 
   it('redistributes speech proportionally when there is none', () => {
-    const w = weightsWithoutSpeech(DEFAULT_SCORING.weights);
+    const w = resolveWeights(DEFAULT_SCORING.weights, {
+      audio: true,
+      visual: true,
+      speech: false,
+    });
     expect(w.speech).toBe(0);
     expect(w.audio + w.visual + w.novelty).toBeCloseTo(1, 9);
     // Proportions between the survivors are preserved.
     expect(w.audio / w.visual).toBeCloseTo(0.35 / 0.25, 9);
+    // The same numbers as the Python `without_speech`: each survivor's share
+    // of what remains once speech is dropped.
+    expect(w.audio).toBeCloseTo(0.35 / 0.75, 12);
+    expect(w.visual).toBeCloseTo(0.25 / 0.75, 12);
+    expect(w.novelty).toBeCloseTo(0.15 / 0.75, 12);
   });
 
   it('rejects weights that cannot carry the redistribution', () => {
     expect(() =>
-      weightsWithoutSpeech({ audio: 0, visual: 0, speech: 1, novelty: 0 }),
+      resolveWeights(
+        { audio: 0, visual: 0, speech: 1, novelty: 0 },
+        { audio: true, visual: true, speech: false },
+      ),
     ).toThrow();
     expect(() =>
       normaliseWeights({ audio: 0, visual: 0, speech: 0, novelty: 0 }),
     ).toThrow();
   });
 
-  it('resolveWeights matches weightsWithoutSpeech for the speech case', () => {
-    const general = resolveWeights(DEFAULT_SCORING.weights, {
-      audio: true,
-      visual: true,
-      speech: false,
-    });
-    const specific = weightsWithoutSpeech(DEFAULT_SCORING.weights);
-    expect(general.audio).toBeCloseTo(specific.audio, 12);
-    expect(general.visual).toBeCloseTo(specific.visual, 12);
-    expect(general.novelty).toBeCloseTo(specific.novelty, 12);
-    expect(general.speech).toBe(0);
-  });
-
   it('carries a video-only clip on visual and novelty alone', () => {
-    // Glasses capture is routinely video-only, so this is a normal clip.
+    // A clip with no mic track is scored from what exists.
     const w = resolveWeights(DEFAULT_SCORING.weights, {
       audio: false,
       visual: true,

@@ -53,6 +53,8 @@ export class FacebookPublishTarget implements PublishTarget {
       file_url: clip.hostedUrl,
       description: caption,
       title: clip.title,
+      // A Page video is published or it is not; there is no "unlisted". It
+      // goes out public, and checkStatus reports that so the UI can say so.
       published: privacy === 'private' ? 'false' : 'true',
       access_token: this.auth.pageAccessToken!,
     };
@@ -71,15 +73,37 @@ export class FacebookPublishTarget implements PublishTarget {
   async checkStatus(publishId: string): Promise<PublishStatus> {
     try {
       const res = await fetch(
-        `${GRAPH_READ}/${publishId}?fields=status,permalink_url&access_token=${this.auth.pageAccessToken}`,
+        `${GRAPH_READ}/${publishId}?fields=status,published,permalink_url&access_token=${this.auth.pageAccessToken}`,
       );
       const json = await res.json();
       if (!res.ok || json.error) {
         throw new Error(json.error?.message ?? `HTTP ${res.status}`);
       }
+      // video_status is ready | processing | expired | error. Only
+      // 'processing' may keep the publish screen polling; the other three are
+      // final.
       const videoStatus = json.status?.video_status as string | undefined;
       return {
-        state: videoStatus === 'ready' ? 'published' : 'processing',
+        state:
+          videoStatus === 'ready'
+            ? 'published'
+            : videoStatus === 'error' || videoStatus === 'expired'
+              ? 'failed'
+              : 'processing',
+        // Unknown when Graph leaves `published` out; never guess, or a
+        // private post could be reported as public.
+        actualPrivacy:
+          typeof json.published === 'boolean'
+            ? json.published
+              ? 'public'
+              : 'private'
+            : undefined,
+        error:
+          videoStatus === 'error'
+            ? 'Facebook could not process the video.'
+            : videoStatus === 'expired'
+              ? 'Facebook expired the upload before it was processed.'
+              : undefined,
         url: json.permalink_url
           ? `https://facebook.com${json.permalink_url}`
           : undefined,

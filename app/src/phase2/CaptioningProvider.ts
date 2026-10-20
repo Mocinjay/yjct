@@ -1,19 +1,19 @@
 import type { CaptionStyleKey } from './captionStyles';
 
 /**
- * PHASE 2 SEAM — interface only.
+ * The captioning seam: clip file in → captioned clip file out.
  *
- * Captioning is external, swappable infra. The contract is the deliverable:
- * clip file in → captioned clip file out. Never hardcode a transcription
- * vendor in the core app.
+ * Implementations are OnDeviceCaptioningProvider (iOS), HttpCaptioningProvider
+ * (server/captioning, or any service with the same contract) and
+ * MockCaptioningProvider (dev builds); `captioner.ts` picks one per job. Never
+ * hardcode a transcription vendor in the core app.
  */
 export interface CaptioningProvider {
-  readonly name: string;
   /**
-   * False for stand-ins that hand the clip back untouched. The library reads
-   * this so a mock run is never badged as really captioned.
+   * Recorded on the clip as `captionProvider`. The library and player treat
+   * 'mock' as "nothing was burned in" and never badge it as captioned.
    */
-  readonly burnsCaptions: boolean;
+  readonly name: string;
 
   /**
    * Burns captions into the given clip and returns the path of the new,

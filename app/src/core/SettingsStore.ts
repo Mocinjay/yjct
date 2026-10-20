@@ -55,10 +55,6 @@ export class SettingsStore {
     if (loaded) {
       await this.applyChimeOffDefault();
     }
-    // Glasses-only: stored 'mock' choices from earlier builds are retired.
-    if (this.cached.deviceKind !== 'mwdat') {
-      this.cached = { ...this.cached, deviceKind: 'mwdat' };
-    }
     // The Porcupine provider is retired; installs that stored it land back
     // on keyless speech recognition.
     const { provider } = this.cached.wakeWord;

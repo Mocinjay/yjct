@@ -3,8 +3,8 @@ import type { DeviceKind, Segment } from '../types';
 /**
  * A source of rolling video segments. Implementations record fixed-length
  * segments back-to-back while armed and hand each finished segment to
- * `onSegment`. The capture pipeline is source-agnostic: the mock (phone
- * camera) and the real glasses (MWDAT) plug in behind this same contract.
+ * `onSegment`. The capture pipeline is source-agnostic: the app plugs in the
+ * Meta glasses (MWDATSource), and tests plug in fakes behind the same contract.
  */
 export interface DeviceVideoSource {
   readonly kind: DeviceKind;
@@ -25,7 +25,11 @@ export interface DeviceVideoSource {
    */
   cut(): Promise<void>;
 
-  /** Stop the loop and close the session. In-flight segment is discarded. */
+  /**
+   * Stop delivering segments; the in-flight segment is discarded. Whether the
+   * device session closes is up to the source: MWDATSource keeps the glasses
+   * stream for a quick re-arm while a screen holds it.
+   */
   stop(): Promise<void>;
 
   /**

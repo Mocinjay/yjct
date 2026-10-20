@@ -61,7 +61,11 @@ export class TikTokPublishTarget implements PublishTarget {
       body: JSON.stringify({
         post_info: {
           title: caption || clip.title,
-          privacy_level: toTikTokPrivacy(privacy),
+          // Unaudited clients may only post SELF_ONLY, and asking for more
+          // can be rejected outright. checkStatus reports it as private.
+          privacy_level: this.auth.auditCleared
+            ? toTikTokPrivacy(privacy)
+            : 'SELF_ONLY',
           disable_duet: false,
           disable_comment: false,
           disable_stitch: false,

@@ -136,9 +136,13 @@ export class YouTubePublishTarget implements PublishTarget {
     if (!item) {
       return { state: 'failed', error: 'Video not found.' };
     }
+    // processingStatus is processing | succeeded | failed | terminated.
     const processing = item.processingDetails?.processingStatus;
+    const failed = processing === 'failed' || processing === 'terminated';
     return {
-      state: processing === 'processing' ? 'processing' : 'published',
+      state:
+        processing === 'processing' ? 'processing' : failed ? 'failed' : 'published',
+      error: failed ? `YouTube could not process the video (${processing}).` : undefined,
       actualPrivacy: (item.status?.privacyStatus as PublishStatus['actualPrivacy']) ?? undefined,
       url: `https://youtube.com/shorts/${publishId}`,
     };

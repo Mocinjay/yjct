@@ -9,11 +9,10 @@ import type { ClipHosting } from './ClipHosting';
  *   →                {uploadUrl, publicUrl}
  *
  * The app PUTs the clip to `uploadUrl` and hands `publicUrl` (CDN-fronted,
- * public HTTPS — required by Instagram/TikTok) to the connector.
+ * public HTTPS — required by Instagram/TikTok) to the connector. Nothing is
+ * deleted app-side; expiring uploads is left to the bucket's lifecycle rules.
  */
 export class PresignedUrlClipHosting implements ClipHosting {
-  readonly name = 'presigned';
-
   constructor(private presignUrl: string) {}
 
   async upload(localFilePath: string): Promise<{ hostedUrl: string }> {
@@ -52,9 +51,5 @@ export class PresignedUrlClipHosting implements ClipHosting {
       throw new Error(`Clip upload failed: HTTP ${upload.statusCode}`);
     }
     return { hostedUrl: publicUrl };
-  }
-
-  async remove(_hostedUrl: string): Promise<void> {
-    // Lifecycle rules on the bucket handle cleanup; nothing to do app-side.
   }
 }

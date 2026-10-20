@@ -5,10 +5,10 @@
  * split, soften, or substitute — "clip so", "clips oh", "clipse o", "calypso".
  * Match it alone or buried in a sentence.
  *
- * The brand is the ONLY trigger. "clip that / it / this / now" used to fire as
- * an alternate, which meant the retired "yo Jarvis, clip that" still worked and
- * — worse — that ordinary shop talk from the exact people this app is for
- * ("somebody clip that", "I want to clip that moment") silently burned a clip.
+ * The brand is the ONLY trigger. Generic phrases ("clip that", "clip it") are
+ * deliberately not matched: creators say them in ordinary conversation
+ * ("somebody clip that", "I want to clip that moment"), and each false hit
+ * burns a clip.
  *
  * Deliberately does NOT fire on bare "clip" / "clips" (too common in video
  * talk) or on "eclipse" (contains "clipse" as a substring).
@@ -17,9 +17,11 @@
 function normalize(transcript: string): string {
   return transcript
     .toLowerCase()
-    // clipso's / clipso’s → clipso (before stripping apostrophes)
-    .replace(/[''`]s\b/g, '')
-    .replace(/[''`]/g, '')
+    // clipso's / clipso’s → clipso (before stripping apostrophes). Straight,
+    // curly and backtick apostrophes are treated alike, so the recognizer's
+    // typography never changes what matches.
+    .replace(/['’`]s\b/g, '')
+    .replace(/['’`]/g, '')
     .replace(/[^a-z0-9\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();

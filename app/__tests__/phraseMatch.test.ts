@@ -9,6 +9,7 @@ describe('matchesWakePhrase', () => {
     'clipsoh',
     'clipso…',
     "clipso's",
+    'Clipso’s',
     // in a sentence
     'yo clipso',
     'hey clipso',
@@ -59,4 +60,13 @@ describe('matchesWakePhrase', () => {
   ])('does not match %j', transcript => {
     expect(matchesWakePhrase(transcript)).toBe(false);
   });
+
+  // Recognizers differ in apostrophe typography; the verdict must not.
+  it.each(["clipso's", "that clip's so good", "i clipso'd that", "don't clipso"])(
+    'treats curly apostrophes like straight ones in %j',
+    transcript => {
+      const curly = transcript.replace(/'/g, '’');
+      expect(matchesWakePhrase(curly)).toBe(matchesWakePhrase(transcript));
+    },
+  );
 });

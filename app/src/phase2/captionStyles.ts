@@ -1,14 +1,15 @@
 import { Platform } from 'react-native';
 
 /**
- * The caption looks the wearer can pick between. The burn-in itself is done
- * server-side — `server/captioning/captions.py` owns the real definitions and
- * is the only thing that decides what lands in the pixels.
+ * The caption looks the wearer can pick between. Each preset carries:
+ *  - `key`: stored on the clip and sent to the HTTP captioner;
+ *  - `preview`: an RN approximation for the Settings picker;
+ *  - `burn`: the exact draw parameters the on-device burner (iOS) uses.
  *
- * What lives here is the key we send and an *approximation* of each look for
- * the Settings preview. Keep the keys in step with CAPTION_STYLES over there;
- * an unknown key is rejected by the service rather than silently swapped, so a
- * drift shows up as a failed job instead of the wrong captions.
+ * `server/captioning/captions.py` defines the same looks for the HTTP path.
+ * Keep keys and values in step; an unknown key is rejected by the service
+ * rather than silently swapped, so drift shows up as a failed job instead of
+ * the wrong captions.
  */
 export type CaptionStyleKey = 'classic' | 'clean' | 'boxed';
 
@@ -16,8 +17,6 @@ export interface CaptionStylePreset {
   key: CaptionStyleKey;
   label: string;
   description: string;
-  /** Whether the style tracks the word currently being spoken. */
-  highlightsSpokenWord: boolean;
   preview: CaptionPreview;
   /** What the on-device burner actually draws. */
   burn: CaptionBurnStyle;
@@ -92,7 +91,6 @@ export const CAPTION_STYLES: CaptionStylePreset[] = [
     label: 'Hormozi',
     description:
       'Big bold uppercase, one to three words, gold on the word being said.',
-    highlightsSpokenWord: true,
     preview: {
       fontFamily: HEAVY,
       fontSize: 22,
@@ -110,8 +108,8 @@ export const CAPTION_STYLES: CaptionStylePreset[] = [
       // to a serif when a family is missing.
       fontName: 'Montserrat-ExtraBold',
       fontScale: 0.065,
-      // A tighter outline than the old style. This one is measured against
-      // Montserrat's thick stems, where 7.5% closed up the counters.
+      // Tuned to Montserrat's thick stems: a heavier outline (7.5%) closes up
+      // the counters.
       outlineScale: 0.06,
       shadowScale: 0.03,
       marginVScale: 0.18,
@@ -136,7 +134,6 @@ export const CAPTION_STYLES: CaptionStylePreset[] = [
     key: 'clean',
     label: 'Clean',
     description: 'Plain white sentence case. Readable, no shouting.',
-    highlightsSpokenWord: false,
     preview: {
       fontFamily: PLAIN,
       fontSize: 16,
@@ -171,7 +168,6 @@ export const CAPTION_STYLES: CaptionStylePreset[] = [
     key: 'boxed',
     label: 'Boxed',
     description: 'Uppercase in a solid black bar, gold on the live word.',
-    highlightsSpokenWord: true,
     preview: {
       fontFamily: PLAIN,
       fontSize: 18,

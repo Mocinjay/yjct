@@ -1,5 +1,8 @@
+import fixture from './fixtures/climax-parity.json';
+import { planEdit } from '../src/phase2/OnDeviceCaptioningProvider';
 import { captionStylePreset } from '../src/phase2/captionStyles';
 import type { TimedWord } from '../src/phase2/captionTimeline';
+import { buildCaptionCues } from '../src/phase2/captionTimeline';
 import {
   TRANSITION_SECONDS,
   buildClimaxCaptionCues,
@@ -7,6 +10,21 @@ import {
   outputDuration,
   planSegments,
 } from '../src/phase2/climaxEdit';
+import type { FeatureGrid } from '../src/phase2/climaxScoring';
+import { findHook } from '../src/phase2/climaxScoring';
+
+/** The native analysis, driven per test: available or not, and what it returns. */
+const mockClimaxEngine = {
+  available: true,
+  extractFeatures: jest.fn<Promise<FeatureGrid>, [string]>(),
+};
+
+jest.mock('../src/native/CaptionEngineNative', () => ({
+  climaxEngineAvailable: () => mockClimaxEngine.available,
+  extractFeatures: (path: string) => mockClimaxEngine.extractFeatures(path),
+  transcribeClip: jest.fn(),
+  renderEdit: jest.fn(),
+}));
 
 const CLASSIC = captionStylePreset('classic').burn;
 
@@ -166,5 +184,70 @@ describe('captions for the finished cut', () => {
     const flatCues = buildClimaxCaptionCues(words, flat, CLASSIC);
     expect(flatCues[0].startSec).toBeCloseTo(0, 9);
     expect(flatCues.length).toBeGreaterThan(0);
+  });
+});
+
+describe('planEdit (the timeline the captioner renders)', () => {
+  const grid: FeatureGrid = {
+    hop: 1 / fixture.gridHz,
+    times: fixture.times,
+    duration: fixture.duration,
+    signals: fixture.signals as Record<string, number[]>,
+  };
+  const words: TimedWord[] = fixture.words;
+  const chronological = buildCaptionCues(words, CLASSIC);
+
+  beforeEach(() => {
+    mockClimaxEngine.available = true;
+    mockClimaxEngine.extractFeatures.mockReset();
+    mockClimaxEngine.extractFeatures.mockResolvedValue(grid);
+  });
+
+  it('is chronological when hook-first is off, without analysing', async () => {
+    const plan = await planEdit('/clip.mp4', words, CLASSIC, false);
+
+    expect(plan).toEqual({ segments: null, cues: chronological });
+    expect(mockClimaxEngine.extractFeatures).not.toHaveBeenCalled();
+  });
+
+  it('is chronological when the analysis engine is unavailable', async () => {
+    mockClimaxEngine.available = false;
+
+    const plan = await planEdit('/clip.mp4', words, CLASSIC, true);
+
+    expect(plan).toEqual({ segments: null, cues: chronological });
+    expect(mockClimaxEngine.extractFeatures).not.toHaveBeenCalled();
+  });
+
+  it('puts the strongest moment first when the analysis succeeds', async () => {
+    const lines: string[] = [];
+
+    const plan = await planEdit('/clip.mp4', words, CLASSIC, true, line =>
+      lines.push(line),
+    );
+
+    const hook = findHook(grid, words);
+    const segments = planSegments({
+      hookStart: hook.start,
+      hookEnd: hook.end,
+      sourceDuration: grid.duration,
+    });
+    expect(plan.segments).toEqual(segments);
+    expect(plan.cues).toEqual(buildClimaxCaptionCues(words, segments, CLASSIC));
+    expect(lines.map(line => line.split(' ')[0])).toEqual(['Analysed', 'Hook', 'Why:']);
+  });
+
+  it('still captions, chronologically, when the analysis fails', async () => {
+    mockClimaxEngine.extractFeatures.mockRejectedValue(new Error('no video track'));
+    const lines: string[] = [];
+
+    const plan = await planEdit('/clip.mp4', words, CLASSIC, true, line =>
+      lines.push(line),
+    );
+
+    expect(plan).toEqual({ segments: null, cues: chronological });
+    expect(lines).toEqual([
+      'Analysis failed, captioning chronologically: no video track',
+    ]);
   });
 });
