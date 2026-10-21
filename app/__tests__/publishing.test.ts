@@ -349,6 +349,15 @@ describe('Facebook status', () => {
     respond({ status: { video_status: 'ready' } });
     expect((await facebook.checkStatus('v1')).actualPrivacy).toBeUndefined();
   });
+
+  it('reports no visibility while the video is still processing', async () => {
+    // The post is only published once processing ends.
+    respond({ status: { video_status: 'processing' }, published: false });
+    const status = await facebook.checkStatus('v1');
+
+    expect(status.state).toBe('processing');
+    expect(status.actualPrivacy).toBeUndefined();
+  });
 });
 
 describe('TikTok privacy', () => {

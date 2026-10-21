@@ -90,10 +90,12 @@ export class FacebookPublishTarget implements PublishTarget {
             : videoStatus === 'error' || videoStatus === 'expired'
               ? 'failed'
               : 'processing',
-        // Unknown when Graph leaves `published` out; never guess, or a
-        // private post could be reported as public.
+        // Reported only once the video is ready: a Page video's post is
+        // normally published when processing finishes, so `published` reads
+        // false until then. Unknown when Graph leaves it out; never guess, or
+        // a private post could be reported as public.
         actualPrivacy:
-          typeof json.published === 'boolean'
+          videoStatus === 'ready' && typeof json.published === 'boolean'
             ? json.published
               ? 'public'
               : 'private'
