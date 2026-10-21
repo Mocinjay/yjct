@@ -194,8 +194,8 @@ class Rendering(unittest.TestCase):
         portrait = build_ass(chunks, CLASSIC, 1080, 1920)
         landscape = build_ass(chunks, CLASSIC, 1920, 1080)
         self.assertIn("PlayResY: 1080", landscape)
-        self.assertIn(f"Arial Black,{round(1920 * CLASSIC.font_scale)}", portrait)
-        self.assertIn(f"Arial Black,{round(1080 * CLASSIC.font_scale)}", landscape)
+        self.assertIn(f"{CLASSIC.font},{round(1920 * CLASSIC.font_scale)}", portrait)
+        self.assertIn(f"{CLASSIC.font},{round(1080 * CLASSIC.font_scale)}", landscape)
 
     def test_each_style_writes_its_own_dialogue_lines(self):
         for style in CAPTION_STYLES.values():
