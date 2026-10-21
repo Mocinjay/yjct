@@ -60,7 +60,7 @@ jest.mock('../src/services/capture', () => ({
 }));
 
 import React from 'react';
-import { AppState, Text } from 'react-native';
+import { AppState, StyleSheet, Text } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ArmedScreen } from '../src/ui/screens/ArmedScreen';
 
@@ -239,6 +239,31 @@ describe('ArmedScreen', () => {
       mockEmit({ ...mockStatus, state: 'error', lastError: 'stalled' });
     });
     expect(retryShown()).toBe(true);
+  });
+
+  it('draws the Clip button disabled whenever it cannot be pressed', async () => {
+    mockArm.mockImplementation(failingArm);
+    renderer = await mount();
+    const r = renderer;
+    const clipButton = () => {
+      let node = r.root.find(n => n.type === Text && n.props.children === 'Clip').parent;
+      while (node && node.props.disabled === undefined) {
+        node = node.parent;
+      }
+      return node!;
+    };
+    const opacity = () =>
+      StyleSheet.flatten(clipButton().props.style({ pressed: false })).opacity;
+
+    // The arm failed: nothing is buffered to clip.
+    expect(clipButton().props.disabled).toBe(true);
+    expect(opacity()).toBeLessThan(1);
+
+    await act(async () => {
+      mockEmit({ state: 'armed', bufferedSeconds: 0, armedSince: 1 });
+    });
+    expect(clipButton().props.disabled).toBe(false);
+    expect(opacity()).toBeUndefined();
   });
 
   it('disarms on blur only once a recording ends, and re-arms on refocus', async () => {

@@ -290,6 +290,8 @@ export function ArmedScreen({ navigation }: Props) {
   const live = status.state === 'armed';
   const recording = status.state === 'recording';
   const saving = status.state === 'saving';
+  // Clip saves the look-back, so it needs a live buffer; Stop needs a recording.
+  const primaryDisabled = saving || (!live && !recording);
   const recordingSecs = status.recordingSince
     ? Math.max(0, Math.round((now - status.recordingSince) / 1000))
     : 0;
@@ -416,12 +418,12 @@ export function ArmedScreen({ navigation }: Props) {
                   ? () => session.mockWakeWord?.fire()
                   : clipNow
             }
-            disabled={saving || (!live && !recording)}
+            disabled={primaryDisabled}
             style={({ pressed }) => [
               styles.primaryBtn,
               recording && styles.primaryBtnStop,
               pressed && styles.pressed,
-              saving && styles.dimmed,
+              primaryDisabled && styles.dimmed,
             ]}>
             <Text style={styles.primaryLabel}>
               {saving ? 'Saving…' : recording ? 'Stop' : 'Clip'}
