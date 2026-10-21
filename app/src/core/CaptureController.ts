@@ -175,17 +175,21 @@ export class CaptureController {
     // await so nothing can flush or clear it in between.
     const interrupted =
       this.buffer.isPinned && !this.saving ? this.buffer.flushFromPin() : [];
-    if (interrupted.length > 0) {
-      this.saving = true;
-    }
     await this.wakeWord.stop().catch(() => {});
     await this.source.stop().catch(() => {});
-    this.buffer.clear();
+    // A stopClip still waiting on its cut owns the pinned recording: stopping
+    // the source settles that cut, and stopClip flushes from the pin next.
+    if (!(this.saving && this.buffer.isPinned)) {
+      this.buffer.clear();
+    }
     this.armedSince = null;
     this.setStatus({ state: 'idle', bufferedSeconds: 0 });
     if (interrupted.length > 0) {
       // Not awaited: a failed arm reports its error without waiting on a
-      // stitch. The state is left alone; only the clip is reported.
+      // stitch. The state is left alone; only the clip is reported. `saving`
+      // stays clear: these segments have already left the buffer, so a
+      // re-armed session cannot touch them, and blocking its triggers until
+      // a long stitch finishes would drop the wearer's next clip.
       this.saveClip(interrupted)
         .then(clip =>
           this.setStatus({
@@ -194,10 +198,7 @@ export class CaptureController {
             sessionClipCount: this.sessionClipCount,
           }),
         )
-        .catch(err => this.setStatus({ ...this.status, lastError: errorMessage(err) }))
-        .finally(() => {
-          this.saving = false;
-        });
+        .catch(err => this.setStatus({ ...this.status, lastError: errorMessage(err) }));
     }
   }
 
@@ -342,7 +343,11 @@ export class CaptureController {
     this.clearMaxRecordingTimer();
     this.setStatus({ ...this.status, state: 'saving' });
     try {
-      await this.source.cut();
+      // A failed cut loses only the in-flight segment. The flush below must
+      // still run: a disarm during the cut leaves the pinned recording to
+      // this call, and a buffer left pinned would make the next arm() resume
+      // a recording that no longer exists.
+      await this.source.cut().catch(() => {});
       const segments = this.buffer.flushFromPin();
       if (segments.length === 0) {
         throw new Error('Nothing recorded — buffer was empty.');

@@ -574,6 +574,111 @@ describe('interrupted extended recording', () => {
     expect(last!.state).toBe('idle');
     expect(last!.lastClip).toBeDefined();
   });
+
+  it('a re-arm while an interrupted recording stitches still clips on the wake word', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10, false);
+    const finishStitch = holdNextStitch();
+
+    await controller.arm();
+    source.emit();
+    controller.startClip();
+    source.emit();
+    await controller.disarm();
+    await controller.arm();
+    source.emit();
+    source.emit();
+
+    try {
+      expect(await controller.captureNow()).not.toBeNull();
+      finishStitch();
+      await settle();
+      await settle();
+      // The interrupted recording and the new clip.
+      expect(mockStitch).toHaveBeenCalledTimes(2);
+      expect(await clipStore.list()).toHaveLength(2);
+    } finally {
+      finishStitch();
+      await controller.disarm();
+    }
+  });
+
+  it('is saved when the capture screen goes away while the stop waits on its cut', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10, false);
+    let last: CaptureStatus | null = null;
+    controller.subscribe(s => {
+      last = s;
+    });
+
+    await controller.arm();
+    source.emit();
+    source.emit();
+    controller.startClip();
+    const recorded = [source.emit(), source.emit(), source.emit()];
+    // The writer waits for a keyframe before it ends the segment.
+    const realCut = source.cut.bind(source);
+    let releaseCut: () => void = () => {};
+    source.cut = async () => {
+      await new Promise<void>(resolve => {
+        releaseCut = resolve;
+      });
+      await realCut();
+    };
+
+    const stopping = controller.stopClip();
+    await settle();
+    await controller.disarm();
+    releaseCut();
+
+    expect(await stopping).not.toBeNull();
+    expect(mockStitch).toHaveBeenCalledTimes(1);
+    // The pinned look-back and every recorded segment; the in-flight one went
+    // with the stopped source.
+    const [paths] = mockStitch.mock.calls[0];
+    expect(paths).toHaveLength(5);
+    expect(paths.slice(-3)).toEqual(recorded);
+    expect(last!.state).toBe('idle');
+    // Nothing is left pinned for the next session to resume.
+    await controller.arm();
+    expect(last!.state).toBe('armed');
+    await controller.disarm();
+  });
+
+  it('a cut that fails during a disarm leaves nothing pinned for the next arm', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10, false);
+    let last: CaptureStatus | null = null;
+    controller.subscribe(s => {
+      last = s;
+    });
+
+    await controller.arm();
+    source.emit();
+    controller.startClip();
+    const recorded = [source.emit(), source.emit()];
+    let failCut: (e: Error) => void = () => {};
+    source.cut = () =>
+      new Promise<void>((_, reject) => {
+        failCut = reject;
+      });
+
+    const stopping = controller.stopClip();
+    await settle();
+    await controller.disarm();
+    failCut(new Error('writer gone'));
+
+    // Only the in-flight segment is lost.
+    expect(await stopping).not.toBeNull();
+    expect(mockStitch.mock.calls[0][0].slice(-2)).toEqual(recorded);
+    await controller.arm();
+    expect(last!.state).toBe('armed');
+    expect(last!.recordingSince).toBeUndefined();
+    await controller.disarm();
+  });
 });
 
 describe('isCaptureLive', () => {
