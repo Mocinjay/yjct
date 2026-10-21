@@ -58,16 +58,16 @@ export function OnboardingScreen({ navigation }: Props) {
           Bluetooth, to reach your glasses; the microphone, to record sound
           with your clips; and speech recognition, to hear the trigger phrase.
           Access to the glasses' camera is granted in Meta AI. Nothing is kept
-          unless you clip it, and no audio leaves the device.
+          unless you clip it.
         </Text>
       </Card>
 
       <Card style={styles.batteryCard}>
         <Text style={styles.cardTitle}>Real talk about battery</Text>
         <Text style={styles.cardBody}>
-          Recording keeps the camera and mic open continuously and transcribes
-          on-device. Long sessions drain noticeably faster — stop recording
-          when you're not capturing.
+          Recording keeps the camera and mic open continuously and listens for
+          the trigger word. Long sessions drain noticeably faster — stop
+          recording when you're not capturing.
         </Text>
       </Card>
 

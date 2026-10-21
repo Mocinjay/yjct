@@ -178,9 +178,10 @@ export function SettingsScreen({ navigation }: Props) {
         </View>
         {settings.wakeWord.provider === 'speech' ? (
           <Text style={styles.hint}>
-            Uses your phone's own speech recognition — free, on-device, no
-            account, no setup. Detection lands a few seconds after you say
-            “{WAKE_PHRASE}”; the look-back window still contains the moment.
+            Uses Apple's speech recognition — free, no account, no setup. It
+            runs on your iPhone where it can; otherwise Apple transcribes the
+            audio. Detection lands a few seconds after you say “{WAKE_PHRASE}”;
+            the look-back window still contains the moment.
           </Text>
         ) : null}
       </Section>
