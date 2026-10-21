@@ -201,7 +201,7 @@ export function PlayerScreen({ route, navigation }: Props) {
         </Text>
         <Text style={styles.sub}>
           {formatDuration(clip.durationSec)} · {relativeDate(clip.capturedAt)} ·{' '}
-          {clip.sourceKind === 'mock' ? 'phone camera' : 'glasses'}
+          {sourceLabel(clip)}
         </Text>
         <CaptionStatus clip={clip} />
       </View>
@@ -267,6 +267,18 @@ function ScrubBar({ ref }: { ref: React.Ref<ScrubBarHandle> }) {
       />
     </View>
   );
+}
+
+/** Where the footage came from, and at what quality. */
+function sourceLabel(clip: Clip): string {
+  if (clip.sourceKind === 'mock') {
+    return 'sample';
+  }
+  if (clip.quality === 'master') {
+    return 'full resolution, from your glasses';
+  }
+  // A live clip is upgraded in place if the glasses recorded this moment too.
+  return clip.quality === 'proxy' ? 'live stream, 720p' : 'glasses';
 }
 
 /** What is (or isn't) burned into the clip playing above. */

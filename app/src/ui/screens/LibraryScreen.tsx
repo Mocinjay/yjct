@@ -279,7 +279,10 @@ const ClipCard = memo(function ClipCardView({
       />
       <CaptionOverlay clip={clip} />
       <View style={styles.durationChip}>
-        <Text style={styles.durationText}>{formatDuration(clip.durationSec)}</Text>
+        <Text style={styles.durationText}>
+          {clip.quality === 'master' ? 'FULL RES · ' : ''}
+          {formatDuration(clip.durationSec)}
+        </Text>
       </View>
       {remaining !== null && (
         <View style={[styles.expiryChip, remaining < 3600_000 && styles.expiryChipSoon]}>

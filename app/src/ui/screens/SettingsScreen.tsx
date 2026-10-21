@@ -1,6 +1,7 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useEffect, useState } from 'react';
 import {
+  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,6 +13,8 @@ import { FREE_BUFFER_SECONDS_MAX, WAKE_PHRASE } from '../../config';
 import { MWDATNative, mwdatAvailable, mwdatEvents } from '../../native/MWDATNative';
 import { entitlementStore } from '../../core/EntitlementStore';
 import { settingsStore } from '../../core/SettingsStore';
+import { markerStore } from '../../markers/MarkerStore';
+import { glassesImport } from '../../services/glassesImport';
 import type { ConnectorConfig } from '../../phase2/ConnectorConfig';
 import { connectorConfigStore } from '../../phase2/ConnectorConfig';
 import type {
@@ -71,6 +74,8 @@ export function SettingsScreen({ navigation }: Props) {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+      <FullResolution settings={settings} />
+
       <Section title="Look-back length">
         <Text style={styles.hint}>
           How far back the clip reaches when you trigger. Recording continues
@@ -514,6 +519,103 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <Text style={styles.sectionTitle}>{title}</Text>
       {children}
     </View>
+  );
+}
+
+/**
+ * Capture mode, the full-resolution import and why it is not running, if it
+ * is not. The import cuts moments out of the glasses' own 1520x2032 HDR
+ * recordings once Meta AI syncs them (docs/MAX-RESOLUTION.md).
+ */
+function FullResolution({ settings }: { settings: Settings }) {
+  const [blocker, setBlocker] = useState(glassesImport.blockedBecause);
+  const [pending, setPending] = useState<number | null>(null);
+  const [checking, setChecking] = useState(false);
+  const glassesOnly = settings.captureMode === 'glasses';
+  const importing = settings.fullResolution || glassesOnly;
+
+  useEffect(() => {
+    markerStore.all().then(markers => setPending(markers.length)).catch(() => {});
+    const unsubscribeMarkers = markerStore.subscribe(setPending);
+    const unsubscribeImport = glassesImport.subscribe(setBlocker);
+    return () => {
+      unsubscribeMarkers();
+      unsubscribeImport();
+    };
+  }, []);
+
+  const checkNow = () => {
+    setChecking(true);
+    glassesImport
+      .syncNow()
+      .then(count =>
+        Alert.alert(
+          count > 0 ? 'Full resolution' : 'Nothing new yet',
+          count > 0
+            ? `${count} ${count === 1 ? 'clip' : 'clips'} cut from your glasses' own recordings.`
+            : 'No synced glasses recording covers a marked moment yet. Open Meta AI to sync, then check again.',
+        ),
+      )
+      .finally(() => setChecking(false));
+  };
+
+  return (
+    <Section title="Full resolution">
+      <Text style={styles.hint}>
+        The glasses record 1520x2032 HDR to their own storage; the live stream
+        tops out at 720x1280. Clipso cuts the moments you mark out of those
+        recordings once Meta AI syncs them to your photos.
+      </Text>
+      <View style={styles.row}>
+        <Choice
+          label="Live"
+          selected={!glassesOnly}
+          onPress={() => settingsStore.update({ captureMode: 'live' })}
+        />
+        <Choice
+          label="Glasses only"
+          selected={glassesOnly}
+          onPress={() => settingsStore.update({ captureMode: 'glasses' })}
+        />
+      </View>
+      <Text style={styles.hint}>
+        {glassesOnly
+          ? 'Nothing streams. Record on your glasses and say “Clipso”; the full-resolution clip appears after Meta AI syncs.'
+          : 'Streams from the glasses and saves a 720p clip the moment you say “Clipso”. If the glasses were recording too, that clip is replaced by the full-resolution cut once it syncs.'}
+      </Text>
+      {glassesOnly ? null : (
+        <View style={styles.row}>
+          <Choice
+            label="Upgrade to full resolution"
+            selected={settings.fullResolution}
+            onPress={() => settingsStore.update({ fullResolution: true })}
+          />
+          <Choice
+            label="720p only"
+            selected={!settings.fullResolution}
+            onPress={() => settingsStore.update({ fullResolution: false })}
+          />
+        </View>
+      )}
+      {importing && blocker ? <Text style={styles.warning}>{blocker}</Text> : null}
+      {importing && !blocker && pending !== null ? (
+        <Text style={styles.hint}>
+          {pending === 0
+            ? 'No moments waiting for a recording.'
+            : `${pending} marked ${pending === 1 ? 'moment' : 'moments'} waiting for your glasses' recording to sync.`}
+        </Text>
+      ) : null}
+      {importing && !blocker ? (
+        <Pressable
+          style={[styles.choice, checking && styles.choiceBusy]}
+          disabled={checking}
+          onPress={checkNow}>
+          <Text style={styles.choiceText}>
+            {checking ? 'Checking…' : 'Check for synced recordings'}
+          </Text>
+        </Pressable>
+      ) : null}
+    </Section>
   );
 }
 
