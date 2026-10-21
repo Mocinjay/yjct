@@ -258,9 +258,17 @@ export class CaptionQueue {
   }
 }
 
-/** A re-caption in a different style leaves the old burn-in behind. */
+/**
+ * A re-caption in a different style leaves the old burn-in behind. Never the
+ * clip's own source, which a dev test render records as its captioned cut
+ * too (testRender.ts).
+ */
 async function discardPrevious(clip: Clip, nextPath: string): Promise<void> {
-  if (clip.captionedFilePath && clip.captionedFilePath !== nextPath) {
+  if (
+    clip.captionedFilePath &&
+    clip.captionedFilePath !== nextPath &&
+    clip.captionedFilePath !== clip.filePath
+  ) {
     await RNFS.unlink(clip.captionedFilePath).catch(() => {});
   }
 }

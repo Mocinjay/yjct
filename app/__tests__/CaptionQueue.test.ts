@@ -347,6 +347,24 @@ describe('restyling', () => {
     expect(mockFiles.has('/docs/clips/a.captioned.classic.mp4')).toBe(false);
     expect(mockFiles.has('/docs/clips/a.mp4')).toBe(false);
   });
+
+  it('never deletes a source the clip also records as its captioned cut', async () => {
+    // A dev test render is stored this way: its source is already burned in.
+    seed([
+      makeClip('a', {
+        filePath: '/docs/clips/a.rendered.mp4',
+        captionState: 'ready',
+        captionedFilePath: '/docs/clips/a.rendered.mp4',
+      }),
+    ]);
+
+    await captionQueue.retry('a');
+    await drain();
+
+    const clip = await clipById('a');
+    expect(clip.captionedFilePath).toBe('/docs/clips/a.rendered.captioned.classic.mp4');
+    expect(mockFiles.has('/docs/clips/a.rendered.mp4')).toBe(true);
+  });
 });
 
 describe('resuming after the app was killed', () => {
