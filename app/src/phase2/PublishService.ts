@@ -1,4 +1,3 @@
-import { hasBurnedCaptions } from '../core/ClipStore';
 import type { Clip } from '../types';
 import { captionQueue } from './CaptionQueue';
 import type { ClipHosting } from './ClipHosting';
@@ -67,11 +66,12 @@ export class PublishService {
 
     let filePath = clip.filePath;
     if (options.withCaptions) {
-      // hasBurnedCaptions implies captionedFilePath is set. Anything else,
-      // a mock copy included, is resolved by the queue.
-      filePath = hasBurnedCaptions(clip)
-        ? clip.captionedFilePath!
-        : await captionedCut(clip.id);
+      // A finished cut, mock copies included, is reused as is; anything else
+      // is captioned through the queue.
+      filePath =
+        clip.captionState === 'ready' && clip.captionedFilePath
+          ? clip.captionedFilePath
+          : await captionedCut(clip.id);
     }
 
     const hostedUrl = hosting
@@ -99,7 +99,7 @@ export class PublishService {
  * queue may already be rendering this clip into the same output file, it
  * holds renders while the glasses record, and the cut it produces is recorded
  * on the clip: reused next time and deleted with the clip, never orphaned.
- * A clip the queue has already finished (a mock copy, say) comes back as is.
+ * A clip the queue finished since the caller read it comes back as is.
  */
 async function captionedCut(clipId: string): Promise<string> {
   const clip = await captionQueue.captionNow(clipId);

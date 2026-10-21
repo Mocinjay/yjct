@@ -200,6 +200,26 @@ describe('publishing with captions', () => {
     expect(published[0].localFilePath).toBe('/docs/clips/a.captioned.boxed.mp4');
   });
 
+  it('reuses a finished mock copy, even while the glasses record', async () => {
+    seed([
+      makeClip('a', {
+        captionState: 'ready',
+        captionedFilePath: '/docs/clips/a.captioned.classic.mp4',
+        captionProvider: 'mock',
+      }),
+    ]);
+    const { target, published } = fakeTarget();
+    captionQueue.setCaptureActive(true);
+    try {
+      await publishService.publish((await clipById('a'))!, target, OPTIONS);
+    } finally {
+      captionQueue.setCaptureActive(false);
+    }
+
+    expect(mockCaptioner.calls).toHaveLength(0);
+    expect(published[0].localFilePath).toBe('/docs/clips/a.captioned.classic.mp4');
+  });
+
   it('publishes the raw capture when captions are off', async () => {
     seed([makeClip('a')]);
     const { target, published } = fakeTarget();
