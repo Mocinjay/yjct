@@ -89,6 +89,8 @@
 	<string>Clipso buffers video from your camera while recording so saying “Clipso” can save the last moments as a clip.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Clipso finds and streams from your Meta glasses over local Wi-Fi.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Clipso finds the videos your glasses recorded and cuts the moments you marked at full resolution. It never changes or deletes anything in your library.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Clipso records audio with your clips and listens for your trigger word while you record.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

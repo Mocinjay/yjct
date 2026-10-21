@@ -2,14 +2,12 @@
 #import <React/RCTBridgeModule.h>
 #import <UIKit/UIKit.h>
 
-// ASCII-only on purpose: a format string containing non-ASCII is emitted as a
-// UTF-16 CFString, which `strings` cannot see, making it useless as a
-// build-provenance fingerprint when checking whether a device is running
-// current code.
-#define JVSLog(fmt, ...)                                                       \
-  NSLog(@"[ClipStitcher] %s:%d %s: " fmt,                                      \
-        [[@(__FILE__) lastPathComponent] UTF8String], __LINE__, __func__,      \
-        ##__VA_ARGS__)
+#import "CSDiagnostics.h"
+
+// Also written to the diagnostics file: whether a clip was cut by passthrough
+// or re-encoded is the quality question, and it is asked of a device in a
+// pocket with no console attached.
+#define JVSLog(fmt, ...) CSLog(@"ClipStitcher", fmt, ##__VA_ARGS__)
 
 /// A track that exists is not a track that has content. MWDATSegmentWriter adds
 /// its audio input up front and finishes a segment as long as video arrived, so
@@ -53,6 +51,66 @@ static BOOL JVSLoadAssetKeys(AVAsset *asset, NSArray<NSString *> *keys, NSError 
   }
 
   return YES;
+}
+
+/**
+ * What the container says about a video track's codec and colour. A segment
+ * from the live stream is the glasses' HEVC in BT.709; a recording imported
+ * from the photo library is 10-bit HEVC in BT.2020 with an HLG transfer
+ * function. Only the format description tells them apart.
+ *
+ * The strings are `__unsafe_unretained` because a value-returned C struct
+ * cannot own them under ARC. They belong to the track's format description,
+ * so a struct must not outlive the asset it was read from.
+ */
+typedef struct {
+  BOOL isHDR;
+  BOOL isHEVC;
+  NSString *__unsafe_unretained transferFunction;
+} JVSVideoColor;
+
+static JVSVideoColor JVSReadVideoColor(AVAssetTrack *track)
+{
+  JVSVideoColor info = {NO, NO, nil};
+  CMFormatDescriptionRef description =
+      (__bridge CMFormatDescriptionRef)track.formatDescriptions.firstObject;
+  if (description == NULL) {
+    return info;
+  }
+  info.isHEVC = CMFormatDescriptionGetMediaSubType(description) == kCMVideoCodecType_HEVC;
+  info.transferFunction = (__bridge NSString *)CMFormatDescriptionGetExtension(
+      description, kCMFormatDescriptionExtension_TransferFunction);
+  NSString *const hlg =
+      (__bridge NSString *)kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG;
+  NSString *const pq =
+      (__bridge NSString *)kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ;
+  info.isHDR = info.transferFunction != nil &&
+               ([info.transferFunction isEqualToString:hlg] ||
+                [info.transferFunction isEqualToString:pq]);
+  return info;
+}
+
+/// One line describing a written clip: size, codec, colour and bit rate.
+static NSString *JVSDescribeClip(NSString *path)
+{
+  AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:path] options:nil];
+  if (!JVSLoadAssetKeys(asset, @[ @"tracks" ], NULL)) {
+    return @"(unreadable)";
+  }
+  AVAssetTrack *video = [asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
+  if (video == nil) {
+    return @"(no video track)";
+  }
+  JVSVideoColor const color = JVSReadVideoColor(video);
+  CGSize const size = video.naturalSize;
+  unsigned long long const bytes =
+      [[[NSFileManager defaultManager] attributesOfItemAtPath:path error:NULL] fileSize];
+  return [NSString stringWithFormat:@"%.0fx%.0f %@ %@ transfer=%@ rate=%.2fMbps %llu bytes",
+                                    fabs(size.width), fabs(size.height),
+                                    color.isHEVC ? @"hevc" : @"avc",
+                                    color.isHDR ? @"HDR" : @"SDR",
+                                    color.transferFunction ?: @"(untagged)",
+                                    video.estimatedDataRate / 1000000.0, bytes];
 }
 
 @interface ClipStitcher : NSObject <RCTBridgeModule>
@@ -205,7 +263,8 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
     // no re-encode and no quality loss. It cannot join segments whose formats
     // differ (the SDK's ABR ladder can step resolution down mid-session); only
     // then does the transcode fallback run.
-    [self exportPassthrough:composition
+    [self exportComposition:composition
+                     preset:AVAssetExportPresetPassthrough
                  outputPath:outputPath
                  completion:^(BOOL ok, NSError *passthroughError) {
       if (ok) {
@@ -224,24 +283,147 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
 }
 
 /**
- * Copies the composition to `outputPath` without touching the encoded samples.
- * Reports failure rather than rejecting, so the caller can fall back.
+ * Cuts `startSec`...`endSec` out of one recording, without re-encoding.
+ *
+ * The counterpart to `stitch` for footage the phone did not record: a
+ * recording the glasses made themselves arrives whole (minutes of 1520x2032
+ * HEVC in HLG colour) and the moment worth keeping is a window inside it.
+ * Passthrough is the point, not an optimisation: re-encoding would spend a
+ * generation of quality on the one file worth protecting.
+ *
+ * Passthrough cuts on the nearest sync samples, so the cut can start up to one
+ * keyframe interval early; it never loses footage inside the window. Should it
+ * fail, the HEVC preset is tried next, which keeps 10-bit HLG, and only then
+ * the H.264 transcode, which flattens HDR. The log says which one ran.
  */
-- (void)exportPassthrough:(AVComposition *)composition
+RCT_EXPORT_METHOD(extractRange:(NSString *)sourcePath
+                  startSec:(double)startSec
+                  endSec:(double)endSec
+                  outputPath:(NSString *)outputPath
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    if (![[NSFileManager defaultManager] fileExistsAtPath:sourcePath]) {
+      reject(@"source_missing", @"That recording is no longer on disk.", nil);
+      return;
+    }
+    AVURLAsset *asset =
+        [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:sourcePath] options:nil];
+    NSError *loadError = nil;
+    if (!JVSLoadAssetKeys(asset, @[ @"tracks", @"duration" ], &loadError)) {
+      reject(@"source_load", loadError.localizedDescription, loadError);
+      return;
+    }
+
+    double const sourceSec = CMTimeGetSeconds(asset.duration);
+    double const clampedStart = MAX(0.0, MIN(startSec, sourceSec));
+    double const clampedEnd = MAX(clampedStart, MIN(endSec, sourceSec));
+    if (clampedEnd - clampedStart <= 0.0) {
+      reject(@"empty_range",
+             [NSString stringWithFormat:@"Nothing to cut: %.2f-%.2f in a %.2fs recording.",
+                                        startSec, endSec, sourceSec],
+             nil);
+      return;
+    }
+    CMTimeRange const range =
+        CMTimeRangeMake(CMTimeMakeWithSeconds(clampedStart, 600),
+                        CMTimeMakeWithSeconds(clampedEnd - clampedStart, 600));
+
+    AVAssetTrack *srcVideo = [asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
+    if (!JVSTrackHasContent(srcVideo)) {
+      reject(@"no_video", @"That recording has no video track.", nil);
+      return;
+    }
+    AVMutableComposition *composition = [AVMutableComposition composition];
+    AVMutableCompositionTrack *videoTrack =
+        [composition addMutableTrackWithMediaType:AVMediaTypeVideo
+                                 preferredTrackID:kCMPersistentTrackID_Invalid];
+    NSError *insertError = nil;
+    if (![videoTrack insertTimeRange:range ofTrack:srcVideo atTime:kCMTimeZero error:&insertError]) {
+      reject(@"insert_failed", insertError.localizedDescription, insertError);
+      return;
+    }
+    // Carried over rather than assumed upright: the glasses write an identity
+    // transform, but nothing guarantees every model does.
+    videoTrack.preferredTransform = srcVideo.preferredTransform;
+
+    AVAssetTrack *srcAudio = [asset tracksWithMediaType:AVMediaTypeAudio].firstObject;
+    if (JVSTrackHasContent(srcAudio)) {
+      AVMutableCompositionTrack *audioTrack =
+          [composition addMutableTrackWithMediaType:AVMediaTypeAudio
+                                   preferredTrackID:kCMPersistentTrackID_Invalid];
+      if (![audioTrack insertTimeRange:range ofTrack:srcAudio atTime:kCMTimeZero error:&insertError]) {
+        // Audio is worth losing to keep the moment; video is not.
+        JVSLog(@"audio insert failed (%@) - cutting video only",
+               insertError.localizedDescription);
+        [composition removeTrack:audioTrack];
+      }
+    }
+
+    JVSVideoColor const sourceColor = JVSReadVideoColor(srcVideo);
+    CGSize const sourceSize = srcVideo.naturalSize;
+    JVSLog(@"extracting %.2f-%.2fs from a %.2fs recording: %.0fx%.0f %@ %@ transfer=%@",
+           clampedStart, clampedEnd, sourceSec, fabs(sourceSize.width),
+           fabs(sourceSize.height), sourceColor.isHEVC ? @"hevc" : @"avc",
+           sourceColor.isHDR ? @"HDR" : @"SDR",
+           sourceColor.transferFunction ?: @"(untagged)");
+
+    void (^finish)(NSString *) = ^(NSString *how) {
+      JVSLog(@"cut by %@ - WROTE %@: %@", how, outputPath.lastPathComponent,
+             JVSDescribeClip(outputPath));
+      [self finishWithOutputPath:outputPath resolver:resolve rejecter:reject];
+    };
+    [self exportComposition:composition
+                     preset:AVAssetExportPresetPassthrough
+                 outputPath:outputPath
+                 completion:^(BOOL ok, NSError *passthroughError) {
+      if (ok) {
+        finish(@"passthrough");
+        return;
+      }
+      JVSLog(@"PASSTHROUGH FAILED for a single-source cut (%@) - trying the HEVC preset",
+             passthroughError.localizedDescription);
+      [self exportComposition:composition
+                       preset:AVAssetExportPresetHEVCHighestQuality
+                   outputPath:outputPath
+                   completion:^(BOOL hevcOk, NSError *hevcError) {
+        if (hevcOk) {
+          finish(@"HEVC re-encode");
+          return;
+        }
+        JVSLog(@"HEVC preset failed too (%@) - transcoding to H.264, which flattens HDR",
+               hevcError.localizedDescription);
+        [self transcodeComposition:composition
+                        outputPath:outputPath
+                          resolver:resolve
+                          rejecter:reject];
+      }];
+    }];
+  });
+}
+
+/**
+ * Exports the composition with one preset (passthrough copies the encoded
+ * samples untouched). Reports failure rather than rejecting, so the caller can
+ * fall back.
+ */
+- (void)exportComposition:(AVComposition *)composition
+                   preset:(NSString *)preset
                outputPath:(NSString *)outputPath
                completion:(void (^)(BOOL ok, NSError *error))completion
 {
   [[NSFileManager defaultManager] removeItemAtPath:outputPath error:nil];
 
   AVAssetExportSession *export =
-      [[AVAssetExportSession alloc] initWithAsset:composition
-                                       presetName:AVAssetExportPresetPassthrough];
+      [[AVAssetExportSession alloc] initWithAsset:composition presetName:preset];
   if (export == nil) {
     completion(NO, [NSError errorWithDomain:@"ClipStitcher"
                                        code:2
                                    userInfo:@{
-                                     NSLocalizedDescriptionKey :
-                                         @"Could not create a passthrough export session."
+                                     NSLocalizedDescriptionKey : [NSString
+                                         stringWithFormat:@"Could not create a %@ export session.",
+                                                          preset]
                                    }]);
     return;
   }

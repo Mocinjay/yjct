@@ -173,6 +173,8 @@ final class MWDATBridge: RCTEventEmitter {
   private static let maxRecoveryAttempts = 3
   private var healthTimer: DispatchSourceTimer?
   private let healthQueue = DispatchQueue(label: "com.mocinjay.clipso.mwdat.health")
+  /// What the stream did second by second, for `getStreamTimeline`.
+  private let timeline = MWDATStreamTimeline()
   /// Delivered fps over the stream's first seconds, to judge the requested
   /// resolution (see `judgeResolution`). healthQueue only.
   private var fpsSamples: [Double] = []
@@ -743,6 +745,17 @@ final class MWDATBridge: RCTEventEmitter {
   ///
   /// Resolves whether the capture was actually issued, so JS can tell "the
   /// glasses chimed" from "there was no live stream to chime on".
+  /// The stream timeline, oldest first. Read by the full-resolution import to
+  /// score whether the live stream survived while the glasses recorded on
+  /// their own (src/markers/streamConcurrency.ts).
+  @objc(getStreamTimeline:reject:)
+  func getStreamTimeline(
+    _ resolve: @escaping RCTPromiseResolveBlock,
+    reject _: @escaping RCTPromiseRejectBlock
+  ) {
+    resolve(["entries": timeline.snapshot()])
+  }
+
   @objc(chime:reject:)
   func chime(
     _ resolve: @escaping RCTPromiseResolveBlock,
@@ -1001,6 +1014,7 @@ final class MWDATBridge: RCTEventEmitter {
       newStream.statePublisher.listen { [weak self, weak newStream] state in
         guard let self else { return }
         Self.log("stream state → \(state) (hasLeftStopped=\(self.streamHasLeftStopped), stopping=\(self.stopping))")
+        self.timeline.record(kind: "state", detail: String(describing: state))
         self.sendEvent(withName: Event.streamState, body: ["state": String(describing: state)])
         if state != .stopped {
           self.streamHasLeftStopped = true
@@ -1036,6 +1050,7 @@ final class MWDATBridge: RCTEventEmitter {
         // must not read as a dead stream: that aborts arming and puts the
         // capture screen into its error state.
         if error == .photoCaptureFailed { return }
+        self?.timeline.record(kind: "error", detail: error.description)
         self?.lastStreamError = error
         self?.sendEvent(withName: Event.error, body: ["message": error.description])
       }
@@ -1131,6 +1146,7 @@ final class MWDATBridge: RCTEventEmitter {
       let fps = Double(max(0, delivered)) / elapsed
       self.frameCountAtLastHealth = self.frameCount
       self.lastHealthAt = now
+      self.timeline.record(kind: "fps", detail: "", fps: fps)
 
       let sinceFrame = now - self.lastFrameAt
       // Only GlassesPreview listens, and only while it is showing the feed.
@@ -1174,6 +1190,7 @@ final class MWDATBridge: RCTEventEmitter {
           // Main-actor state; the recovery loop reads it there.
           DispatchQueue.main.async { [weak self] in self?.recoveryAttempts = 0 }
           Self.log("frames RESUMED after stall")
+          self.timeline.record(kind: "recovered", detail: "frames resumed")
           self.sendEvent(
             withName: Event.streamState,
             body: ["state": "streaming", "reason": "recovered"]
@@ -1189,6 +1206,7 @@ final class MWDATBridge: RCTEventEmitter {
       // the next open must rebuild the pipeline instead of trusting the SDK.
       self.pipelineStalled = true
       Self.log(String(format: "STALL — no glasses frame for %.1fs", sinceFrame))
+      self.timeline.record(kind: "stalled", detail: String(format: "%.1fs without a frame", sinceFrame))
       self.sendEvent(
         withName: Event.error,
         body: [
@@ -1631,6 +1649,52 @@ final class MWDATBridge: RCTEventEmitter {
       await signal.value
     }
     return outcome ?? .timedOut
+  }
+}
+
+/// A rolling record of what the live stream did, second by second.
+///
+/// It answers one question the SDK cannot: can the glasses serve the stream
+/// and record natively to their own storage at the same time? MWDAT is never
+/// told that the wearer pressed capture, so the answer is found afterwards.
+/// The native recording reaches the photo library carrying its capture time,
+/// and the import scores this record over that window
+/// (src/markers/streamConcurrency.ts). In memory only: the question is asked
+/// within one session, and the diagnostics file holds the same events as text.
+final class MWDATStreamTimeline {
+  /// About 34 minutes at one sample a second.
+  private static let capacity = 2048
+
+  struct Entry {
+    let atMs: Double
+    /// `fps` | `state` | `error` | `stalled` | `recovered`
+    let kind: String
+    let detail: String
+    /// Frames per second over the preceding tick; -1 on event entries, which
+    /// are not readings (absent is not zero).
+    let fps: Double
+
+    var payload: [String: Any] {
+      ["atMs": atMs, "kind": kind, "detail": detail, "fps": fps]
+    }
+  }
+
+  private let queue = DispatchQueue(label: "com.mocinjay.clipso.mwdat.timeline")
+  private var entries: [Entry] = []
+
+  func record(kind: String, detail: String, fps: Double = -1) {
+    let atMs = Date().timeIntervalSince1970 * 1000
+    queue.async {
+      self.entries.append(Entry(atMs: atMs, kind: kind, detail: detail, fps: fps))
+      if self.entries.count > Self.capacity {
+        self.entries.removeFirst(self.entries.count - Self.capacity)
+      }
+    }
+  }
+
+  /// Oldest first, the order the JS scorer expects.
+  func snapshot() -> [[String: Any]] {
+    queue.sync { entries.map(\.payload) }
   }
 }
 
