@@ -49,8 +49,9 @@ export interface Clip {
 }
 
 /**
- * What recorded a clip. Only 'mwdat' (Meta glasses) is recorded now; 'mock'
- * remains for clips captured by the phone-camera stand-in of earlier builds.
+ * What recorded a clip. Glasses captures are 'mwdat'. 'mock' is recorded by
+ * the dev test render (phase2/testRender.ts) and remains on phone-camera clips
+ * from earlier builds.
  */
 export type DeviceKind = 'mock' | 'mwdat';
 

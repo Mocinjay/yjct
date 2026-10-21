@@ -141,8 +141,9 @@ continuously. Onboarding says so before the wearer ever arms.
   live** (`setCaptureActive`, driven by `services/capture.ts`): a caption
   export competes with live capture for the media hardware, which cost
   captured frames. Clips caption once the wearer disarms. Every render goes
-  through the queue, publishing included (`captionNow`), because all
-  captioners write `<clip>.captioned.<style>.mp4` and a second render would
+  through the queue, publishing included (`captionNow`), because every
+  captioner derives its output path from the clip and the current settings
+  (`<clip>.captioned.[hook.]<style>.mp4`) and a second render would delete or
   overwrite the first.
 - **`getCaptioner()`** (`phase2/captioner.ts`) picks the captioner per job:
   1. `OnDeviceCaptioningProvider` (iOS): Apple Speech with on-device

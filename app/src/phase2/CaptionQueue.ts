@@ -27,9 +27,10 @@ import { getCaptioner } from './captioner';
  * wearer disarms. A job already running when capture starts finishes.
  *
  * Every caption render goes through this queue, publishing included
- * (`captionNow`): all providers write `<clip>.captioned.<style>.mp4`, so a
- * second render of the same clip outside the queue would delete or overwrite
- * the file this one records.
+ * (`captionNow`): every provider derives the output path from the clip and the
+ * current settings (`<clip>.captioned.[hook.]<style>.mp4`), so a second render
+ * of the same clip outside the queue would delete or overwrite the file this
+ * one records.
  */
 export class CaptionQueue {
   private pending: string[] = [];
