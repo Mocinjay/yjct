@@ -180,6 +180,15 @@ describe('glassesImport syncWithSettings', () => {
     mockSettings.glassesLibraryImport = false;
     await service.syncWithSettings();
 
-    expect(service.blockedBecause).toBeNull();
+    // Master-only product keeps Path B armed regardless of the legacy toggle;
+    // limited Photos access remains a real blocker until the wearer grants All.
+    const { MASTER_ONLY_CAPTURE } = jest.requireActual('../src/config') as {
+      MASTER_ONLY_CAPTURE: boolean;
+    };
+    if (MASTER_ONLY_CAPTURE) {
+      expect(service.blockedBecause).toContain('Selected Photos');
+    } else {
+      expect(service.blockedBecause).toBeNull();
+    }
   });
 });

@@ -4,10 +4,12 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Animated, Easing, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Camera, useCameraDevice } from 'react-native-vision-camera';
+import { MASTER_ONLY_CAPTURE, WAKE_PHRASE } from '../../config';
 import type { CaptureStatus } from '../../core/CaptureController';
 import type { CaptureSession } from '../../services/capture';
 import { useGlassesLease } from '../../device/glassesLease';
 import { LiveActivity } from '../../native/LiveActivity';
+import { glassesImport } from '../../services/glassesImport';
 import { GlassesPreview } from '../GlassesPreview';
 import { RecDot } from '../components';
 import { useCaptureSession } from '../hooks/useCaptureSession';
@@ -16,6 +18,132 @@ import { formatDuration } from '../format';
 import { colors, radius, spacing } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Armed'>;
+
+/**
+ * Master-only live screen: Meta records on the glasses; Clypso only listens
+ * for the wake word and waits for Photos sync. No Bluetooth preview buffer.
+ */
+function MasterOnlyArmedScreen({ navigation }: Props) {
+  const insets = useSafeAreaInsets();
+  const [listening, setListening] = useState(glassesImport.listening);
+  const [blocker, setBlocker] = useState(glassesImport.blockedBecause);
+  const [pendingMarkers, setPendingMarkers] = useState(0);
+  const [lastMarkedAt, setLastMarkedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(Date.now());
+  const startedAt = useRef(Date.now());
+  const prevPending = useRef(0);
+
+  useEffect(() => {
+    const unsub = glassesImport.subscribe(setBlocker);
+    const unsubMarkers = glassesImport.subscribeMarkers(count => {
+      if (count > prevPending.current) {
+        setLastMarkedAt(Date.now());
+      }
+      prevPending.current = count;
+      setPendingMarkers(count);
+    });
+    const tick = setInterval(() => {
+      setListening(glassesImport.listening);
+      setNow(Date.now());
+    }, 1000);
+    return () => {
+      unsub();
+      unsubMarkers();
+      clearInterval(tick);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!listening) {
+      return;
+    }
+    LiveActivity.start('Listening for masters');
+    return () => {
+      LiveActivity.end();
+    };
+  }, [listening]);
+
+  const goLibrary = () => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.navigate('Library');
+    }
+  };
+
+  const liveSecs = Math.max(0, Math.round((now - startedAt.current) / 1000));
+  const live = listening && blocker === null;
+  const markedRecently =
+    lastMarkedAt != null && now - lastMarkedAt < 8000;
+
+  return (
+    <View style={styles.root}>
+      <View style={[styles.topBar, { paddingTop: insets.top + spacing.s }]}>
+        <Pressable
+          onPress={goLibrary}
+          hitSlop={12}
+          style={({ pressed }) => [styles.chromeButton, pressed && styles.pressed]}>
+          <Text style={styles.chromeGlyph}>←</Text>
+          <Text style={styles.chromeLabel}>Library</Text>
+        </Pressable>
+
+        <View style={styles.statusPill}>
+          <RecDot size={8} live={live} />
+          <Text style={styles.statusText}>
+            {live
+              ? `LISTENING · ${formatDuration(liveSecs)}`
+              : blocker
+                ? 'BLOCKED'
+                : 'STANDBY'}
+          </Text>
+        </View>
+
+        <Pressable
+          onPress={() => navigation.navigate('Settings')}
+          hitSlop={12}
+          style={({ pressed }) => [styles.chromeButton, pressed && styles.pressed]}>
+          <Text style={styles.chromeLabel}>Settings</Text>
+        </Pressable>
+      </View>
+
+      <View style={styles.masterBody}>
+        <Text style={styles.masterTitle}>Stay live.{'\n'}Say “{WAKE_PHRASE}”.</Text>
+        <Text style={styles.masterCopy}>
+          Keep recording on the glasses. When you say “{WAKE_PHRASE}”, you’ll
+          hear a snap and a card appears in the library immediately (Shadow
+          Proxy). Stay live; the ≥1080p master fills that card after Meta syncs
+          into Photos — Photos is watched live (insert observer) with a 60s
+          safety poll.
+        </Text>
+        {markedRecently ? (
+          <Text style={styles.masterHit}>
+            Marked · snap heard · waiting for Meta → Photos
+          </Text>
+        ) : null}
+        {pendingMarkers > 0 ? (
+          <Text style={styles.masterHint}>
+            {pendingMarkers} moment{pendingMarkers === 1 ? '' : 's'} waiting for
+            sync
+          </Text>
+        ) : (
+          <Text style={styles.masterHint}>
+            {live
+              ? 'Microphone open · watching Photos'
+              : 'Import service starting… keep the app open'}
+          </Text>
+        )}
+        {blocker ? <Text style={styles.masterWarn}>{blocker}</Text> : null}
+        <Pressable
+          onPress={() => {
+            glassesImport.syncNow().catch(() => undefined);
+          }}
+          style={({ pressed }) => [styles.syncBtn, pressed && styles.pressed]}>
+          <Text style={styles.syncBtnText}>Check Photos now</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
 
 /**
  * The live feed, isolated behind `React.memo`.
@@ -70,8 +198,18 @@ Viewfinder.displayName = 'Viewfinder';
  * Always-on live view: the rolling buffer arms as soon as the session is
  * ready. Voice (“Clypso”) is the primary trigger; the on-screen
  * controls are a quiet clip / extended affordance, not a camera shutter.
+ *
+ * When `MASTER_ONLY_CAPTURE` is on, this screen is mark-only listening — Meta
+ * owns the recording; Clypso never opens a preview buffer.
  */
-export function ArmedScreen({ navigation }: Props) {
+export function ArmedScreen(props: Props) {
+  if (MASTER_ONLY_CAPTURE) {
+    return <MasterOnlyArmedScreen {...props} />;
+  }
+  return <StreamArmedScreen {...props} />;
+}
+
+function StreamArmedScreen({ navigation }: Props) {
   const isFocused = useIsFocused();
   const {
     status,
@@ -493,6 +631,52 @@ const styles = StyleSheet.create({
   },
   primaryBtnStop: { backgroundColor: colors.text },
   primaryLabel: { color: '#fff', fontSize: 17, fontWeight: '800' },
+  masterBody: {
+    flex: 1,
+    paddingHorizontal: spacing.l,
+    paddingTop: spacing.xl,
+    gap: spacing.m,
+  },
+  masterTitle: {
+    color: colors.text,
+    fontSize: 32,
+    fontWeight: '800',
+    lineHeight: 38,
+  },
+  masterCopy: {
+    color: colors.textDim,
+    fontSize: 16,
+    lineHeight: 24,
+  },
+  masterHint: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '600',
+    marginTop: spacing.s,
+  },
+  masterHit: {
+    color: colors.success,
+    fontSize: 15,
+    fontWeight: '800',
+    marginTop: spacing.s,
+  },
+  masterWarn: {
+    color: colors.warning,
+    fontSize: 14,
+    fontWeight: '600',
+    marginTop: spacing.s,
+  },
+  syncBtn: {
+    marginTop: spacing.l,
+    alignSelf: 'flex-start',
+    height: 44,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.m,
+    justifyContent: 'center',
+  },
+  syncBtnText: { color: colors.text, fontSize: 14, fontWeight: '700' },
   elapsed: {
     color: colors.accent,
     fontSize: 18,

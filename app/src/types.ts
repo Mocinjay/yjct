@@ -9,17 +9,42 @@ import type { CaptionStyleKey } from './captions/captionStyles';
  */
 export type CaptionState = 'none' | 'queued' | 'processing' | 'ready' | 'failed';
 
+/**
+ * Shadow Proxy ingest lifecycle.
+ *
+ * MARKED_PENDING — wake word heard; UI card exists; master not in Photos yet.
+ * INGESTING — Photos insert seen / cut running.
+ * MASTER_READY — ≥1080p cut on disk; publish/share allowed.
+ */
+export type ClipIngestState = 'MARKED_PENDING' | 'INGESTING' | 'MASTER_READY';
+
 export interface Clip {
   id: string;
   name: string;
-  /** Absolute path to the clip MP4. */
+  /** Absolute path to the clip MP4. Empty while MARKED_PENDING (no proxy video). */
   filePath: string;
-  /** Absolute path to the poster-frame JPEG. */
+  /** Absolute path to the poster-frame JPEG (often a live-stream still). */
   thumbnailPath: string;
   /** Epoch ms when the trigger fired. */
   capturedAt: number;
   durationSec: number;
   sourceKind: DeviceKind;
+  /**
+   * Shadow Proxy state. Absent on legacy clips → treat as MASTER_READY.
+   */
+  ingestState?: ClipIngestState;
+  /** Marker that created this shadow card — used to promote when the master cuts. */
+  markerId?: string;
+  /**
+   * Identifies the Path A armed session that produced this clip. Used to match
+   * a Bluetooth proxy against a later Path B master of the same moment.
+   */
+  hardwareSessionId?: string;
+  /**
+   * Epoch ms when a Path B master silently replaced this clip's file on disk.
+   * Absent until a successful Hybrid / Shadow promotion.
+   */
+  masterReplacedAt?: number | null;
   /**
    * Epoch ms when the user kept this clip, or null while it is still
    * temporary. Publishing counts as keeping it.
@@ -51,12 +76,11 @@ export interface Clip {
 /**
  * Where a clip's footage came from.
  *
- * `glasses-library` is not a device the app talks to: it is footage the glasses
- * recorded to their own storage, which Meta AI syncs into the photo library and
- * the app imports afterwards. There is no session, no stream and no live
- * connection behind it — only a file and the wall clock.
+ * `glasses-library` — Path B master cut from Photos.
+ * `shadow` — wake-word placeholder until the master lands (Shadow Proxy).
+ * `mwdat` — Path A stream clip (disabled for delivery under master-only).
  */
-export type DeviceKind = 'mock' | 'mwdat' | 'glasses-library';
+export type DeviceKind = 'mock' | 'mwdat' | 'glasses-library' | 'shadow';
 
 export interface Segment {
   /** Absolute file path of the recorded segment. */
@@ -97,6 +121,12 @@ export interface Settings {
    * and that the phone holds a microphone the whole time it is armed.
    */
   glassesLibraryImport: boolean;
+  /**
+   * Experimental: after a wake-word mark, open Meta View / Meta AI once via
+   * `fb-viewapp://` to test whether that shortens Photos sync. Off by default
+   * — leaves Clypso mid-session. See docs/LATERAL-WORKAROUNDS.md.
+   */
+  metaViewNudgeAfterMark: boolean;
 }
 
 export interface WakeWordConfig {

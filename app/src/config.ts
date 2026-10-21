@@ -33,6 +33,20 @@ export const FREE_RETENTION_HOURS = 24;
 export const WAKE_PHRASE = 'Clypso';
 
 /**
+ * Product mode for this test cycle: Meta records natively (1520×2032 HDR);
+ * Clypso only listens for the wake word and cuts masters from Photos after
+ * Meta AI syncs. No Bluetooth preview buffer, no Path A segment writer, no
+ * sub-1080 library clips. Flip to `false` to restore the live-stream Armed path.
+ */
+export const MASTER_ONLY_CAPTURE = true;
+
+/**
+ * Reject imported masters whose shorter edge is below this. Path B glasses
+ * footage is ~1520×2032; anything under 1080p is not shippable for this mode.
+ */
+export const MIN_MASTER_SHORT_EDGE_PX = 1080;
+
+/**
  * Padding kept after the trigger word finishes when ending a clip on it.
  * Word timings land on the last audible frame, so cutting exactly there
  * clips the tail of the word off; this leaves it intact without letting
@@ -68,4 +82,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // for photo access at the moment of arming rather than silently at launch,
   // and the settings screen still says plainly what is being held.
   glassesLibraryImport: true,
+  // Approach 2 (fb-viewapp://) — HOLD at opt-in until a real 10v10
+  // clypso-diagnostics.log PASSes tools/measure/nudge/decide_nudge.sh (>20%
+  // p50 + clean mic). Do not flip to true on fixture alone.
+  metaViewNudgeAfterMark: false,
 };

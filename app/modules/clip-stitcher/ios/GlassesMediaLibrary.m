@@ -79,6 +79,8 @@ static NSString *const GMLGlassesCopyright = @"Meta AI";
 @interface GlassesMediaLibrary : RCTEventEmitter <RCTBridgeModule, PHPhotoLibraryChangeObserver>
 @property (nonatomic, assign) BOOL hasListeners;
 @property (nonatomic, assign) BOOL watching;
+/// Baseline fetch so incremental inserts are visible the moment Meta drops a file.
+@property (nonatomic, strong) PHFetchResult<PHAsset *> *lastFetchResult;
 /// localIdentifier -> @(BOOL). Deciding whether an asset came off the glasses
 /// means opening it; a day of rescans should only pay that once per asset.
 @property (nonatomic, strong) NSCache<NSString *, NSNumber *> *verdicts;
@@ -546,9 +548,17 @@ RCT_EXPORT_METHOD(startWatching:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
   if (!self.watching) {
+    PHFetchOptions *options = [[PHFetchOptions alloc] init];
+    options.sortDescriptors =
+        @[ [NSSortDescriptor sortDescriptorWithKey:@"creationDate" ascending:NO] ];
+    // Baseline: without this, the first change after register has no prior
+    // fetch result and Photos cannot report incremental inserts.
+    self.lastFetchResult =
+        [PHAsset fetchAssetsWithMediaType:PHAssetMediaTypeVideo options:options];
     [[PHPhotoLibrary sharedPhotoLibrary] registerChangeObserver:self];
     self.watching = YES;
-    GMLLog(@"watching the photo library");
+    GMLLog(@"watching the photo library (baseline videos=%lu)",
+           (unsigned long)self.lastFetchResult.count);
   }
   resolve(@YES);
 }
@@ -559,6 +569,7 @@ RCT_EXPORT_METHOD(stopWatching:(RCTPromiseResolveBlock)resolve
   if (self.watching) {
     [[PHPhotoLibrary sharedPhotoLibrary] unregisterChangeObserver:self];
     self.watching = NO;
+    self.lastFetchResult = nil;
     GMLLog(@"stopped watching the photo library");
   }
   resolve(@YES);
@@ -567,17 +578,59 @@ RCT_EXPORT_METHOD(stopWatching:(RCTPromiseResolveBlock)resolve
 /**
  * Something changed in the library.
  *
- * Deliberately a nudge and not a payload: this fires for edits, favourites and
- * deletions as readily as for a new recording, and the change details describe
- * the library rather than telling us whether the glasses were involved. JS
- * rescans, which is where the recognizing happens anyway.
+ * Prefer incremental *inserts* so JS can rescan the moment Meta drops a master
+ * into Photos — that is the Speed half of Shadow Proxy. Still emit a bare
+ * change when Photos cannot give incremental details (full reload).
  */
 - (void)photoLibraryDidChange:(PHChange *)changeInstance
 {
   if (!self.hasListeners) {
     return;
   }
-  [self sendEventWithName:GMLLibraryChangedEvent body:@{}];
+
+  PHFetchResult *previous = self.lastFetchResult;
+  if (previous == nil) {
+    [self sendEventWithName:GMLLibraryChangedEvent body:@{ @"reason" : @"no-baseline" }];
+    return;
+  }
+
+  PHFetchResultChangeDetails *changes =
+      [changeInstance changeDetailsForFetchResult:previous];
+  if (changes == nil) {
+    return;
+  }
+
+  self.lastFetchResult = changes.fetchResultAfterChanges;
+
+  NSArray<PHAsset *> *inserted = changes.insertedObjects;
+  if (changes.hasIncrementalChanges && inserted.count > 0) {
+    NSMutableArray *payload = [NSMutableArray arrayWithCapacity:inserted.count];
+    for (PHAsset *asset in inserted) {
+      if (asset.mediaType != PHAssetMediaTypeVideo) {
+        continue;
+      }
+      NSInteger const shortEdge = MIN(asset.pixelWidth, asset.pixelHeight);
+      [payload addObject:@{
+        @"localIdentifier" : asset.localIdentifier ?: @"",
+        @"pixelWidth" : @(asset.pixelWidth),
+        @"pixelHeight" : @(asset.pixelHeight),
+        @"shortEdge" : @(shortEdge),
+        // Hint only — JS still confirms glasses + markers. Sub-1080 skips
+        // the expensive confirm path when clearly not a master.
+        @"meetsMasterFloor" : @(shortEdge >= 1080),
+      }];
+    }
+    if (payload.count > 0) {
+      GMLLog(@"library INSERT videos=%lu — nudging JS ingest",
+             (unsigned long)payload.count);
+      [self sendEventWithName:GMLLibraryChangedEvent
+                         body:@{ @"reason" : @"insert", @"inserted" : payload }];
+      return;
+    }
+  }
+
+  // Edits / deletes / non-video — still nudge; cheap when no markers pending.
+  [self sendEventWithName:GMLLibraryChangedEvent body:@{ @"reason" : @"change" }];
 }
 
 @end

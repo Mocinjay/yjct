@@ -34,6 +34,7 @@ the copies are verbatim rather than paraphrased.
 | `inspect <file.mp4>...` | The same, for real files, so the `preferredTransform` is the one the container carries rather than one this tool synthesised. |
 | `render <in> <out> <0\|1> [font.ttf]` | The caption burn at the native or promoted canvas, using the shipping composition/transform math and `AVAssetExportPresetHighestQuality`. Reports wall clock, peak footprint, bytes, bitrate. |
 | `still <out.png> <w> <h> <ss> <t> <dur> [font.ttf]` | The caption rasterisation at that canvas. `ss` 1 is what the burn produces; `ss` 8 is the reference an ideal rasteriser would have produced at the same geometry. |
+| `./dry_run_o1_master.sh master.mp4...` | Path B gate: 1520×2032 HDR masters must stay native (guard 1). Identity PSNR/SSIM, optional promo contrast arm. `--synthetic` builds a stand-in. |
 
 ## Checking the guard
 

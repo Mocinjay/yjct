@@ -967,6 +967,14 @@ RCT_EXPORT_METHOD(renderEdit:(NSString *)sourcePath
         render.width, render.height, color.isHDR ? @"HDR" : @"SDR",
         color.isHEVC ? @"hevc" : @"avc", color.transferFunction ?: @"(untagged)",
         videoTrack.estimatedDataRate / 1000000.0, preset);
+  if (color.isHDR) {
+    // Caption burn is the only intentional re-encode on Path B. extractRange
+    // and GlassesMediaLibrary exportOriginal are passthrough; this stage must
+    // composite glyphs and therefore re-encode — but only via HEVC Main10 so
+    // 10-bit HLG survives until the share sheet.
+    CELog(@"Path B HDR burn: intentional HEVC re-encode (Main10 expected); "
+          @"prior pipeline stages must remain passthrough");
+  }
 
   AVAssetExportSession *export =
       [[AVAssetExportSession alloc] initWithAsset:composition presetName:preset];
@@ -1034,6 +1042,30 @@ RCT_EXPORT_METHOD(renderEdit:(NSString *)sourcePath
       // prevent and it is otherwise only visible by looking at the clip.
       CELog(@"WARNING: an HDR master came out of the burn as SDR - the caption "
             @"stage flattened it");
+    }
+    if (color.isHDR && outColor.isHEVC) {
+      // Main10 is what keeps 10-bit HLG; Main (8-bit) would be a silent quality kill.
+      CMFormatDescriptionRef outDesc =
+          out != nil
+              ? (__bridge CMFormatDescriptionRef)out.formatDescriptions.firstObject
+              : NULL;
+      CFDictionaryRef extensions =
+          outDesc != NULL ? CMFormatDescriptionGetExtensions(outDesc) : NULL;
+      id profile = nil;
+      if (extensions != NULL) {
+        const void *raw = CFDictionaryGetValue(
+            extensions, kCMFormatDescriptionExtension_ProfileLevel);
+        profile = raw != NULL ? (__bridge id)raw : nil;
+      }
+      CELog(@"HDR burn profileLevel=%@ (Main10 required for masters)",
+            profile ?: @"(unavailable)");
+    }
+    if (color.isHDR &&
+        (render.width > sourceSize.width + 0.5 ||
+         render.height > sourceSize.height + 0.5)) {
+      CELog(@"WARNING: HDR master was canvas-promoted %.0fx%.0f -> %.0fx%.0f — "
+            @"CEPromotedRenderSize must refuse Path B dimensions",
+            sourceSize.width, sourceSize.height, render.width, render.height);
     }
   } else {
     CELog(@"burned %lu cues into %@ (could not read it back to report on it)",

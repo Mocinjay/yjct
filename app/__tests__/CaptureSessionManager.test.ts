@@ -8,6 +8,12 @@ jest.mock('../src/services/capture', () => ({
   buildCaptureSession: jest.fn(),
 }));
 
+/** Product master-only mode disables Path A arming — tests assert the arm path. */
+jest.mock('../src/config', () => ({
+  ...jest.requireActual('../src/config'),
+  MASTER_ONLY_CAPTURE: false,
+}));
+
 /** Reached via the module-scope singleton's settings subscription. */
 jest.mock('@react-native-async-storage/async-storage', () => {
   const store = new Map<string, string>();

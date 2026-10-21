@@ -269,6 +269,9 @@ export class SpeechWakeWord implements WakeWordProvider {
     }
     this.lastFiredAt = now;
 
+    // Immediate audible cue — Path B has no glasses stream to chime on.
+    SpeechWakeWordNative.playSnap?.().catch(() => undefined);
+
     // Android recognizes live from the mic and reports a bare transcript, so
     // there is no segment and no timing to hand back — the clip just ends at
     // the buffer boundary as before.

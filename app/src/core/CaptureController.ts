@@ -116,6 +116,11 @@ export class CaptureController {
   private sessionClipCount = 0;
   private armedSince: number | null = null;
   private maxRecordingTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Stable id for this armed session. Stamped onto every Path A clip so a
+   * later Path B master of the same moment can find its proxy.
+   */
+  private hardwareSessionId: string | null = null;
 
   /**
    * `onClipSaved` fires once a clip is in the library. Post-capture work
@@ -147,6 +152,9 @@ export class CaptureController {
 
   async arm(): Promise<void> {
     this.sessionClipCount = 0;
+    this.hardwareSessionId = `hw_${Date.now().toString(36)}_${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
     this.setStatus({ state: 'arming', bufferedSeconds: 0 });
     try {
       // Before the source, because starting it is what opens an audio session:
@@ -174,6 +182,7 @@ export class CaptureController {
         source: this.source.kind,
         wakeWord: this.wakeWord.name,
         windowSeconds: this.windowSeconds,
+        hardwareSessionId: this.hardwareSessionId,
       });
       this.setStatus({ ...this.status, state: 'armed' });
     } catch (err) {
@@ -205,6 +214,7 @@ export class CaptureController {
       );
     this.buffer.clear();
     this.armedSince = null;
+    this.hardwareSessionId = null;
     // Last, so the other half does not reopen the microphone while this one is
     // still inside its own teardown. Idempotent, which matters because `arm()`
     // calls `disarm()` on its own failure path — including a failure that
@@ -448,6 +458,7 @@ export class CaptureController {
       durationSec: result.durationSec,
       sourceKind: this.source.kind,
       isPro: await entitlementStore.isPro(),
+      hardwareSessionId: this.hardwareSessionId ?? undefined,
     });
   }
 

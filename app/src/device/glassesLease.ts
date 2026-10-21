@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { MASTER_ONLY_CAPTURE } from '../config';
 import { createLogger } from '../core/Logger';
 import { ErrorCode } from '../core/errors';
 import { MWDATNative, mwdatAvailable } from '../native/MWDATNative';
@@ -68,7 +69,9 @@ function release(): void {
  */
 export function useGlassesLease(active: boolean): void {
   useEffect(() => {
-    if (!mwdatAvailable() || !active) {
+    // Master-only: no Bluetooth camera session — Meta records on-device; we
+    // only listen on the phone mic and watch Photos.
+    if (MASTER_ONLY_CAPTURE || !mwdatAvailable() || !active) {
       return;
     }
     acquire();

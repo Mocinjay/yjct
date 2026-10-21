@@ -11,6 +11,9 @@
 
 import {
   concurrencyVerdict,
+  findProxySwapCandidates,
+  hybridSwapAllowed,
+  isStsdLikeError,
   type StreamTimelineEntry,
 } from '../src/markers/streamConcurrency';
 
@@ -106,5 +109,61 @@ describe('concurrencyVerdict', () => {
     const verdict = concurrencyVerdict([sample(1, 30), sample(9, 0)], window);
     expect(verdict.summary).toContain('exclusive');
     expect(verdict.summary).toContain('20s');
+  });
+
+  it('flags CoreMedia stsd / device-unavailable error text', () => {
+    const timeline = [
+      sample(2, 30),
+      event(6, 'error', 'CoreMediaErrorDomain stsd sample description'),
+    ];
+    const verdict = concurrencyVerdict(timeline, window);
+    expect(verdict.stsdLike).toBe(true);
+    expect(isStsdLikeError('AVErrorDeviceIsNotAvailable (-11814)')).toBe(true);
+  });
+});
+
+describe('hybridSwapAllowed / findProxySwapCandidates', () => {
+  it('allows swap only for concurrent or degraded', () => {
+    expect(hybridSwapAllowed('concurrent')).toBe(true);
+    expect(hybridSwapAllowed('degraded')).toBe(true);
+    expect(hybridSwapAllowed('exclusive')).toBe(false);
+    expect(hybridSwapAllowed('no-evidence')).toBe(false);
+  });
+
+  it('picks the closest unreplaced mwdat proxy inside the window', () => {
+    const mid = RECORDING_START + 10_000;
+    const clips = [
+      {
+        id: 'far',
+        sourceKind: 'mwdat',
+        capturedAt: RECORDING_START + 1_000,
+        masterReplacedAt: null,
+      },
+      {
+        id: 'near',
+        sourceKind: 'mwdat',
+        capturedAt: mid,
+        masterReplacedAt: null,
+      },
+      {
+        id: 'shadow',
+        sourceKind: 'shadow',
+        capturedAt: mid + 100,
+        masterReplacedAt: null,
+      },
+      {
+        id: 'done',
+        sourceKind: 'mwdat',
+        capturedAt: mid,
+        masterReplacedAt: 1,
+      },
+      {
+        id: 'lib',
+        sourceKind: 'glasses-library',
+        capturedAt: mid,
+      },
+    ];
+    const ranked = findProxySwapCandidates(clips, window);
+    expect(ranked.map(c => c.id)).toEqual(['near', 'shadow', 'far']);
   });
 });

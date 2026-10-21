@@ -11,7 +11,12 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FREE_RETENTION_HOURS } from '../../config';
-import { isCaptioning, isPending, msUntilExpiry } from '../../core/ClipStore';
+import {
+  isCaptioning,
+  isMasterReady,
+  isPending,
+  msUntilExpiry,
+} from '../../core/ClipStore';
 import type { Clip } from '../../types';
 import { ProBadge, RecDot, RecRings } from '../components';
 import { formatDuration, formatRemaining, relativeDate } from '../format';
@@ -131,7 +136,7 @@ export function LibraryScreen({ navigation }: Props) {
           </Text>
           <Text style={styles.emptyBody}>
             {tab === 'recent'
-              ? 'Go live, live your life, and say the magic words when something fire happens. The last 30 seconds are already buffered.'
+              ? 'Go live, say “Clypso” while Meta records. A card appears at once; the master fills in after Photos sync.'
               : `Clips you save are kept forever. Everything else clears itself after ${FREE_RETENTION_HOURS} hours.`}
           </Text>
         </View>
@@ -157,8 +162,18 @@ export function LibraryScreen({ navigation }: Props) {
             <ClipCard
               clip={item}
               now={now}
-              onOpen={() => navigation.navigate('Player', { clip: item })}
-              onShare={() => shareClip(item)}
+              onOpen={() => {
+                if (!isMasterReady(item)) {
+                  return;
+                }
+                navigation.navigate('Player', { clip: item });
+              }}
+              onShare={() => {
+                if (!isMasterReady(item)) {
+                  return;
+                }
+                shareClip(item);
+              }}
               onSave={() => save(item.id)}
             />
           )}
@@ -266,6 +281,22 @@ function ClipCard({
  */
 function CaptionOverlay({ clip }: { clip: Clip }) {
   const { recaption } = useClipActions();
+  if (
+    clip.ingestState === 'MARKED_PENDING' ||
+    clip.ingestState === 'INGESTING' ||
+    clip.sourceKind === 'shadow'
+  ) {
+    return (
+      <View style={styles.captionScrim} pointerEvents="none">
+        <ActivityIndicator color={colors.text} />
+        <Text style={styles.captionScrimText}>
+          {clip.ingestState === 'INGESTING'
+            ? 'Pulling master…'
+            : 'Waiting for Meta sync…'}
+        </Text>
+      </View>
+    );
+  }
   if (isCaptioning(clip)) {
     return (
       <View style={styles.captionScrim} pointerEvents="none">

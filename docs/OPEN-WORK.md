@@ -169,23 +169,12 @@ is still unmade. The arbitration half of the same problem *is* covered —
 `__tests__/microphone.test.ts` — because it was deliberately written in TS for
 that reason.
 
-### O5 — `.hvc1` capture is the real quality lever and is blocked on the preview path
+### O5 — `.hvc1` capture — **IMPLEMENTED (dormant under master-only)**
 
-`MWDATBridge.swift:785` requests `StreamConfiguration(videoCodec: .raw, ...)`,
-so the writer re-encodes decoded pixel buffers. That is three generations of
-loss on path A.
-
-`.hvc1` was tried on device and is not a simple swap: the SDK hands back frames
-with a `dataBuffer` and no `imageBuffer`, logging
-`imageBuffer=false makeUIImage=NIL` (reasoning at `:767-773`, the log at
-`:983-986`). Muxing those compressed samples is the right idea, but
-`MWDATPreviewEncoder.swift:137` needs `CMSampleBufferGetImageBuffer` for the
-live viewfinder, so switching the stream blacks out the preview unless a decode
-path is added back for preview only — which returns some of the CPU saving.
-
-**Cannot be costed yet.** The cut-precision trade-off depends on a GOP cadence
-that has never been observed, and no `.hvc1` sample has ever been written to a
-file, so there is nothing to measure it on.
+Native Path A can request `.hvc1` with passthrough mux + VT preview decode.
+**Current product flag:** `MASTER_ONLY_CAPTURE = true` disables Path A entirely
+(Bluetooth stream cannot meet the ≥1080p bar). Quality delivery is Path B only
+(Photos masters, short-edge ≥1080). Flip the flag to re-enable stream capture.
 
 ### O6 — Wake-word accuracy on worn audio is unmeasured
 

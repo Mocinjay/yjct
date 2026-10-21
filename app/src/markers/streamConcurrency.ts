@@ -1,10 +1,14 @@
 /**
  * Scoring the live stream's behaviour during a native glasses recording.
  *
- * TEMPORARY INSTRUMENT — see `MWDATStreamTimeline.swift`. It answers whether
- * Path A and Path B can produce footage for the same moment, which decides
- * whether a proxy-to-master swap is a feature or an impossibility. Delete both
- * halves once the answer is written down.
+ * Answers whether Path A and Path B can produce footage for the same moment,
+ * which decides whether a proxy-to-master swap is a feature or an impossibility.
+ *
+ * The glasses never expose an API to *start* a native recording from a third-
+ * party app (MWDAT has stream + still capture only). U1 is therefore answered
+ * backwards: the wearer records on the glasses while Path A is armed; when the
+ * file later appears in Photos, this scorer reads the in-memory stream timeline
+ * for that wall-clock window.
  *
  * The arithmetic lives here rather than in Swift because it is windowing and
  * thresholds — the same reason the marker matching does.
@@ -41,6 +45,11 @@ export interface ConcurrencyVerdict {
   stalls: number;
   errors: string[];
   summary: string;
+  /**
+   * True when an error detail looks like CoreMedia sample-description / stsd
+   * corruption or device-unavailable — the O8 class that motivated this probe.
+   */
+  stsdLike: boolean;
 }
 
 /**
@@ -58,6 +67,36 @@ const DEGRADED_FPS = 15;
  */
 const DEAD_FPS = 0.5;
 
+/** Outcomes that still allow Hybrid proxy→master swap. */
+export function hybridSwapAllowed(outcome: ConcurrencyOutcome): boolean {
+  return outcome === 'concurrent' || outcome === 'degraded';
+}
+
+/**
+ * Path A proxies whose capture time falls inside the native recording window
+ * (plus a small skew pad). Prefer the closest timestamp; callers swap one.
+ */
+export function findProxySwapCandidates<
+  T extends {
+    sourceKind: string;
+    capturedAt: number;
+    masterReplacedAt?: number | null;
+  },
+>(clips: readonly T[], window: NativeRecordingWindow, skewPadSec = 20): T[] {
+  const start = window.startedAtMs - skewPadSec * 1000;
+  const end = window.startedAtMs + window.durationSec * 1000 + skewPadSec * 1000;
+  const mid = window.startedAtMs + (window.durationSec * 1000) / 2;
+  return clips
+    .filter(
+      c =>
+        (c.sourceKind === 'mwdat' || c.sourceKind === 'shadow') &&
+        !c.masterReplacedAt &&
+        c.capturedAt >= start &&
+        c.capturedAt <= end,
+    )
+    .sort((a, b) => Math.abs(a.capturedAt - mid) - Math.abs(b.capturedAt - mid));
+}
+
 export function concurrencyVerdict(
   timeline: readonly StreamTimelineEntry[],
   window: NativeRecordingWindow,
@@ -71,6 +110,7 @@ export function concurrencyVerdict(
   const samples = inWindow.filter(e => e.kind === 'fps' && e.fps >= 0);
   const stalls = inWindow.filter(e => e.kind === 'stalled').length;
   const errors = inWindow.filter(e => e.kind === 'error').map(e => e.detail);
+  const stsdLike = errors.some(isStsdLikeError);
 
   const minFps =
     samples.length > 0 ? Math.min(...samples.map(s => s.fps)) : null;
@@ -85,10 +125,25 @@ export function concurrencyVerdict(
     minFps,
     stalls,
     errors,
+    stsdLike,
     summary:
       `native recording of ${duration}: ${outcome} ` +
-      `(${samples.length} samples, ${fpsText}, ${stalls} stalls, ${errors.length} errors)`,
+      `(${samples.length} samples, ${fpsText}, ${stalls} stalls, ${errors.length} errors` +
+      `${stsdLike ? ', stsd-like' : ''})`,
   };
+}
+
+/** Heuristic for O8-class CoreMedia / format failures in timeline error text. */
+export function isStsdLikeError(detail: string): boolean {
+  const d = detail.toLowerCase();
+  return (
+    d.includes('stsd') ||
+    d.includes('sample description') ||
+    d.includes('format description') ||
+    d.includes('deviceisnotavailable') ||
+    d.includes('averrdeviceisnotavailable') ||
+    d.includes('-11814') // AVErrorDeviceIsNotAvailable
+  );
 }
 
 function decide(

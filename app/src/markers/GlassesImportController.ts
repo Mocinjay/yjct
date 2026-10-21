@@ -1,8 +1,11 @@
-import { NativeEventEmitter, NativeModules } from 'react-native';
+import { AppState, NativeEventEmitter, NativeModules } from 'react-native';
+import type { NativeEventSubscription } from 'react-native';
 import RNFS from 'react-native-fs';
+import { MIN_MASTER_SHORT_EDGE_PX } from '../config';
 import { clipStore, newClip, newClipId } from '../core/ClipStore';
 import { entitlementStore } from '../core/EntitlementStore';
 import { createLogger } from '../core/Logger';
+import { emitTelemetry } from '../core/telemetry';
 import { AppError, ErrorCode } from '../core/errors';
 import { extractRange } from '../native/ClipStitcher';
 import {
@@ -10,17 +13,32 @@ import {
   GlassesMediaLibraryNative,
 } from '../native/GlassesMediaLibraryNative';
 import { MWDATNative } from '../native/MWDATNative';
+import { MetaViewNudge } from '../native/MetaViewNudge';
+import { settingsStore } from '../core/SettingsStore';
 import type { Clip } from '../types';
 import type { WakeWordProvider } from '../wakeword/WakeWordProvider';
 import type { MarkerStore } from './MarkerStore';
 import type { GlassesVideo } from './markerMatching';
 import { clipRangesForVideo, markerOffsetSec, markersWithin } from './markerMatching';
-import { concurrencyVerdict } from './streamConcurrency';
+import { ensurePreviewFrameCache, writeShadowThumbnail } from './shadowPreview';
+import { concurrencyVerdict, findProxySwapCandidates, hybridSwapAllowed } from './streamConcurrency';
 
 const log = createLogger('glasses-import');
 
 /** How many recent videos to consider per pass. */
 const SCAN_LIMIT = 200;
+
+/** How often to re-scan Photos as a safety net if a change event is missed. */
+const PHOTOS_POLL_MS = 60_000;
+
+/**
+ * Shadow cards stuck in MARKED_PENDING past this age trigger recovery:
+ * force Photos observer rebaseline + aggressive sync. Meta thermal/sync
+ * stalls can leave masters invisible indefinitely without this.
+ *
+ * Exported for unit tests that seed overdue shadow cards.
+ */
+export const MARKED_PENDING_TIMEOUT_MS = 45 * 60 * 1000;
 
 /**
  * Clipping footage the glasses recorded on their own.
@@ -42,6 +60,14 @@ export class GlassesImportController {
   private started = false;
   /** True while the wake word holds a microphone. False while stood down. */
   private listening = false;
+  /** Periodic Photos re-scan — Meta sync often arrives with no change event. */
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private markerListeners = new Set<(pending: number) => void>();
+  /** Active after a Meta View nudge until the next foreground — mic health. */
+  private nudgeInFlight: { runId: string; atMs: number } | null = null;
+  private appStateSub: NativeEventSubscription | null = null;
+  /** markerId → last SHADOW_TIMEOUT emit, so recovery does not spam. */
+  private pendingTimeoutEmitted = new Set<string>();
 
   constructor(
     private readonly markerStore: MarkerStore,
@@ -96,13 +122,18 @@ export class GlassesImportController {
       await this.startListening();
     }
 
-    const emitter = new NativeEventEmitter(NativeModules.GlassesMediaLibrary);
-    this.subscription = emitter.addListener(GLASSES_LIBRARY_CHANGED_EVENT, () => {
+    ensurePreviewFrameCache();
+    await this.attachPhotosObserver();
+
+    this.pollTimer = setInterval(() => {
       this.sync().catch(err =>
-        log.expected('sync after library change failed', err, ErrorCode.StorageIndexUnreadable),
+        log.expected('poll sync failed', err, ErrorCode.StorageIndexUnreadable),
       );
+    }, PHOTOS_POLL_MS);
+
+    this.appStateSub = AppState.addEventListener('change', state => {
+      this.onAppState(state);
     });
-    await GlassesMediaLibraryNative.startWatching();
 
     this.started = true;
     log.info(
@@ -112,7 +143,107 @@ export class GlassesImportController {
     );
   }
 
+  /**
+   * Cold-start / foreground: re-bind the Photos observer without creating a
+   * second controller or duplicate shadow cards. Idempotent.
+   */
+  async reattachPhotosObserver(): Promise<void> {
+    if (!this.started) {
+      return;
+    }
+    await this.attachPhotosObserver();
+    await this.recoverStuckPending();
+    log.info('photos observer reattached');
+  }
+
+  private async attachPhotosObserver(): Promise<void> {
+    this.subscription?.remove();
+    this.subscription = null;
+
+    const emitter = new NativeEventEmitter(NativeModules.GlassesMediaLibrary);
+    this.subscription = emitter.addListener(
+      GLASSES_LIBRARY_CHANGED_EVENT,
+      (payload?: {
+        reason?: string;
+        inserted?: {
+          meetsMasterFloor?: boolean;
+          localIdentifier?: string;
+          pixelWidth?: number;
+          pixelHeight?: number;
+        }[];
+      }) => {
+        if (payload?.reason === 'insert' && Array.isArray(payload.inserted)) {
+          for (const asset of payload.inserted) {
+            if (asset.meetsMasterFloor === false) {
+              continue;
+            }
+            emitTelemetry('T_PHOTOS_INSERT', {
+              runId: asset.localIdentifier ?? `insert_${Date.now()}`,
+              localIdentifier: asset.localIdentifier ?? null,
+              pixelWidth: asset.pixelWidth ?? null,
+              pixelHeight: asset.pixelHeight ?? null,
+            });
+          }
+          if (
+            payload.inserted.length > 0 &&
+            payload.inserted.every(i => i.meetsMasterFloor === false)
+          ) {
+            log.info('library insert ignored — below master floor');
+            return;
+          }
+        }
+        this.sync().catch(err =>
+          log.expected(
+            'sync after library change failed',
+            err,
+            ErrorCode.StorageIndexUnreadable,
+          ),
+        );
+      },
+    );
+    // stop→start rebases PHFetchResult so inserts after a kill are not missed.
+    await GlassesMediaLibraryNative.stopWatching().catch(() => undefined);
+    await GlassesMediaLibraryNative.startWatching();
+  }
+
+  private onAppState(state: string): void {
+    if (state === 'background' || state === 'inactive') {
+      if (this.nudgeInFlight && this.listening) {
+        emitTelemetry('MIC_SUSPEND', {
+          runId: this.nudgeInFlight.runId,
+          reason: 'url_scheme_bounce',
+        });
+      }
+      return;
+    }
+    if (state === 'active' && this.nudgeInFlight) {
+      const { runId } = this.nudgeInFlight;
+      this.nudgeInFlight = null;
+      emitTelemetry('MIC_RESUME', {
+        runId,
+        listening: this.listening,
+      });
+      // URL bounce can kill Speech recognition; resume if we still own the mic.
+      if (!this.listening) {
+        this.resumeListening().catch(err =>
+          log.expected(
+            'mic resume after nudge bounce failed',
+            err,
+            ErrorCode.WakeWordStartFailed,
+          ),
+        );
+      }
+    }
+  }
+
   async stop(): Promise<void> {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+    this.appStateSub?.remove();
+    this.appStateSub = null;
+    this.nudgeInFlight = null;
     this.subscription?.remove();
     this.subscription = null;
     await this.stopListening();
@@ -122,6 +253,25 @@ export class GlassesImportController {
     this.started = false;
   }
 
+  /** UI: pending marker count changes (wake heard / clip imported). */
+  subscribeMarkers(listener: (pending: number) => void): () => void {
+    this.markerListeners.add(listener);
+    this.markerStore
+      .all()
+      .then(m => listener(m.length))
+      .catch(() => listener(0));
+    return () => {
+      this.markerListeners.delete(listener);
+    };
+  }
+
+  private async emitPendingMarkers(): Promise<void> {
+    if (this.markerListeners.size === 0) {
+      return;
+    }
+    const pending = (await this.markerStore.all()).length;
+    this.markerListeners.forEach(l => l(pending));
+  }
   /**
    * Close the microphone but stay watching the library.
    *
@@ -168,19 +318,134 @@ export class GlassesImportController {
         );
         return;
       }
+      const markerId = `mark_${detection.atMs}_${Math.random().toString(36).slice(2, 8)}`;
+      emitTelemetry('T_MARK', {
+        runId: markerId,
+        markerId,
+        variant: 'control', // flipped to nudge inside maybeNudgeMetaView when armed
+        atMs: detection.atMs,
+      });
       // Never awaited: the wake-word callback must return promptly so the next
       // segment can be transcribed.
       this.markerStore
         .add({
-          id: `mark_${detection.atMs}_${Math.random().toString(36).slice(2, 8)}`,
+          id: markerId,
           atMs: detection.atMs,
           segmentPath: detection.segmentPath,
         })
+        .then(() => this.emitPendingMarkers())
         .catch(err =>
           log.error('could not record marker', err, ErrorCode.StorageWriteFailed),
         );
+      // Shadow Proxy: library card now, master video later.
+      this.createShadowClip(markerId, detection.atMs).catch(err =>
+        log.expected('shadow clip failed', err, ErrorCode.StorageWriteFailed),
+      );
+      // Optional Meta View wake (experiment) — does not claim to force sync.
+      this.maybeNudgeMetaView(markerId).catch(() => undefined);
+      // Don't wait for Meta — keep scanning so the cut lands ASAP after sync.
+      this.sync().catch(err =>
+        log.expected('sync after marker failed', err, ErrorCode.StorageIndexUnreadable),
+      );
     });
     this.listening = true;
+  }
+
+  private async maybeNudgeMetaView(markerId: string): Promise<void> {
+    const { metaViewNudgeAfterMark } = await settingsStore.get();
+    if (!metaViewNudgeAfterMark) {
+      return;
+    }
+    this.nudgeInFlight = { runId: markerId, atMs: Date.now() };
+    emitTelemetry('T_NUDGE', {
+      runId: markerId,
+      markerId,
+      variant: 'nudge',
+    });
+    log.info('meta view nudge after mark (experiment)', { markerId });
+    await MetaViewNudge.openCompanion();
+  }
+
+  /**
+   * Instant UI feedback: a library card in MARKED_PENDING with an optional
+   * live-stream still. Never a deliverable video (Quality non-negotiable).
+   *
+   * Cold starts must not invent a second card for the same marker — if a
+   * shadow already exists for `markerId`, leave it alone.
+   */
+  private async createShadowClip(markerId: string, atMs: number): Promise<void> {
+    const existing = (await clipStore.list()).find(
+      c => c.sourceKind === 'shadow' && c.markerId === markerId,
+    );
+    if (existing) {
+      log.info('shadow clip already exists — skip duplicate', {
+        id: existing.id,
+        markerId,
+      });
+      return;
+    }
+    const id = newClipId(atMs);
+    const dir = await clipStore.ensureDir();
+    const thumbPath = `${dir}/${id}.shadow.jpg`;
+    const thumbnailPath = await writeShadowThumbnail(thumbPath);
+    const clip = newClip({
+      id,
+      capturedAt: atMs,
+      filePath: '',
+      thumbnailPath,
+      // Expected look-back length until the master cut replaces it.
+      durationSec: this.options.lookbackSec,
+      sourceKind: 'shadow',
+      ingestState: 'MARKED_PENDING',
+      markerId,
+      isPro: await entitlementStore.isPro(),
+    });
+    await clipStore.add(clip);
+    log.info('shadow clip marked pending', { id, markerId });
+  }
+
+  /**
+   * Cards stuck in MARKED_PENDING past the Meta sync budget: rebaseline the
+   * Photos observer and keep scanning. Does not delete the card — the master
+   * may still arrive; UI stays honest about "waiting".
+   */
+  private async recoverStuckPending(): Promise<void> {
+    const now = Date.now();
+    const stuck = (await clipStore.list()).filter(
+      c =>
+        c.sourceKind === 'shadow' &&
+        (c.ingestState === 'MARKED_PENDING' || !c.ingestState) &&
+        now - c.capturedAt >= MARKED_PENDING_TIMEOUT_MS,
+    );
+    if (stuck.length === 0) {
+      return;
+    }
+    let needsRebaseline = false;
+    for (const clip of stuck) {
+      const key = clip.markerId ?? clip.id;
+      if (!this.pendingTimeoutEmitted.has(key)) {
+        this.pendingTimeoutEmitted.add(key);
+        needsRebaseline = true;
+        emitTelemetry('SHADOW_TIMEOUT', {
+          runId: key,
+          clipId: clip.id,
+          markerId: clip.markerId ?? null,
+          ageMs: now - clip.capturedAt,
+        });
+        log.warn('shadow pending past Meta sync budget — recovering observer', {
+          clipId: clip.id,
+          ageMin: Math.round((now - clip.capturedAt) / 60_000),
+        });
+      }
+    }
+    if (!needsRebaseline) {
+      return;
+    }
+    // Rebaseline fetch so a silent Meta insert is not invisible forever.
+    await GlassesMediaLibraryNative.stopWatching().catch(() => undefined);
+    await GlassesMediaLibraryNative.startWatching().catch(err =>
+      log.expected('recovery startWatching failed', err, ErrorCode.StorageIndexUnreadable),
+    );
   }
 
   /**
@@ -211,6 +476,7 @@ export class GlassesImportController {
     }
     this.syncing = true;
     try {
+      await this.recoverStuckPending();
       return await this.runSync();
     } finally {
       this.syncing = false;
@@ -284,11 +550,17 @@ export class GlassesImportController {
       return [];
     }
 
-    await this.probeConcurrency(
-      localIdentifier,
-      confirmation.startedAtMs,
-      confirmation.durationSec,
-    );
+    const shortEdge = Math.min(confirmation.width ?? 0, confirmation.height ?? 0);
+    if (shortEdge > 0 && shortEdge < MIN_MASTER_SHORT_EDGE_PX) {
+      // Master-only product bar: never put a sub-1080 proxy/master in the library.
+      log.info('skipping sub-1080 glasses video', {
+        localIdentifier,
+        width: confirmation.width,
+        height: confirmation.height,
+        minEdge: MIN_MASTER_SHORT_EDGE_PX,
+      });
+      return [];
+    }
 
     // Re-matched against the container's own capture time, which is the exact
     // value the cut depends on — the library's is only approximately right.
@@ -334,6 +606,13 @@ export class GlassesImportController {
     });
 
     if (cuts.length === 0) {
+      // Still score U1 even when nothing was cut — a native recording that
+      // overlapped the stream is evidence regardless of markers.
+      await this.scoreConcurrency(
+        localIdentifier,
+        confirmation.startedAtMs,
+        confirmation.durationSec,
+      );
       return [];
     }
 
@@ -347,16 +626,92 @@ export class GlassesImportController {
       cuts: cuts.length,
     });
 
+    // One timeline read per native recording — not per cut.
+    const verdict = await this.scoreConcurrency(
+      localIdentifier,
+      confirmation.startedAtMs,
+      confirmation.durationSec,
+    );
+    const window = {
+      startedAtMs: confirmation.startedAtMs,
+      durationSec: confirmation.durationSec,
+    };
+
     const clips: Clip[] = [];
     const consumed: string[] = [];
     try {
+      // Mark overlapping shadows as ingesting so the library shows progress.
+      const shadows = (await clipStore.list()).filter(
+        c =>
+          c.sourceKind === 'shadow' &&
+          (c.ingestState === 'MARKED_PENDING' || !c.ingestState),
+      );
+      for (const s of shadows) {
+        await clipStore.setIngestState(s.id, 'INGESTING');
+      }
+
       for (const cut of cuts) {
-        const clip = await this.cutClip(original.path, cut.range, video);
-        await clipStore.add(clip);
-        clips.push(clip);
-        consumed.push(...cut.markers.map(marker => marker.id));
+        const master = await this.cutClip(original.path, cut.range, video);
+        const markerIds = cut.markers.map(marker => marker.id);
+        consumed.push(...markerIds);
+
+        // Promote Shadow Proxy card(s) for these markers — same id in the UI.
+        let delivered: Clip = master;
+        let swapped = false;
+        const library = await clipStore.list();
+        const shadow =
+          library.find(
+            c =>
+              c.sourceKind === 'shadow' &&
+              c.markerId &&
+              markerIds.includes(c.markerId),
+          ) ?? findProxySwapCandidates(library, window)[0];
+
+        if (shadow) {
+          const next = await clipStore.replaceProxyWithMaster(shadow.id, {
+            filePath: master.filePath,
+            thumbnailPath: master.thumbnailPath || shadow.thumbnailPath,
+            durationSec: master.durationSec,
+          });
+          if (next) {
+            swapped = true;
+            delivered = next;
+            const runId = shadow.markerId ?? shadow.id;
+            if (this.pendingTimeoutEmitted.has(runId)) {
+              emitTelemetry('SHADOW_RECOVERED', {
+                runId,
+                clipId: shadow.id,
+                markerId: shadow.markerId ?? null,
+              });
+              this.pendingTimeoutEmitted.delete(runId);
+            }
+            emitTelemetry('T_MASTER_READY', {
+              runId,
+              clipId: shadow.id,
+              markerId: shadow.markerId ?? null,
+              resolution: `${video.width}x${video.height}`,
+            });
+            log.info('shadow/master promoted', {
+              clipId: shadow.id,
+              markerId: shadow.markerId,
+              outcome: verdict?.outcome,
+            });
+          }
+        }
+
+        if (!swapped) {
+          const withState = { ...master, ingestState: 'MASTER_READY' as const };
+          await clipStore.add(withState);
+          delivered = withState;
+          emitTelemetry('T_MASTER_READY', {
+            runId: markerIds[0] ?? withState.id,
+            clipId: withState.id,
+            resolution: `${video.width}x${video.height}`,
+          });
+        }
+        clips.push(delivered);
         try {
-          this.options.onClipImported?.(clip);
+          this.options.onClipImported?.(delivered);
         } catch (err) {
           // Captioning is best-effort; the clip is already in the library.
           log.error('post-import hook failed', err, ErrorCode.CaptionJobFailed);
@@ -367,24 +722,23 @@ export class GlassesImportController {
       // keeping it around would double the storage for no benefit.
       await RNFS.unlink(original.path).catch(() => undefined);
       await this.markerStore.remove(consumed);
+      await this.emitPendingMarkers();
     }
     return clips;
   }
 
   /**
-   * TEMPORARY: record what the live stream was doing while this was recorded.
+   * Score what the live stream was doing while this native recording ran.
    *
-   * The glasses never tell the phone that a native recording started, so the
-   * question can only be answered backwards — the file turns up later carrying
-   * its own capture time, and the link telemetry from that window is the only
-   * evidence of whether Path A was alive at the same moment. Purely
-   * observational; it cannot fail an import.
+   * MWDAT has no API to *start* a glasses-side capture, so U1 is answered
+   * backwards: when a Photos master arrives, read the in-memory stream
+   * timeline for that wall-clock window.
    */
-  private async probeConcurrency(
+  private async scoreConcurrency(
     localIdentifier: string,
     startedAtMs: number,
     durationSec: number,
-  ): Promise<void> {
+  ): Promise<ReturnType<typeof concurrencyVerdict> | null> {
     try {
       const entries = await MWDATNative.getStreamTimeline();
       const verdict = concurrencyVerdict(entries, { startedAtMs, durationSec });
@@ -394,9 +748,13 @@ export class GlassesImportController {
         minFps: verdict.minFps,
         stalls: verdict.stalls,
         errors: verdict.errors,
+        stsdLike: verdict.stsdLike,
+        hybridSwapAllowed: hybridSwapAllowed(verdict.outcome),
       });
+      return verdict;
     } catch (err) {
       log.expected('concurrency probe failed', err, ErrorCode.StorageIndexUnreadable);
+      return null;
     }
   }
 
@@ -425,6 +783,7 @@ export class GlassesImportController {
       thumbnailPath: result.thumbnailPath,
       durationSec: result.durationSec,
       sourceKind: 'glasses-library',
+      ingestState: 'MASTER_READY',
       isPro: await entitlementStore.isPro(),
     });
   }

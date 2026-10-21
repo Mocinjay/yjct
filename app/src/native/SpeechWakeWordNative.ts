@@ -55,6 +55,8 @@ interface SpeechWakeWordModule {
    */
   startListening(): Promise<boolean>;
   stopListening(): Promise<boolean>;
+  /** Phone shutter + vibrate when the wake word fires (Path B cue). */
+  playSnap(): Promise<boolean>;
 }
 
 export const SpeechWakeWordNative =

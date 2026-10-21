@@ -464,6 +464,15 @@ RCT_EXPORT_METHOD(stopListening:(RCTPromiseResolveBlock)resolve
   resolve(@YES);
 }
 
+/// Phone-side audible cue when "Clypso" is heard. System shutter (1108) —
+/// works without a glasses stream and without shipping an audio asset.
+RCT_EXPORT_METHOD(playSnap:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  AudioServicesPlaySystemSound(1108);
+  resolve(@YES);
+}
+
 /**
  * Transcribes a recorded segment.
  *

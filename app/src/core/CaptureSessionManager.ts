@@ -1,4 +1,5 @@
 import { AppState, type AppStateStatus } from 'react-native';
+import { MASTER_ONLY_CAPTURE } from '../config';
 import type { CaptureSession } from '../services/capture';
 import { buildCaptureSession } from '../services/capture';
 import type { Clip } from '../types';
@@ -207,8 +208,14 @@ export class CaptureSessionManager {
   /**
    * Capture should be running exactly when the screen is showing, the app is in
    * the foreground, and the source can start.
+   *
+   * Master-only mode never arms Path A: the Bluetooth stream cannot deliver
+   * ≥1080p, and holding it would steal the mic from marker listening.
    */
   private get shouldCapture(): boolean {
+    if (MASTER_ONLY_CAPTURE) {
+      return false;
+    }
     return this.screenActive && this.appForeground && this.sourceReady;
   }
 

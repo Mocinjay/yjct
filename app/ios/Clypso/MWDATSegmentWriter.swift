@@ -126,6 +126,15 @@ final class MWDATSegmentWriter {
   private var current: Segment?
   private var rotateTimer: DispatchSourceTimer?
 
+  /// True once the current (or pending) segment is muxing compressed HEVC
+  /// samples with `outputSettings: nil`. False when re-encoding raw pixel
+  /// buffers to H.264 (legacy / SDK fallback).
+  private var passthroughMode = false
+  /// After a rotation in passthrough mode, hold frames until a sync sample
+  /// arrives so the next MP4 does not open mid-GOP.
+  private var awaitingKeyframe = false
+  private var lastVideoFormat: CMFormatDescription?
+
   /// Segments delivered at each resolution, keyed "WxH", plus the order the
   /// rungs were first seen.
   ///
@@ -149,6 +158,8 @@ final class MWDATSegmentWriter {
     /// AVAssetWriter input that never receives a sample yields an empty track,
     /// which finishWriting can reject.
     let audioInput: AVAssetWriterInput?
+    /// True when video is muxed compressed (no VideoToolbox re-encode).
+    let passthrough: Bool
     let path: String
     let startedAtMs: Double
     let firstPTS: CMTime
@@ -175,6 +186,7 @@ final class MWDATSegmentWriter {
       writer: AVAssetWriter,
       videoInput: AVAssetWriterInput,
       audioInput: AVAssetWriterInput?,
+      passthrough: Bool,
       path: String,
       startedAtMs: Double,
       firstPTS: CMTime
@@ -182,6 +194,7 @@ final class MWDATSegmentWriter {
       self.writer = writer
       self.videoInput = videoInput
       self.audioInput = audioInput
+      self.passthrough = passthrough
       self.path = path
       self.startedAtMs = startedAtMs
       self.firstPTS = firstPTS
@@ -307,6 +320,30 @@ final class MWDATSegmentWriter {
       ],
       encoding: .ascii
     ) ?? "????"
+  }
+
+  private static func describeFormat(_ format: CMFormatDescription) -> String {
+    let subType = CMFormatDescriptionGetMediaSubType(format)
+    let dims = CMVideoFormatDescriptionGetDimensions(format)
+    return "'\(fourCC(subType))' \(dims.width)x\(dims.height)"
+  }
+
+  /// True when this sample can open a new MP4 track (IDR / sync frame).
+  private static func isSyncSample(_ sample: CMSampleBuffer) -> Bool {
+    guard
+      let attachments = CMSampleBufferGetSampleAttachmentsArray(
+        sample, createIfNecessary: false
+      ) as? [[CFString: Any]],
+      let first = attachments.first
+    else {
+      // No attachment array — treat as sync so we do not stall forever on a
+      // stream that never tags NotSync.
+      return true
+    }
+    if let notSync = first[kCMSampleAttachmentKey_NotSync] as? Bool {
+      return !notSync
+    }
+    return true
   }
 
   init(
@@ -492,23 +529,36 @@ final class MWDATSegmentWriter {
   private func appendVideoOnQueue(_ sample: CMSampleBuffer, at arrival: CMTime) {
     guard running else { return }
 
+    let isCompressed = CMSampleBufferGetImageBuffer(sample) == nil
+    if let format = CMSampleBufferGetFormatDescription(sample) {
+      if let previous = lastVideoFormat,
+         !CMFormatDescriptionEqual(previous, otherFormatDescription: format)
+      {
+        // ABR ladder stepped resolution/codec mid-session. Close the open
+        // segment so passthrough never joins mismatched sample descriptions
+        // (the stsd class of failures).
+        Self.log(
+          "video format changed mid-session — rotating "
+            + "(was \(Self.describeFormat(previous)) → \(Self.describeFormat(format)))"
+        )
+        if current != nil {
+          rotate(completion: nil)
+          if isCompressed {
+            awaitingKeyframe = true
+          }
+        }
+      }
+      lastVideoFormat = format
+    }
+
+    if awaitingKeyframe {
+      guard Self.isSyncSample(sample) else { return }
+      awaitingKeyframe = false
+      Self.log("passthrough: sync sample arrived — opening next segment")
+    }
+
     // Video and audio share the host clock (audio is phone-mic), so a frame is
     // stamped with the moment it arrived. Only monotonicity is enforced.
-    //
-    // There used to be an upper clamp here too — no more than ~2 frames (66 ms)
-    // past the previous PTS — meant to smooth over dropped frames. It did the
-    // opposite of what a rolling buffer needs: any gap longer than 66 ms (a
-    // Bluetooth hiccup, or simply the SDK's quality ladder dropping below
-    // 15 fps) was rewritten as 66 ms, so the file's timeline ran FASTER than
-    // real time. Three consequences, all of them things this app promises not
-    // to get wrong:
-    //   1. `durationSec` is the PTS span, so every segment under-reported how
-    //      much wall time it covered — that is why the buffered-seconds counter
-    //      was always low and the look-back window held more than it claimed.
-    //   2. Audio is NOT clamped (it is stamped from the host clock), so video
-    //      drifted ahead of audio by the whole accumulated gap — progressive
-    //      A/V desync inside a single segment.
-    //   3. Playback was time-compressed: the clip ran fast.
     // A real gap in the feed is a real freeze; recording it honestly keeps the
     // clip, its duration and its audio aligned.
     var pts = arrival
@@ -526,6 +576,12 @@ final class MWDATSegmentWriter {
 
     if current == nil {
       do {
+        // Compressed segments must open on a keyframe or the MP4 is unplayable
+        // until the next IDR — hold frames until one arrives.
+        if isCompressed, !Self.isSyncSample(sample) {
+          awaitingKeyframe = true
+          return
+        }
         current = try startSegment(firstSample: retimed, firstPTS: pts)
         scheduleRotation()
       } catch {
@@ -553,11 +609,20 @@ final class MWDATSegmentWriter {
     } else {
       segment.videoAppendFailures += 1
       if segment.videoAppendFailures == 1 {
+        let err = Self.describe(segment.writer.error)
         Self.log(
           "VIDEO append FAILED (first) at pts=\(pts.seconds) "
+            + "passthrough=\(segment.passthrough) "
             + "status=\(Self.describeStatus(segment.writer.status)) "
-            + "error=\(Self.describe(segment.writer.error))"
+            + "error=\(err)"
         )
+        // Surface sample-description / encoder starvation in the field log.
+        if err.lowercased().contains("stsd")
+          || err.contains("1718776948") // 'frma'-class / format errors often numeric
+          || err.lowercased().contains("format")
+        {
+          Self.log("VIDEO append FAILURE looks like sample-description/stsd class")
+        }
       }
     }
   }
@@ -636,17 +701,20 @@ final class MWDATSegmentWriter {
 
     var width = 504
     var height = 896
+    let isCompressed = CMSampleBufferGetImageBuffer(firstSample) == nil
+    var formatHint: CMFormatDescription?
     if let desc = CMSampleBufferGetFormatDescription(firstSample) {
+      formatHint = desc
       let dims = CMVideoFormatDescriptionGetDimensions(desc)
       if dims.width > 0, dims.height > 0 {
         width = Int(dims.width)
         height = Int(dims.height)
       }
       let subType = CMFormatDescriptionGetMediaSubType(desc)
-      let isCompressed = CMSampleBufferGetImageBuffer(firstSample) == nil
       Self.log(
         "source video format: subtype='\(Self.fourCC(subType))' \(dims.width)x\(dims.height) "
-          + "compressed=\(isCompressed)"
+          + "compressed=\(isCompressed) imageBuffer=\(CMSampleBufferGetImageBuffer(firstSample) != nil) "
+          + "dataBuffer=\(CMSampleBufferGetDataBuffer(firstSample) != nil)"
       )
       // Tally what the SDK actually delivered, never the 504x896 fallback
       // above — that is a guess used to keep the encoder configurable, and
@@ -657,51 +725,53 @@ final class MWDATSegmentWriter {
       } else {
         recordRung("unknown")
       }
-      if isCompressed {
-        // The H.264 output settings below configure an ENCODER input, which
-        // only accepts uncompressed samples. Fail loudly rather than let
-        // AVFoundation report it as an opaque "Cannot Encode Media".
+    }
+
+    let videoInput: AVAssetWriterInput
+    if isCompressed {
+      // Zero re-encode: mux the glasses' HEVC bitstream into MP4. Requires
+      // `outputSettings: nil` and a source format hint from the sample.
+      guard let formatHint else {
         throw NSError(
-          domain: "MWDATSegmentWriter", code: 4,
+          domain: "MWDATSegmentWriter", code: 5,
           userInfo: [
             NSLocalizedDescriptionKey:
-              "Glasses are delivering compressed '\(Self.fourCC(subType))' frames, but the "
-              + "segment writer encodes raw frames. Set the stream's videoCodec to .raw.",
+              "Compressed frame arrived without a format description — cannot mux passthrough.",
           ]
         )
       }
+      videoInput = AVAssetWriterInput(
+        mediaType: .video,
+        outputSettings: nil,
+        sourceFormatHint: formatHint
+      )
+      passthroughMode = true
+      Self.log(
+        "video input: \(width)x\(height) HEVC PASSTHROUGH (no re-encode) "
+          + "codec=\(Self.fourCC(CMFormatDescriptionGetMediaSubType(formatHint)))"
+      )
+    } else {
+      // Legacy / SDK fallback: encode decoded CVPixelBuffers to H.264.
+      // 0.3 bits/pixel/frame at 30 fps.
+      let bitRate = max(4_000_000, Int(Double(width * height) * 30.0 * 0.3))
+      videoInput = AVAssetWriterInput(
+        mediaType: .video,
+        outputSettings: [
+          AVVideoCodecKey: AVVideoCodecType.h264,
+          AVVideoWidthKey: width,
+          AVVideoHeightKey: height,
+          AVVideoCompressionPropertiesKey: [
+            AVVideoAverageBitRateKey: bitRate,
+            AVVideoExpectedSourceFrameRateKey: 30,
+            AVVideoMaxKeyFrameIntervalKey: 30,
+            AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+          ],
+        ]
+      )
+      passthroughMode = false
+      Self.log("video input: \(width)x\(height) h264-high RE-ENCODE bitRate=\(bitRate)")
     }
-
-    // 0.3 bits/pixel/frame at 30 fps. The previous `width * height * 2` was
-    // 0.067 bpp (its "~0.2" comment was off by 3x) and only ever hit the
-    // 1.5 Mbit floor, which is what made clips look soft next to a native
-    // Meta recording. This is the LAST place the glasses' pixels are encoded
-    // at full fidelity — the stitcher passes these segments through untouched —
-    // so it is the one that has to be generous.
-    //
-    // Encode cost is not the constraint it was assumed to be: this is a
-    // hardware VideoToolbox encode, and 720x1280@30 is a small fraction of
-    // what the SoC sustains. Disk is not either — 30s at 8 Mbit is ~30 MB of
-    // temporary files that the ring buffer deletes as it evicts them.
-    let bitRate = max(4_000_000, Int(Double(width * height) * 30.0 * 0.3))
-    let videoInput = AVAssetWriterInput(
-      mediaType: .video,
-      outputSettings: [
-        AVVideoCodecKey: AVVideoCodecType.h264,
-        AVVideoWidthKey: width,
-        AVVideoHeightKey: height,
-        AVVideoCompressionPropertiesKey: [
-          AVVideoAverageBitRateKey: bitRate,
-          AVVideoExpectedSourceFrameRateKey: 30,
-          AVVideoMaxKeyFrameIntervalKey: 30,
-          // High profile buys CABAC and B-frames over Baseline — roughly 20%
-          // better quality at the same bitrate, at no cost on a HW encoder.
-          AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-        ],
-      ]
-    )
     videoInput.expectsMediaDataInRealTime = true
-    Self.log("video input: \(width)x\(height) h264-high bitRate=\(bitRate)")
 
     // Audio is optional: it is captured phone-side via AVAudioEngine and can be
     // absent entirely (engine never started, no route, permission). Adding an
@@ -764,7 +834,7 @@ final class MWDATSegmentWriter {
     }
     writer.startSession(atSourceTime: firstPTS)
     Self.log(
-      "segment opened \(width)x\(height) audio=\(audioInput != nil) "
+      "segment opened \(width)x\(height) passthrough=\(isCompressed) audio=\(audioInput != nil) "
         + "sessionStart=\(firstPTS.seconds) status=\(Self.describeStatus(writer.status))"
     )
 
@@ -772,6 +842,7 @@ final class MWDATSegmentWriter {
       writer: writer,
       videoInput: videoInput,
       audioInput: audioInput,
+      passthrough: isCompressed,
       path: path,
       startedAtMs: Date().timeIntervalSince1970 * 1000,
       firstPTS: firstPTS
@@ -800,6 +871,10 @@ final class MWDATSegmentWriter {
       return
     }
     current = nil
+    // Next segment in passthrough mode must open on a sync sample.
+    if segment.passthrough {
+      awaitingKeyframe = true
+    }
 
     let finished = FinishedSegment(
       path: segment.path,
@@ -808,7 +883,7 @@ final class MWDATSegmentWriter {
     )
 
     Self.log(
-      "rotating: video=\(segment.videoSamples) samples "
+      "rotating: passthrough=\(segment.passthrough) video=\(segment.videoSamples) samples "
         + "(failed=\(segment.videoAppendFailures), notReady=\(segment.droppedNotReady)) "
         + "audio=\(segment.audioSamples) samples (failed=\(segment.audioAppendFailures), "
         + "preSession=\(segment.audioPreSessionDrops), peak=\(segment.audioPeak)) "

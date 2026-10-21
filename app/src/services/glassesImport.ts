@@ -1,7 +1,7 @@
 import { AppState } from 'react-native';
 import type { NativeEventSubscription } from 'react-native';
 import { captionQueue } from '../captioning/CaptionQueue';
-import { BUFFER_SECONDS_MAX, FREE_BUFFER_SECONDS_MAX } from '../config';
+import { BUFFER_SECONDS_MAX, FREE_BUFFER_SECONDS_MAX, MASTER_ONLY_CAPTURE } from '../config';
 import { Emitter } from '../core/Emitter';
 import { entitlementStore } from '../core/EntitlementStore';
 import { createLogger } from '../core/Logger';
@@ -38,9 +38,39 @@ class GlassesImportService {
   private appStateSub: NativeEventSubscription | null = null;
   private blocker: string | null = null;
   private changes = new Emitter<string | null>();
+  private markerUnsubs = new Map<(pending: number) => void, () => void>();
 
   get running(): boolean {
     return this.controller !== null;
+  }
+
+  /** True while the wake-word mic is open (Path B overlay listening). */
+  get listening(): boolean {
+    return this.controller?.isListening ?? false;
+  }
+
+  /** Pending markers waiting for a Photos master. */
+  subscribeMarkers(listener: (pending: number) => void): () => void {
+    if (this.controller) {
+      const unsub = this.controller.subscribeMarkers(listener);
+      this.markerUnsubs.set(listener, unsub);
+    } else {
+      listener(0);
+    }
+    return () => {
+      this.markerUnsubs.get(listener)?.();
+      this.markerUnsubs.delete(listener);
+    };
+  }
+
+  private rebindMarkerListeners(): void {
+    if (!this.controller) {
+      return;
+    }
+    for (const listener of this.markerUnsubs.keys()) {
+      this.markerUnsubs.get(listener)?.();
+      this.markerUnsubs.set(listener, this.controller.subscribeMarkers(listener));
+    }
   }
 
   /**
@@ -89,7 +119,8 @@ class GlassesImportService {
    */
   async syncWithSettings(): Promise<void> {
     const { glassesLibraryImport } = await settingsStore.get();
-    if (!glassesLibraryImport) {
+    // Master-only product: Path B is the only capture path — keep it on.
+    if (!MASTER_ONLY_CAPTURE && !glassesLibraryImport) {
       this.setBlocker(null);
       await this.stop();
       return;
@@ -125,6 +156,12 @@ class GlassesImportService {
 
   async start(): Promise<void> {
     if (this.controller) {
+      // Cold start / second syncWithSettings: re-attach Photos without a new
+      // controller (which would duplicate shadow cards for the same markers).
+      await this.controller.reattachPhotosObserver();
+      await this.controller.sync().catch(err =>
+        log.expected('reattach sync failed', err, ErrorCode.StorageIndexUnreadable),
+      );
       return;
     }
     const controller = new GlassesImportController(
@@ -160,6 +197,7 @@ class GlassesImportService {
     // when capture is already armed, which is what marks it owed a resume.
     await controller.start({ listen: microphone.heldBy === null });
     this.controller = controller;
+    this.rebindMarkerListeners();
 
     await microphone.register({
       standDown: () => controller.suspendListening(),

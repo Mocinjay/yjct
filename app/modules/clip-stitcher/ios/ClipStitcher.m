@@ -1,6 +1,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <React/RCTBridgeModule.h>
 #import <UIKit/UIKit.h>
+#import <VideoToolbox/VideoToolbox.h>
 
 // ASCII-only on purpose: a format string containing non-ASCII is emitted as a
 // UTF-16 CFString, which `strings` cannot see, making it useless as a
@@ -346,11 +347,11 @@ RCT_EXPORT_METHOD(stitch:(NSArray<NSString *> *)segmentPaths
                  outputPath:outputPath
                  completion:^(BOOL ok, NSError *passthroughError) {
       if (ok) {
-        JVSLog(@"passthrough export succeeded (no re-encode)");
+        JVSLog(@"passthrough export succeeded (AVAssetExportPresetPassthrough — no re-encode)");
         [self finishWithOutputPath:outputPath resolver:resolveWithSkew rejecter:reject];
         return;
       }
-      JVSLog(@"passthrough export unavailable (%@); falling back to transcode",
+      JVSLog(@"passthrough export unavailable (%@); falling back to Main10-capable transcode",
              passthroughError.localizedDescription);
       [self transcodeComposition:composition
                       outputPath:outputPath
@@ -470,12 +471,12 @@ RCT_EXPORT_METHOD(extractRange:(NSString *)sourcePath
                  outputPath:outputPath
                  completion:^(BOOL ok, NSError *passthroughError) {
       if (ok) {
-        JVSLog(@"cut by passthrough - the master's samples are untouched");
+        JVSLog(@"cut by passthrough - the master's samples are untouched (HDR Main10 preserved)");
         [self finishWithOutputPath:outputPath resolver:resolve rejecter:reject];
         return;
       }
-      JVSLog(@"PASSTHROUGH FAILED for a single-source cut (%@) - transcoding, "
-             @"which will flatten HDR",
+      JVSLog(@"PASSTHROUGH FAILED for a single-source cut (%@) - falling back to "
+             @"Main10 HEVC transcode (last resort before caption burn)",
              passthroughError.localizedDescription);
       [self transcodeComposition:composition
                       outputPath:outputPath
@@ -686,20 +687,14 @@ static JVSVideoColor JVSReadVideoColor(AVAssetTrack *track)
 
     // HEVC for HDR, H.264 otherwise.
     //
-    // This branch exists for a case that is documented as unreachable: a
-    // single-source cut has no format change, so passthrough should always
-    // serve it. "Should" is doing a lot of work there, and the cost of being
-    // wrong is asymmetric — a proxy that lands here loses a generation of
+    // This branch exists for a case that is documented as unreachable for a
+    // single-source cut: there is no format change, so passthrough should
+    // always serve it. "Should" is doing a lot of work there, and the cost of
+    // being wrong is asymmetric — a proxy that lands here loses a generation of
     // quality, while a master that lands here loses the entire reason it was
     // imported instead of streamed. So the fallback is made capable of carrying
-    // a master rather than left to flatten one: 10-bit HEVC, and the source's
-    // own colour written through to the output so a player knows what it is
-    // looking at.
-    //
-    // No `AVVideoProfileLevelKey` on the HEVC branch. The 10-bit profile
-    // constant lives in VideoToolbox, which this pod does not link, and it is
-    // not needed: AVAssetWriter selects Main10 from the pixel format of the
-    // buffers it is handed, which `decodeFormat` has already made 10-bit.
+    // a master rather than left to flatten one: 10-bit HEVC Main10, and the
+    // source's own colour written through to the output.
     NSMutableDictionary *compression = [@{
       AVVideoAverageBitRateKey : @(bitRate),
       AVVideoExpectedSourceFrameRateKey : @30,
@@ -713,6 +708,9 @@ static JVSVideoColor JVSReadVideoColor(AVAssetTrack *track)
                              color.matrix != nil;
     if (color.isHDR) {
       videoSettings[AVVideoCodecKey] = AVVideoCodecTypeHEVC;
+      // Explicit Main10 so a 10-bit HLG source cannot silently fall to Main 8-bit.
+      compression[AVVideoProfileLevelKey] =
+          (__bridge NSString *)kVTProfileLevel_HEVC_Main10_AutoLevel;
       if (canTagColor) {
         videoSettings[AVVideoColorPropertiesKey] = @{
           AVVideoColorPrimariesKey : color.primaries,
@@ -727,11 +725,12 @@ static JVSVideoColor JVSReadVideoColor(AVAssetTrack *track)
     videoSettings[AVVideoCompressionPropertiesKey] = compression;
 
     JVSLog(@"transcode fallback: %.0fx%.0f %@ source=%@ transfer=%@ "
-           @"bitRate=%ld tagged=%@",
+           @"bitRate=%ld tagged=%@ profile=%@",
            videoWidth, videoHeight, color.isHDR ? @"hevc-10bit" : @"h264-high",
            color.isHEVC ? @"hevc" : @"avc",
            color.transferFunction ?: @"(untagged)", (long)bitRate,
-           (color.isHDR && canTagColor) ? @"yes" : @"no");
+           (color.isHDR && canTagColor) ? @"yes" : @"no",
+           color.isHDR ? @"Main10" : @"High");
     AVAssetWriterInput *videoWriterInput =
         [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeVideo
                                       outputSettings:videoSettings];

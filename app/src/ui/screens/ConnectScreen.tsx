@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { createLogger } from '../../core/Logger';
 import { describe } from '../../core/errors';
+import { MASTER_ONLY_CAPTURE, WAKE_PHRASE } from '../../config';
 import { useGlassesLease } from '../../device/glassesLease';
 import {
   MWDATNative,
@@ -31,10 +32,9 @@ const AUTO_MOCK = __DEV__ && mwdatIsSimulator();
 type Props = NativeStackScreenProps<RootStackParamList, 'Connect'>;
 
 /**
- * Boot gate: nothing else happens until the glasses are linked and streaming.
- * Shows the raw SDK truth (registration, devices, link, compatibility) so a
- * failed connection says exactly which stage is broken, then a live wearer's
- * view before handing off to the Armed screen.
+ * Boot gate: Meta AI registration (and, when Path A is enabled, a live
+ * preview). In master-only mode we never open a Bluetooth preview buffer —
+ * after linking we go straight to listening for wake-word markers.
  */
 export function ConnectScreen({ navigation }: Props) {
   const {
@@ -49,7 +49,7 @@ export function ConnectScreen({ navigation }: Props) {
   /** Set when the user leaves Connect so the auto-advance timer cannot yank them back. */
   const leftConnect = useRef(false);
   const isFocused = useIsFocused();
-  useGlassesLease(isFocused);
+  useGlassesLease(isFocused && !MASTER_ONLY_CAPTURE);
 
   // The lease closes the glasses session once no screen holds it, so leaving
   // this screen must also clear the "already opened" latch — otherwise coming
@@ -147,7 +147,11 @@ export function ConnectScreen({ navigation }: Props) {
   }, [registering, setError]);
 
   // Native tears the session down on background. When we come back, reopen.
+  // Master-only never opens a preview session.
   useEffect(() => {
+    if (MASTER_ONLY_CAPTURE) {
+      return;
+    }
     const sub = AppState.addEventListener('change', state => {
       if (state !== 'active') {
         return;
@@ -166,6 +170,9 @@ export function ConnectScreen({ navigation }: Props) {
 
   // As soon as we're registered with a device in sight, open the live view.
   useEffect(() => {
+    if (MASTER_ONLY_CAPTURE) {
+      return;
+    }
     if (
       (!registered && !AUTO_MOCK) ||
       !mockReady ||
@@ -192,9 +199,30 @@ export function ConnectScreen({ navigation }: Props) {
     })();
   }, [registered, device, mockReady, previewEpoch, isFocused, setError]);
 
+  // Master-only: after Meta AI link, go straight to listening — no stream.
+  useEffect(() => {
+    if (!MASTER_ONLY_CAPTURE) {
+      return;
+    }
+    if ((!registered && !AUTO_MOCK) || !mockReady || leftConnect.current) {
+      return;
+    }
+    const t = setTimeout(() => {
+      if (leftConnect.current) {
+        return;
+      }
+      leftConnect.current = true;
+      navigation.reset({ index: 0, routes: [{ name: 'Armed' }] });
+    }, AUTO_MOCK ? 600 : 900);
+    return () => clearTimeout(t);
+  }, [registered, mockReady, navigation]);
+
   // Once the glasses feed is live, go straight into the always-on live view.
   // Buffering starts there automatically — no separate "start recording" step.
   useEffect(() => {
+    if (MASTER_ONLY_CAPTURE) {
+      return;
+    }
     if (!streaming || (!registered && !AUTO_MOCK) || leftConnect.current) {
       return;
     }
@@ -261,21 +289,36 @@ export function ConnectScreen({ navigation }: Props) {
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
       <Text style={styles.kicker}>● CLYPSO</Text>
-      <Text style={styles.title}>Link your{'\n'}Meta glasses.</Text>
+      <Text style={styles.title}>
+        {MASTER_ONLY_CAPTURE
+          ? `Link glasses.\nThen say “${WAKE_PHRASE}”.`
+          : 'Link your\nMeta glasses.'}
+      </Text>
 
-      <View style={styles.previewBox}>
-        {/* Mounted unconditionally: GlassesPreview attaches the frame listener
-            on mount, so gating it on `previewing` would only subscribe *after*
-            the native stream had already started and dropped its first frames. */}
-        <GlassesPreview style={styles.preview} />
-        {!previewing && (
+      {MASTER_ONLY_CAPTURE ? (
+        <View style={styles.previewBox}>
           <View style={[styles.previewPlaceholder, StyleSheet.absoluteFill]}>
             <Text style={styles.placeholderText}>
-              {busy ?? 'The wearer’s view appears here once linked.'}
+              No live preview — Meta records on the glasses. Clypso listens for “
+              {WAKE_PHRASE}” and cuts masters from Photos after sync (≥1080p HDR).
             </Text>
           </View>
-        )}
-      </View>
+        </View>
+      ) : (
+        <View style={styles.previewBox}>
+          {/* Mounted unconditionally: GlassesPreview attaches the frame listener
+              on mount, so gating it on `previewing` would only subscribe *after*
+              the native stream had already started and dropped its first frames. */}
+          <GlassesPreview style={styles.preview} />
+          {!previewing && (
+            <View style={[styles.previewPlaceholder, StyleSheet.absoluteFill]}>
+              <Text style={styles.placeholderText}>
+                {busy ?? 'The wearer’s view appears here once linked.'}
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
 
       <View style={styles.statusCard}>
         <StatusRow
@@ -299,16 +342,20 @@ export function ConnectScreen({ navigation }: Props) {
             good={device.compatibility.toLowerCase() === 'compatible'}
           />
         ) : null}
-        <StatusRow
-          label="Glasses camera"
-          value={diag?.cameraPermission ?? '…'}
-          good={diag?.cameraPermission === 'granted'}
-        />
-        <StatusRow
-          label="Camera stream"
-          value={diag?.streamState ?? '…'}
-          good={streaming}
-        />
+        {!MASTER_ONLY_CAPTURE ? (
+          <>
+            <StatusRow
+              label="Glasses camera"
+              value={diag?.cameraPermission ?? '…'}
+              good={diag?.cameraPermission === 'granted'}
+            />
+            <StatusRow
+              label="Camera stream"
+              value={diag?.streamState ?? '…'}
+              good={streaming}
+            />
+          </>
+        ) : null}
       </View>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -321,6 +368,10 @@ export function ConnectScreen({ navigation }: Props) {
           <Text style={styles.ctaText}>
             {busy ?? 'Connect through Meta AI'}
           </Text>
+        </Pressable>
+      ) : MASTER_ONLY_CAPTURE ? (
+        <Pressable style={styles.cta} onPress={proceed}>
+          <Text style={styles.ctaText}>Continue — start listening</Text>
         </Pressable>
       ) : streaming ? (
         <Pressable style={styles.cta} onPress={proceed}>
@@ -336,10 +387,12 @@ export function ConnectScreen({ navigation }: Props) {
       )}
 
       <Text style={styles.hint}>
-        Glasses unfolded and on your head · paired in Meta AI · Developer Mode
+        {MASTER_ONLY_CAPTURE
+          ? `Record on the glasses · say “${WAKE_PHRASE}” · Meta AI syncs to Photos · Clypso cuts & captions. Keep the app open so the mic stays live.`
+          : `Glasses unfolded and on your head · paired in Meta AI · Developer Mode
         on (Meta AI → Settings → App Info → tap App version 5×) · Clypso
         enabled under Meta AI → Settings → App connections.
-        {streaming ? '\n\nOpening live view…' : ''}
+        ${streaming ? '\n\nOpening live view…' : ''}`}
       </Text>
 
       {!registered ? (

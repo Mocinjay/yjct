@@ -62,7 +62,12 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
+		<!-- DAT-documented Meta AI / Meta View companion scheme -->
 		<string>fb-viewapp</string>
+		<!-- Experimental probes for sync-nudge (docs/LATERAL-WORKAROUNDS.md) -->
+		<string>fb-viewapp-deeplink</string>
+		<string>meta-view</string>
+		<string>metaview</string>
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>

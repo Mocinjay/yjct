@@ -127,6 +127,90 @@ export class ClipStore {
   }
 
   /**
+   * Hybrid swap: replace a Path A proxy file with a Path B master while
+   * keeping the same clip `id` so the library, player and CaptionQueue do not
+   * lose their place.
+   *
+   * Only runs when U1 scored `concurrent` or `degraded` for the overlapping
+   * window — callers decide. Deletes the old media (and any captioned copy)
+   * and resets caption state so Pro re-burns against the master.
+   */
+  async replaceProxyWithMaster(
+    proxyId: string,
+    master: {
+      filePath: string;
+      thumbnailPath: string;
+      durationSec: number;
+    },
+  ): Promise<Clip | null> {
+    let previousPaths: string[] = [];
+    const replaced = await this.mutate(clips => {
+      const proxy = clips.find(c => c.id === proxyId);
+      // Path A mwdat proxies and Shadow cards both promote the same way.
+      if (
+        !proxy ||
+        (proxy.sourceKind !== 'mwdat' && proxy.sourceKind !== 'shadow')
+      ) {
+        return { next: clips, result: null };
+      }
+      if (proxy.masterReplacedAt && proxy.ingestState === 'MASTER_READY') {
+        return { next: clips, result: proxy };
+      }
+
+      previousPaths = [
+        proxy.filePath,
+        proxy.thumbnailPath,
+        proxy.captionedFilePath,
+      ].filter((p): p is string => Boolean(p));
+
+      const nextClip: Clip = {
+        ...proxy,
+        filePath: master.filePath,
+        thumbnailPath: master.thumbnailPath,
+        durationSec: master.durationSec,
+        sourceKind: 'glasses-library',
+        ingestState: 'MASTER_READY',
+        masterReplacedAt: Date.now(),
+        captionState: 'none',
+        captionedFilePath: null,
+        captionError: null,
+        captionProvider: undefined,
+        captionStyle: undefined,
+      };
+
+      return {
+        next: clips.map(c => (c.id === proxyId ? nextClip : c)),
+        result: nextClip,
+      };
+    });
+
+    if (replaced && previousPaths.length > 0) {
+      await Promise.all(
+        previousPaths.map(p =>
+          RNFS.unlink(p).catch(err =>
+            log.expected(
+              'could not delete replaced proxy media',
+              err,
+              ErrorCode.CaptureSegmentCleanupFailed,
+            ),
+          ),
+        ),
+      );
+    }
+    return replaced;
+  }
+
+  async setIngestState(
+    id: string,
+    ingestState: NonNullable<Clip['ingestState']>,
+  ): Promise<void> {
+    await this.mutate(clips => ({
+      next: clips.map(c => (c.id === id ? { ...c, ingestState } : c)),
+      result: undefined,
+    }));
+  }
+
+  /**
    * Records a successful publish. Publishing is an implicit save — a clip the
    * user put on YouTube must not evaporate 24h later.
    */
@@ -267,8 +351,15 @@ export function newClip(fields: {
   sourceKind: DeviceKind;
   /** Pro clips are born saved and never expire; free clips start the clock. */
   isPro: boolean;
+  /** Path A session id — enables Hybrid proxy→master swap. */
+  hardwareSessionId?: string;
+  ingestState?: Clip['ingestState'];
+  markerId?: string;
 }): Clip {
   const { capturedAt, isPro } = fields;
+  const ingestState =
+    fields.ingestState ??
+    (fields.sourceKind === 'shadow' ? 'MARKED_PENDING' : 'MASTER_READY');
   return {
     id: fields.id,
     name: defaultClipName(capturedAt),
@@ -277,6 +368,10 @@ export function newClip(fields: {
     capturedAt,
     durationSec: fields.durationSec,
     sourceKind: fields.sourceKind,
+    ingestState,
+    markerId: fields.markerId,
+    hardwareSessionId: fields.hardwareSessionId,
+    masterReplacedAt: null,
     savedAt: isPro ? capturedAt : null,
     expiresAt: isPro ? null : capturedAt + FREE_RETENTION_HOURS * 3600_000,
   };
@@ -323,6 +418,22 @@ export function deliverablePath(clip: Clip): string {
   return clip.captionState === 'ready' && clip.captionedFilePath
     ? clip.captionedFilePath
     : clip.filePath;
+}
+
+/** True once a Shadow/Hybrid clip has a real master on disk. */
+export function isMasterReady(clip: Clip): boolean {
+  if (clip.ingestState === 'MARKED_PENDING' || clip.ingestState === 'INGESTING') {
+    return false;
+  }
+  if (clip.sourceKind === 'shadow') {
+    return false;
+  }
+  return Boolean(clip.filePath);
+}
+
+/** Publish / share only when Quality non-negotiable is satisfied. */
+export function isPublishable(clip: Clip): boolean {
+  return isMasterReady(clip) && Boolean(deliverablePath(clip));
 }
 
 /** True while the clip is waiting on, or inside, the captioning pipeline. */

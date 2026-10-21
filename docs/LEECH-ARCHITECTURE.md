@@ -89,33 +89,25 @@ verdict.
 ### U1 — Can the live stream survive while the glasses record natively?
 
 A previous session anticipated exactly this question and built the instrument,
-then never ran it. `markers/streamConcurrency.ts:1-11`:
+then never ran it. The instrument is now complete and wired into Hybrid swap:
 
-> "It answers whether Path A and Path B can produce footage for the same moment,
-> which decides whether a proxy-to-master swap is a feature or an impossibility."
+- `MWDATStreamTimeline` collects link telemetry; stream errors (including
+  stsd-like / device-unavailable text) land as timeline `error` entries.
+- `MWDATNative.getStreamTimeline()` exposes it.
+- `concurrencyVerdict()` / `hybridSwapAllowed()` / `findProxySwapCandidates()`
+  score the window (`streamConcurrency.ts`).
+- `GlassesImportController.scoreConcurrency()` runs on every Path B import;
+  when the outcome is `concurrent` or `degraded`, overlapping Path A proxies
+  (`sourceKind: 'mwdat'`) are silently replaced via
+  `clipStore.replaceProxyWithMaster` (same `id`, `hardwareSessionId` retained,
+  captions re-queued).
 
-The instrument is complete and wired: `MWDATStreamTimeline.swift` collects link
-telemetry, `MWDATNative.getStreamTimeline()` exposes it,
-`concurrencyVerdict()` scores it (`streamConcurrency.ts:61-115`), and
-`GlassesImportController.probeConcurrency()` runs it on every Path B import
-(`:287-305`). It is not behind a config flag — it is always on — and it is
-observational only, so it cannot fail an import (`:279-286`).
+MWDAT exposes **no API to start a native glasses recording**, so U1 cannot be
+forced from the app. It is answered backwards when a Photos master arrives.
 
-It scores one of four outcomes (`streamConcurrency.ts:26-34`):
-
-| Outcome | Meaning | Consequence for Hybrid |
-|---|---|---|
-| `concurrent` | frames kept arriving above 15fps throughout | Hybrid works as designed |
-| `degraded` | frames thinned but never stopped | Hybrid works; proxy quality is unreliable |
-| `exclusive` | frames stopped, stalled or errored inside the window | **Hybrid is impossible** |
-| `no-evidence` | nothing was watching | inconclusive, re-run |
-
-The question must be answered backwards, because the glasses never tell the
-phone that a native recording began (`:281-283`). The file turns up later
-carrying its own capture time, and the link telemetry from that window is the
-only evidence.
-
-**Unmeasured.** `grep` across `docs/` finds no recorded verdict.
+**Field verdict: UNMEASURED.** No worn concurrent session has been scored yet.
+Code path is ready; the first import that overlaps an armed Path A stream will
+log `concurrency probe — …` and either swap or leave both clips.
 
 ### U2 — One microphone, two claimants — **RESOLVED**
 

@@ -68,18 +68,88 @@ jest.mock('../src/native/GlassesMediaLibraryNative', () => ({
 // Only the store's disk-backed half is replaced. `newClip`/`newClipId` are
 // pure and shared with the capture path, so stubbing them out here would test
 // a clip shape this module does not actually produce.
+const mockProxyList: {
+  id: string;
+  sourceKind: string;
+  capturedAt: number;
+  masterReplacedAt?: number | null;
+  hardwareSessionId?: string;
+  filePath: string;
+  thumbnailPath: string;
+  durationSec: number;
+  ingestState?: string;
+  markerId?: string;
+}[] = [];
+
 jest.mock('../src/core/ClipStore', () => ({
   ...jest.requireActual('../src/core/ClipStore'),
   clipStore: {
     ensureDir: jest.fn(async () => '/docs/clips'),
+    list: jest.fn(async () => mockProxyList),
     add: jest.fn(async (clip: { id: string; sourceKind: string; durationSec: number }) => {
       mockAdded.push(clip);
     }),
+    setIngestState: jest.fn(async () => {}),
+    replaceProxyWithMaster: jest.fn(
+      async (
+        proxyId: string,
+        master: { filePath: string; thumbnailPath: string; durationSec: number },
+      ) => {
+        const proxy = mockProxyList.find(c => c.id === proxyId);
+        if (
+          !proxy ||
+          (proxy.sourceKind !== 'mwdat' && proxy.sourceKind !== 'shadow')
+        ) {
+          return null;
+        }
+        const next = {
+          ...proxy,
+          filePath: master.filePath,
+          thumbnailPath: master.thumbnailPath,
+          durationSec: master.durationSec,
+          sourceKind: 'glasses-library',
+          ingestState: 'MASTER_READY',
+          masterReplacedAt: Date.now(),
+        };
+        Object.assign(proxy, next);
+        return next;
+      },
+    ),
   },
+}));
+
+jest.mock('../src/native/MWDATNative', () => ({
+  MWDATNative: {
+    getStreamTimeline: jest.fn(async () => []),
+  },
+  mwdatAvailable: jest.fn(() => false),
 }));
 
 jest.mock('../src/core/EntitlementStore', () => ({
   entitlementStore: { isPro: jest.fn(async () => false) },
+}));
+
+jest.mock('../src/core/SettingsStore', () => ({
+  settingsStore: {
+    get: jest.fn(async () => ({ metaViewNudgeAfterMark: false })),
+  },
+}));
+
+jest.mock('../src/native/MetaViewNudge', () => ({
+  MetaViewNudge: { openCompanion: jest.fn(async () => false) },
+}));
+
+jest.mock('../src/core/telemetry', () => ({
+  emitTelemetry: jest.fn(),
+}));
+
+const { emitTelemetry: mockEmitTelemetry } = jest.requireMock(
+  '../src/core/telemetry',
+) as { emitTelemetry: jest.Mock };
+
+jest.mock('../src/markers/shadowPreview', () => ({
+  ensurePreviewFrameCache: jest.fn(),
+  writeShadowThumbnail: jest.fn(async (p: string) => p),
 }));
 
 /**
@@ -134,6 +204,7 @@ async function emptyStore(): Promise<MarkerStore> {
 
 beforeEach(() => {
   mockAdded.length = 0;
+  mockProxyList.length = 0;
   jest.clearAllMocks();
   mockExtractRange.mockImplementation(
     async (_src: string, start: number, end: number, out: string) => ({
@@ -328,16 +399,21 @@ describe('GlassesImportController listening', () => {
     const subject = controller(await emptyStore(), wakeWord);
     await subject.start();
 
+    const { GlassesMediaLibraryNative } = jest.requireMock(
+      '../src/native/GlassesMediaLibraryNative',
+    );
+    // start() rebases the Photos observer (stop→start). Suspend must not.
+    GlassesMediaLibraryNative.stopWatching.mockClear();
+    GlassesMediaLibraryNative.startWatching.mockClear();
+
     await subject.suspendListening();
 
     expect(subject.isListening).toBe(false);
     expect(wakeWord.stop).toHaveBeenCalledTimes(1);
     // The observer is what makes a synced recording turn up on its own, and
     // it costs no microphone at all.
-    const { GlassesMediaLibraryNative } = jest.requireMock(
-      '../src/native/GlassesMediaLibraryNative',
-    );
     expect(GlassesMediaLibraryNative.stopWatching).not.toHaveBeenCalled();
+    expect(GlassesMediaLibraryNative.startWatching).not.toHaveBeenCalled();
   });
 
   it('imports while suspended, because that is the half that still works', async () => {
@@ -444,5 +520,179 @@ describe('GlassesImportController listening', () => {
 
     expect(wakeWord.start).not.toHaveBeenCalled();
     expect(wakeWord.stop).not.toHaveBeenCalled();
+  });
+
+  it('silently swaps an overlapping Path A proxy when the stream stayed concurrent', async () => {
+    const { MWDATNative } = jest.requireMock('../src/native/MWDATNative');
+    const { clipStore } = jest.requireMock('../src/core/ClipStore');
+    MWDATNative.getStreamTimeline.mockResolvedValue([
+      {
+        atMs: RECORDING_START + 1_000,
+        kind: 'fps',
+        detail: '',
+        fps: 30,
+      },
+      {
+        atMs: RECORDING_START + 10_000,
+        kind: 'fps',
+        detail: '',
+        fps: 28,
+      },
+    ]);
+    mockProxyList.push({
+      id: 'proxy-1',
+      sourceKind: 'mwdat',
+      capturedAt: RECORDING_START + 15_000,
+      masterReplacedAt: null,
+      hardwareSessionId: 'hw_test',
+      filePath: '/docs/clips/proxy.mp4',
+      thumbnailPath: '/docs/clips/proxy.jpg',
+      durationSec: 10,
+    });
+
+    const store = await emptyStore();
+    await store.add({ id: 'm1', atMs: RECORDING_START + 15_000 });
+    mockListRecentVideos.mockResolvedValue({ videos: [GLASSES_VIDEO] });
+    mockConfirmGlassesVideo.mockResolvedValue({
+      isGlasses: true,
+      pendingDownload: false,
+      startedAtMs: RECORDING_START,
+      durationSec: 20,
+      width: 1520,
+      height: 2032,
+    });
+    mockExportOriginal.mockResolvedValue({
+      path: '/docs/glasses-1.mov',
+      bytes: 33_000_000,
+    });
+
+    const clips = await controller(store).sync();
+
+    expect(clipStore.replaceProxyWithMaster).toHaveBeenCalled();
+    expect(clipStore.add).not.toHaveBeenCalled();
+    expect(clips[0].id).toBe('proxy-1');
+    expect(clips[0].masterReplacedAt).toBeTruthy();
+  });
+
+  it('rejects glasses video shorter than 1080 on the short edge', async () => {
+    const store = await emptyStore();
+    await store.add({ id: 'm1', atMs: RECORDING_START + 15_000 });
+    mockListRecentVideos.mockResolvedValue({
+      videos: [
+        {
+          ...GLASSES_VIDEO,
+          width: 720,
+          height: 1280,
+        },
+      ],
+    });
+    mockConfirmGlassesVideo.mockResolvedValue({
+      isGlasses: true,
+      pendingDownload: false,
+      startedAtMs: RECORDING_START,
+      durationSec: 20,
+      width: 720,
+      height: 1280,
+    });
+
+    const clips = await controller(store).sync();
+
+    expect(clips).toEqual([]);
+    expect(mockExportOriginal).not.toHaveBeenCalled();
+    // Marker kept — a later master at full res can still claim it.
+    expect(await store.all()).toHaveLength(1);
+  });
+});
+
+describe('GlassesImportController shadow recovery', () => {
+  it('emits SHADOW_TIMEOUT and rebases Photos when pending past budget', async () => {
+    const { MARKED_PENDING_TIMEOUT_MS } = jest.requireActual(
+      '../src/markers/GlassesImportController',
+    ) as { MARKED_PENDING_TIMEOUT_MS: number };
+    const { GlassesMediaLibraryNative } = jest.requireMock(
+      '../src/native/GlassesMediaLibraryNative',
+    );
+
+    mockProxyList.push({
+      id: 'shadow-stale',
+      sourceKind: 'shadow',
+      capturedAt: Date.now() - MARKED_PENDING_TIMEOUT_MS - 60_000,
+      filePath: '',
+      thumbnailPath: '/docs/shadow.jpg',
+      durationSec: 10,
+      ingestState: 'MARKED_PENDING',
+      markerId: 'mark_stale',
+    });
+
+    await controller(await emptyStore()).sync();
+
+    expect(mockEmitTelemetry).toHaveBeenCalledWith(
+      'SHADOW_TIMEOUT',
+      expect.objectContaining({ runId: 'mark_stale', clipId: 'shadow-stale' }),
+    );
+    expect(GlassesMediaLibraryNative.stopWatching).toHaveBeenCalled();
+    expect(GlassesMediaLibraryNative.startWatching).toHaveBeenCalled();
+  });
+
+  it('reattachPhotosObserver rebases without requiring a new controller', async () => {
+    const { GlassesMediaLibraryNative } = jest.requireMock(
+      '../src/native/GlassesMediaLibraryNative',
+    );
+    const subject = controller(await emptyStore());
+    await subject.start();
+    GlassesMediaLibraryNative.stopWatching.mockClear();
+    GlassesMediaLibraryNative.startWatching.mockClear();
+
+    await subject.reattachPhotosObserver();
+
+    expect(GlassesMediaLibraryNative.stopWatching).toHaveBeenCalled();
+    expect(GlassesMediaLibraryNative.startWatching).toHaveBeenCalled();
+  });
+
+  it('emits SHADOW_RECOVERED when a timed-out shadow promotes to master', async () => {
+    const { MARKED_PENDING_TIMEOUT_MS } = jest.requireActual(
+      '../src/markers/GlassesImportController',
+    ) as { MARKED_PENDING_TIMEOUT_MS: number };
+
+    mockProxyList.push({
+      id: 'shadow-recover',
+      sourceKind: 'shadow',
+      capturedAt: Date.now() - MARKED_PENDING_TIMEOUT_MS - 1_000,
+      filePath: '',
+      thumbnailPath: '/docs/s.jpg',
+      durationSec: 10,
+      ingestState: 'MARKED_PENDING',
+      markerId: 'm1',
+    });
+
+    const store = await emptyStore();
+    await store.add({ id: 'm1', atMs: RECORDING_START + 15_000 });
+    mockListRecentVideos.mockResolvedValue({ videos: [GLASSES_VIDEO] });
+    mockConfirmGlassesVideo.mockResolvedValue({
+      isGlasses: true,
+      pendingDownload: false,
+      startedAtMs: RECORDING_START,
+      durationSec: 20,
+    });
+    mockExportOriginal.mockResolvedValue({ path: '/docs/glasses-1.mov', bytes: 1 });
+
+    const clips = await controller(store).sync();
+
+    expect(clips).toHaveLength(1);
+    expect(mockEmitTelemetry).toHaveBeenCalledWith(
+      'SHADOW_TIMEOUT',
+      expect.objectContaining({ runId: 'm1' }),
+    );
+    expect(mockEmitTelemetry).toHaveBeenCalledWith(
+      'SHADOW_RECOVERED',
+      expect.objectContaining({ runId: 'm1', clipId: 'shadow-recover' }),
+    );
+    expect(mockEmitTelemetry).toHaveBeenCalledWith(
+      'T_MASTER_READY',
+      expect.objectContaining({ clipId: 'shadow-recover' }),
+    );
+    // Still one library card — promotion reused the shadow id.
+    expect(mockProxyList.filter(c => c.id === 'shadow-recover')).toHaveLength(1);
+    expect(mockAdded.filter(c => c.id === 'shadow-recover')).toHaveLength(0);
   });
 });

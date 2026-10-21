@@ -3,6 +3,7 @@ import CoreMedia
 import Foundation
 import MWDATCamera
 import UIKit
+import VideoToolbox
 
 /// Turns glasses video frames into the throttled JPEG stream the viewfinder
 /// renders.
@@ -14,19 +15,26 @@ import UIKit
 /// serial queue that ran the preview further and further behind the wearer, and
 /// encoding that never stopped when nothing was on screen.
 ///
+/// Path A records compressed HEVC (`.hvc1`) by muxing `CMSampleBuffer`s
+/// straight into the segment writer. Those samples carry a `dataBuffer` and
+/// **no** `imageBuffer`, so the preview cannot read pixels without decoding.
+/// Decoding lives here only — the writer never sees a decompressed frame —
+/// via `VTDecompressionSession`. Raw / already-decoded frames still take the
+/// cheap CoreImage path.
+///
 /// Emits through a callback rather than calling `sendEvent` itself, so it has
 /// no dependency on React Native and the throttling can be reasoned about
 /// without one.
 final class MWDATPreviewEncoder {
   /// Longest edge of a preview frame, in pixels. The feed is a ~1/3-screen
-  /// viewfinder, so the glasses' native 504×896 is far more detail than is ever
-  /// displayed — and every extra pixel is paid for three times: CoreImage
+  /// viewfinder, so the glasses' native resolution is far more detail than is
+  /// ever displayed — and every extra pixel is paid for three times: CoreImage
   /// render, JPEG encode, and a base64 string across the bridge. Halving the
   /// edge quarters all three, which is what buys the higher frame rate.
   private static let maxEdge: CGFloat = 448
 
-  /// ~8 fps. Kept below the clip encode rate so CoreImage/JPEG work does not
-  /// starve the segment writer, which is what makes recorded clips look laggy.
+  /// ~8 fps. Kept below the clip encode/mux rate so CoreImage/JPEG (and the
+  /// occasional VT decode) do not starve the segment writer.
   private static let minInterval: TimeInterval = 0.12
 
   private static let quality = 0.4
@@ -49,18 +57,17 @@ final class MWDATPreviewEncoder {
   private var lastEmitAt: TimeInterval = 0
 
   /// Encoding is skipped entirely while nothing is displaying the feed.
-  /// `startObserving`/`stopObserving` cannot express this: they fire for the
-  /// emitter as a whole, and segment/error listeners are always attached, so
-  /// preview kept encoding and crossing the bridge on every screen — including
-  /// while a clip was playing, which starved the JS thread and froze the UI.
-  ///
-  /// Off until a view asks for frames. Defaulting to on meant every frame was
-  /// converted, encoded and sent from app launch until something mounted, which
-  /// RN reports as "Sending `MWDATPreviewFrame` with no listeners registered".
+  /// Off until a view asks for frames.
   private var enabled = false
 
   private var emitCount = 0
   private var failureLogged = false
+  private var decodePathLogged = false
+
+  /// Held across frames that share a format description. Recreated when the
+  /// SDK's ABR ladder changes resolution mid-session.
+  private var decompressionSession: VTDecompressionSession?
+  private var decompressionFormat: CMFormatDescription?
 
   /// Called on the encoder's own queue with a base64 JPEG.
   private let onFrame: (String) -> Void
@@ -69,6 +76,10 @@ final class MWDATPreviewEncoder {
   init(onFrame: @escaping (String) -> Void, log: @escaping (String) -> Void) {
     self.onFrame = onFrame
     self.log = log
+  }
+
+  deinit {
+    tearDownDecompression()
   }
 
   var isEnabled: Bool {
@@ -89,8 +100,12 @@ final class MWDATPreviewEncoder {
     lock.lock()
     emitCount = 0
     failureLogged = false
+    decodePathLogged = false
     lastEmitAt = 0
     lock.unlock()
+    queue.async { [weak self] in
+      self?.tearDownDecompression()
+    }
   }
 
   var framesEmitted: Int {
@@ -128,20 +143,58 @@ final class MWDATPreviewEncoder {
 
   /// Queue-only.
   private func encode(_ frame: VideoFrame) {
-    // Raw YCbCr frames (what `.raw` delivers, and what the writer needs) come
-    // through as CVPixelBuffers, so scale and encode them on the GPU in one
-    // pass — `jpegRepresentation` skips the CGImage → UIImage → jpegData round
-    // trip that allocated a full-size bitmap per frame. `makeUIImage()` is the
-    // fallback for compressed/HVC1 frames, which it does decode.
-    let jpeg: Data?
-    if let pixelBuffer = CMSampleBufferGetImageBuffer(frame.sampleBuffer) {
-      var image = CIImage(cvPixelBuffer: pixelBuffer)
-      let longestEdge = max(image.extent.width, image.extent.height)
-      let scale = longestEdge > 0 ? min(1, Self.maxEdge / longestEdge) : 1
-      if scale < 1 {
-        image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+    let sample = frame.sampleBuffer
+    let pixelBuffer: CVPixelBuffer?
+    var usedDecoder = false
+
+    if let imageBuffer = CMSampleBufferGetImageBuffer(sample) {
+      pixelBuffer = imageBuffer
+    } else if let decoded = decodeCompressed(sample) {
+      pixelBuffer = decoded
+      usedDecoder = true
+    } else {
+      // Last resort: SDK helper. Documented to return nil for `.hvc1` frames,
+      // but kept so a future SDK that fills imageBuffer again still works.
+      pixelBuffer = nil
+      if let image = frame.makeUIImage(),
+         let jpeg = image.jpegData(compressionQuality: Self.quality)
+      {
+        emit(jpeg: jpeg)
+        return
       }
-      jpeg = Self.ciContext.jpegRepresentation(
+    }
+
+    guard let pixelBuffer else {
+      lock.lock()
+      let alreadyLogged = failureLogged
+      failureLogged = true
+      lock.unlock()
+      if !alreadyLogged {
+        log(
+          "preview conversion FAILED — no imageBuffer, VT decode nil, makeUIImage nil"
+        )
+      }
+      return
+    }
+
+    if usedDecoder {
+      lock.lock()
+      let first = !decodePathLogged
+      decodePathLogged = true
+      lock.unlock()
+      if first {
+        log("preview path: VTDecompressionSession (compressed HEVC → JPEG)")
+      }
+    }
+
+    var image = CIImage(cvPixelBuffer: pixelBuffer)
+    let longestEdge = max(image.extent.width, image.extent.height)
+    let scale = longestEdge > 0 ? min(1, Self.maxEdge / longestEdge) : 1
+    if scale < 1 {
+      image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+    }
+    guard
+      let jpeg = Self.ciContext.jpegRepresentation(
         of: image,
         colorSpace: CGColorSpaceCreateDeviceRGB(),
         options: [
@@ -149,23 +202,21 @@ final class MWDATPreviewEncoder {
             Self.quality,
         ]
       )
-    } else {
-      jpeg = frame.makeUIImage()?.jpegData(compressionQuality: Self.quality)
-    }
-
-    guard let jpeg else {
+    else {
       lock.lock()
       let alreadyLogged = failureLogged
       failureLogged = true
       lock.unlock()
       if !alreadyLogged {
-        log(
-          "preview conversion FAILED (makeUIImage and CoreImage both nil) — frames arrive but cannot render"
-        )
+        log("preview JPEG encode FAILED after successful pixel buffer")
       }
       return
     }
 
+    emit(jpeg: jpeg)
+  }
+
+  private func emit(jpeg: Data) {
     lock.lock()
     emitCount += 1
     let count = emitCount
@@ -175,5 +226,96 @@ final class MWDATPreviewEncoder {
       log("preview emit #\(count) — \(jpeg.count) bytes JPEG")
     }
     onFrame(jpeg.base64EncodedString())
+  }
+
+  // MARK: - HEVC decode (preview only)
+
+  private func decodeCompressed(_ sample: CMSampleBuffer) -> CVPixelBuffer? {
+    guard let format = CMSampleBufferGetFormatDescription(sample) else { return nil }
+    guard let session = ensureDecompressionSession(for: format) else { return nil }
+
+    var output: CVPixelBuffer?
+    var infoFlags = VTDecodeInfoFlags()
+    // Synchronous decode: the output handler runs before this call returns, so
+    // `output` is populated without racing the preview queue.
+    let status = VTDecompressionSessionDecodeFrame(
+      session,
+      sampleBuffer: sample,
+      flags: [],
+      infoFlagsOut: &infoFlags
+    ) { status, _, imageBuffer, _, _ in
+      if status == noErr {
+        output = imageBuffer
+      }
+    }
+
+    if status != noErr {
+      lock.lock()
+      let alreadyLogged = failureLogged
+      failureLogged = true
+      lock.unlock()
+      if !alreadyLogged {
+        log("VTDecompressionSessionDecodeFrame failed status=\(status)")
+      }
+      return nil
+    }
+
+    return output
+  }
+
+  private func ensureDecompressionSession(
+    for format: CMFormatDescription
+  ) -> VTDecompressionSession? {
+    if let session = decompressionSession,
+       let existing = decompressionFormat,
+       CMFormatDescriptionEqual(existing, otherFormatDescription: format)
+    {
+      return session
+    }
+    tearDownDecompression()
+
+    let attrs: [CFString: Any] = [
+      kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+      kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+    ]
+    var session: VTDecompressionSession?
+    let status = VTDecompressionSessionCreate(
+      allocator: kCFAllocatorDefault,
+      formatDescription: format,
+      decoderSpecification: nil,
+      imageBufferAttributes: attrs as CFDictionary,
+      decompressionSessionOut: &session
+    )
+    guard status == noErr, let session else {
+      log("VTDecompressionSessionCreate failed status=\(status)")
+      return nil
+    }
+    decompressionSession = session
+    decompressionFormat = format
+    let subType = CMFormatDescriptionGetMediaSubType(format)
+    let dims = CMVideoFormatDescriptionGetDimensions(format)
+    log(
+      "preview decoder ready subtype='\(Self.fourCC(subType))' "
+        + "\(dims.width)x\(dims.height)"
+    )
+    return session
+  }
+
+  private func tearDownDecompression() {
+    if let session = decompressionSession {
+      VTDecompressionSessionInvalidate(session)
+    }
+    decompressionSession = nil
+    decompressionFormat = nil
+  }
+
+  private static func fourCC(_ value: FourCharCode) -> String {
+    String(
+      bytes: [
+        UInt8((value >> 24) & 0xFF), UInt8((value >> 16) & 0xFF),
+        UInt8((value >> 8) & 0xFF), UInt8(value & 0xFF),
+      ],
+      encoding: .ascii
+    ) ?? "????"
   }
 }

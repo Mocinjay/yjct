@@ -764,29 +764,26 @@ final class MWDATBridge: RCTEventEmitter {
       }
     }
 
-    // `.raw` delivers decoded CVPixelBuffers; `.hvc1` delivers compressed HEVC
-    // that the SDK does NOT decode for us — a frame then carries a dataBuffer
-    // and no imageBuffer, `makeUIImage()` returns nil, `CMSampleBufferGetImageBuffer`
-    // returns nil, and every frame is dropped by both the preview converter and
-    // the writer's H.264 encoder input (which expects uncompressed samples).
-    // Verified on-device: hvc1 frames log `imageBuffer=false makeUIImage=NIL`.
-    // `.raw` is also what Meta's own sample pairs with `makeUIImage()`; the SDK
-    // applies an automatic quality ladder (resolution first, then frame rate,
-    // never below 15 fps) to fit the Bluetooth link, so raw is safe to request.
+    // `.hvc1` delivers compressed HEVC in a `dataBuffer` (no `imageBuffer`).
+    // The segment writer muxes those samples with `outputSettings: nil` — zero
+    // re-encode — and `MWDATPreviewEncoder` alone runs a `VTDecompressionSession`
+    // so the viewfinder still gets pixels. Previously `.raw` forced a decode on
+    // the glasses link and a second H.264 encode in the writer (generation loss).
+    //
+    // Verified on-device before this change: hvc1 frames log
+    // `imageBuffer=false makeUIImage=NIL`. After: FRAME ANATOMY should show
+    // subtype='hvc1' (or 'hev1') and the writer should log `HEVC PASSTHROUGH`.
     //
     // 30 fps is the glasses' top supported rate. Ask for `.high`: the SDK's
     // ABR ladder only ever steps DOWN from the requested rung, so `.medium`
     // was a hard ceiling of 504×896 even when the link could carry more.
-    // MWDATCamera's own diagnostics say high "requires ... high (WiFi)
-    // bandwidth link", so over Bluetooth Classic the ladder will still land on
-    // medium — that is the floor we used to pin ourselves to, not a regression.
     // The delivered size per segment is logged by MWDATSegmentWriter
     // ("source video format: …"), which is where to check what we actually get.
-    let config = StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: 30)
+    let config = StreamConfiguration(videoCodec: .hvc1, resolution: .high, frameRate: 30)
     // `addCamera` in 0.9.0; it was `addStream` returning the Stream directly in
     // 0.8.0. The Stream's own surface did not change, so everything below this
     // line is the same code it was — only the way we get hold of it moved.
-    Self.log("addCamera(codec: raw, resolution: high, fps: 30)…")
+    Self.log("addCamera(codec: hvc1, resolution: high, fps: 30)…")
     guard let newCamera = try session.addCamera(config: config) else {
       throw NSError(
         domain: "MWDATBridge", code: 11,
@@ -811,6 +808,7 @@ final class MWDATBridge: RCTEventEmitter {
           Self.logFrameDiagnostics(frame)
         }
         self.writer?.appendVideo(frame.sampleBuffer)
+        // Preview alone may decode compressed frames; the writer never does.
         self.preview.submit(frame)
       }
     )
@@ -914,6 +912,7 @@ final class MWDATBridge: RCTEventEmitter {
     // not abort arming or tear down the glasses video stream — that read as
     // "glasses shut off instead of recording".
     newWriter.startAudio()
+    timeline.record(kind: "state", detail: "writer-attached")
   }
 
   private func teardown() {

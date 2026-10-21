@@ -8,7 +8,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { FREE_BUFFER_SECONDS_MAX, WAKE_PHRASE } from '../../config';
+import { FREE_BUFFER_SECONDS_MAX, MASTER_ONLY_CAPTURE, WAKE_PHRASE } from '../../config';
 import { describe } from '../../core/errors';
 import { microphone } from '../../core/microphone';
 import { MWDATNative, mwdatAvailable, mwdatEvents } from '../../native/MWDATNative';
@@ -186,32 +186,41 @@ export function SettingsScreen({ navigation }: Props) {
         </Text>
         <Text style={styles.hint}>
           This is the high-quality path: the glasses record at full resolution
-          in HDR to their own storage, far beyond what the live stream can carry
-          over Bluetooth. Recordings you didn't mark are left alone.
+          in HDR to their own storage (≥1080p; typically 1520×2032). The live
+          Bluetooth stream is off in this build — no preview buffer.
         </Text>
-        <View style={styles.row}>
-          <Choice
-            label="Listening"
-            selected={settings.glassesLibraryImport && importBlocker === null}
-            onPress={enableGlassesImport}
-          />
-          <Choice
-            label="Off"
-            selected={!settings.glassesLibraryImport}
-            onPress={() => updateSettings({ glassesLibraryImport: false })}
-          />
-        </View>
+        {MASTER_ONLY_CAPTURE ? (
+          <Text style={styles.hint}>
+            Master-only mode is on for this test cycle — listening cannot be
+            switched off without a code change (`MASTER_ONLY_CAPTURE`).
+          </Text>
+        ) : (
+          <View style={styles.row}>
+            <Choice
+              label="Listening"
+              selected={settings.glassesLibraryImport && importBlocker === null}
+              onPress={enableGlassesImport}
+            />
+            <Choice
+              label="Off"
+              selected={!settings.glassesLibraryImport}
+              onPress={() => updateSettings({ glassesLibraryImport: false })}
+            />
+          </View>
+        )}
         {importBlocker !== null ? (
           <Text style={styles.warning}>{importBlocker}</Text>
         ) : null}
-        {settings.glassesLibraryImport && importBlocker === null ? (
+        {(MASTER_ONLY_CAPTURE || settings.glassesLibraryImport) &&
+        importBlocker === null ? (
           <Text style={styles.hint}>
             Clypso holds your phone's microphone while this is on, so keep the
             app running — swiping it away stops it hearing you. Clips appear
             after Meta AI syncs, not the instant you speak.
           </Text>
         ) : null}
-        {settings.glassesLibraryImport &&
+        {!MASTER_ONLY_CAPTURE &&
+        settings.glassesLibraryImport &&
         importBlocker === null &&
         micHolder === 'live-capture' ? (
           <Text style={styles.warning}>
@@ -220,6 +229,26 @@ export function SettingsScreen({ navigation }: Props) {
             starts hearing you again when you disarm.
           </Text>
         ) : null}
+      </Section>
+
+      <Section title="Experiment — Meta View nudge">
+        <Text style={styles.hint}>
+          After “{WAKE_PHRASE}”, briefly open Meta View / Meta AI
+          (`fb-viewapp://`) to test whether that shortens Photos sync. Leaves
+          Clypso mid-session. Off by default. See docs/LATERAL-WORKAROUNDS.md.
+        </Text>
+        <View style={styles.row}>
+          <Choice
+            label="Nudge on mark"
+            selected={settings.metaViewNudgeAfterMark}
+            onPress={() => updateSettings({ metaViewNudgeAfterMark: true })}
+          />
+          <Choice
+            label="Off"
+            selected={!settings.metaViewNudgeAfterMark}
+            onPress={() => updateSettings({ metaViewNudgeAfterMark: false })}
+          />
+        </View>
       </Section>
 
       <Section title={`Voice trigger — “${WAKE_PHRASE}”`}>

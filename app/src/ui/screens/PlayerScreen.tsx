@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import Video from 'react-native-video';
-import { deliverablePath, isCaptioning } from '../../core/ClipStore';
+import { deliverablePath, isCaptioning, isPublishable } from '../../core/ClipStore';
 import { captionStyleLabel } from '../../captions/captionStyles';
 import type { Clip } from '../../types';
 import { Button, ProBadge } from '../components';
@@ -78,6 +78,13 @@ export function PlayerScreen({ route, navigation }: Props) {
   };
 
   const publish = () => {
+    if (!isPublishable(clip)) {
+      Alert.alert(
+        'Master not ready',
+        'Waiting for Meta to sync the full-quality recording into Photos. Publish unlocks when the master lands.',
+      );
+      return;
+    }
     if (isPro) {
       navigation.navigate('Publish', { clip });
     } else {

@@ -1,6 +1,6 @@
 import { Alert } from 'react-native';
 import Share from 'react-native-share';
-import { deliverablePath } from '../core/ClipStore';
+import { deliverablePath, isPublishable } from '../core/ClipStore';
 import { describe } from '../core/errors';
 import type { Clip } from '../types';
 
@@ -10,6 +10,13 @@ import type { Clip } from '../types';
  * send the captioned cut once one exists.
  */
 export async function shareClip(clip: Clip): Promise<void> {
+  if (!isPublishable(clip)) {
+    Alert.alert(
+      'Master not ready',
+      'This moment is marked. Share unlocks after Meta syncs the ≥1080p master into Photos.',
+    );
+    return;
+  }
   try {
     await Share.open({
       url: `file://${deliverablePath(clip)}`,
