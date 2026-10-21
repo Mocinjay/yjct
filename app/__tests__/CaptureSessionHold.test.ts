@@ -39,7 +39,11 @@ jest.mock('../src/phase2/CaptionQueue', () => ({
 jest.mock('react-native-fs', () => ({ unlink: jest.fn(async () => {}) }));
 jest.mock('../src/native/ClipStitcher', () => ({ stitchSegments: jest.fn() }));
 
-import { buildCaptureSession } from '../src/services/capture';
+import {
+  buildCaptureSession,
+  isAnyCaptureLive,
+  subscribeCaptureLive,
+} from '../src/services/capture';
 
 const settle = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 
@@ -93,5 +97,31 @@ describe('caption hold across capture sessions', () => {
     await disarmNow(old);
     expect(mockSetCaptureActive).toHaveBeenLastCalledWith(false);
     await disarmNow(fresh);
+  });
+});
+
+describe('capture-live signal', () => {
+  beforeEach(() => {
+    mockStopGates.length = 0;
+  });
+
+  it('reports when any session goes live and when the last one stops', async () => {
+    const seen: boolean[] = [];
+    const unsubscribe = subscribeCaptureLive(live => seen.push(live));
+    const a = await buildCaptureSession();
+    const b = await buildCaptureSession();
+    expect(isAnyCaptureLive()).toBe(false);
+
+    await a.controller.arm();
+    await b.controller.arm();
+    expect(isAnyCaptureLive()).toBe(true);
+    await disarmNow(a);
+    // b is still live: no change reported.
+    expect(seen).toEqual([true]);
+
+    await disarmNow(b);
+    expect(isAnyCaptureLive()).toBe(false);
+    expect(seen).toEqual([true, false]);
+    unsubscribe();
   });
 });

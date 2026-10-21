@@ -6,6 +6,7 @@ import React, {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import {
   Alert,
@@ -21,6 +22,7 @@ import { clipStore, deliverablePath, isCaptioning } from '../../core/ClipStore';
 import { entitlementStore } from '../../core/EntitlementStore';
 import { captionQueue } from '../../phase2/CaptionQueue';
 import { captionStyleLabel } from '../../phase2/captionStyles';
+import { isAnyCaptureLive, subscribeCaptureLive } from '../../services/capture';
 import type { Clip } from '../../types';
 import { Button, ProBadge } from '../components';
 import { formatDuration, relativeDate } from '../format';
@@ -60,6 +62,10 @@ export function PlayerScreen({ route, navigation }: Props) {
   // native-stack keeps this screen mounted under Publish and Paywall; pause
   // whenever it is not focused.
   const isFocused = useIsFocused();
+  // An extended recording can still be running under the Library. Its writer
+  // owns the audio session (playAndRecord, phone mic); react-native-video
+  // would switch it to .playback, which stops the recording's mic.
+  const captureLive = useSyncExternalStore(subscribeCaptureLive, isAnyCaptureLive);
 
   useEffect(() => {
     entitlementStore.isPro().then(setIsPro);
@@ -161,6 +167,9 @@ export function PlayerScreen({ route, navigation }: Props) {
             scrubRef.current?.setFraction(total > 0 ? d.currentTime / total : 0);
           }}
           resizeMode="contain"
+          // While capture is live, play inside the writer's session rather
+          // than reconfiguring it (see captureLive above).
+          disableAudioSessionManagement={captureLive}
           ignoreSilentSwitch="ignore"
           playInBackground={false}
           playWhenInactive={false}

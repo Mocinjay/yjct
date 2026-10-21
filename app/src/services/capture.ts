@@ -28,6 +28,24 @@ export interface CaptureSession {
  * already live.
  */
 const liveControllers = new Set<CaptureController>();
+const liveListeners = new Set<(live: boolean) => void>();
+
+/**
+ * Whether any capture session's glasses may be recording. An extended
+ * recording keeps going while the Library and the Player sit on top of Armed,
+ * so screens up there read this too.
+ */
+export function isAnyCaptureLive(): boolean {
+  return liveControllers.size > 0;
+}
+
+/** Calls `listener` whenever `isAnyCaptureLive()` changes. */
+export function subscribeCaptureLive(listener: (live: boolean) => void): () => void {
+  liveListeners.add(listener);
+  return () => {
+    liveListeners.delete(listener);
+  };
+}
 
 export async function buildCaptureSession(): Promise<CaptureSession> {
   const settings = await settingsStore.get();
@@ -50,12 +68,17 @@ export async function buildCaptureSession(): Promise<CaptureSession> {
     },
   );
   controller.subscribe(status => {
+    const wasLive = isAnyCaptureLive();
     if (isCaptureLive(status)) {
       liveControllers.add(controller);
     } else {
       liveControllers.delete(controller);
     }
-    captionQueue.setCaptureActive(liveControllers.size > 0);
+    const live = isAnyCaptureLive();
+    captionQueue.setCaptureActive(live);
+    if (live !== wasLive) {
+      liveListeners.forEach(listener => listener(live));
+    }
   });
   return { controller, mockWakeWord };
 }
