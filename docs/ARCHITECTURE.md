@@ -95,8 +95,10 @@ unless saved or published; Pro clips are kept.
 frames (10 s) and rebuilds it, putting the segment writer back if the wearer is
 still armed. Terminal stream stops (glasses taken off) are rebuilt at once.
 `ArmedScreen` re-arms after an error at most 3 times, 4 s apart, and again on
-return to the foreground. An extended recording interrupted by a drop carries
-on after the re-arm. The pipeline details are in
+return to the foreground. The Live Activity stays up through those attempts,
+and a re-arm from `error` keeps the session's clip count. An extended
+recording interrupted by a drop carries on after the re-arm; one still pinned
+when capture is disarmed is saved, not deleted. The pipeline details are in
 [VIDEO-QUALITY.md §8](VIDEO-QUALITY.md#8-2026-10-18--capturing-at-the-streams-ceiling).
 
 The Armed screen mirrors capture state to a Lock Screen / Dynamic Island Live

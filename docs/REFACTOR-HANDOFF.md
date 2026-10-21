@@ -2,197 +2,45 @@
 
 Status of the whole-codebase refactor on branch `claude/laughing-curie-4r4s4g`, and the work still open.
 
-## Done and pushed
+## State
 
-- Temporary memory instrumentation removed (JS probe `src/debug/jsProbe.ts`, native MEM/VMTAGS sampler in `MWDATBridge.swift`).
-- Native (`MWDATBridge.swift`, `MWDATSegmentWriter.swift`, `CaptionEngine.m`, `ClimaxEngine.m`, `ClipStitcher.m`, `SpeechWakeWord.m`, `LiveActivityBridge.*`, `AppDelegate.swift`, Android `ClipStitcherModule.kt`): hang-proof timeouts, dead bridge methods removed, diagnostics log append-only + size-capped, mic restart after interruptions, caption timing/gain fixes, stitcher fixes, orphaned Live Activity cleanup, comments rewritten. Reviewed for compile safety; **never compiled** (no Xcode in the cloud container).
-- JS capture core (`src/core`, `src/device`, `src/wakeword`, `src/services`): serialized clip index, save/disarm races, segment leak on failed save, interrupted recording salvaged, glasses session closed when no screen holds it, phone-camera MockDeviceSource + `deviceKind` removed, caption hold across replaced sessions, dead code removed.
-- Captioning/publishing (`src/phase2`): `captioner.ts` split out, publish-with-captions goes through CaptionQueue, mocks dev-only, platform status fixes.
-- UI and repo implementation pass (see the last section): applied in the final commit but its adversarial review did not run.
-
-JS checks at the final commit: `npx tsc --noEmit -p .` clean, `npx jest` 255/255, `npx eslint src __tests__ App.tsx` clean.
+- The refactor (native, capture core, captioning/publishing, UI and repo) is in, and every review finding from the earlier passes is fixed: `git log --oneline 97b8d6a..HEAD`.
+- JS: `npx tsc --noEmit -p .` clean, `npx jest` 267/267 (cold and warm cache), `npx eslint src __tests__ App.tsx` 0 errors and 6 warnings (listed below).
+- `server/captioning`: `python3 -m unittest` 21/21.
+- iOS: `pod install` (CocoaPods 1.16.2) is in sync with the lockfile, with no VisionCamera. The Clipso scheme builds with Xcode 27 for the Simulator (Debug) and for a generic iOS device (Release, unsigned), with no errors or warnings in `ios/Clipso`, `ios/ClipsoWidgets` or `modules/clip-stitcher/ios`. The Podfile lifts pod targets below the app's iOS 16.0 floor, because Xcode 27 rejects anything below 15.0.
+- Simulator run (Debug, MockDeviceKit glasses, Mac microphone): Connect pairs the mock glasses and hands off to Armed. Capture arms and `Documents/clipso-diagnostics.log` shows `video input: 504x896 'hvc1' passthrough (no re-encode)`, `HEALTH fps=24.0 … resolution=high recording=YES`, and `rotating: … fps=24.0 mode=passthrough keyframes=11` every ~5.5 s. No `MEM footprint` lines. MockDeviceKit delivers compressed `hvc1`, so the Simulator exercises the passthrough writer. A failed arm runs 1 + 3 recovery attempts 4 s apart, then ends the Live Activity.
 
 ## Open work, in order
 
-### 1. Capture core review findings (not yet fixed)
+### 1. Run on a device with the glasses
 
-**1. `app/src/core/CaptureController.ts:178` (behavior)**
+Not done: the phone was offline. Build and run the Clipso scheme on the iPhone, then check:
 
-Problem: Regression from the new disarm salvage path. When disarm() saves an interrupted extended recording, it sets `this.saving = true` until that background stitch finishes (lines 178-180 and 198-200). If the same controller re-arms before then (the recovery effect's next attempt after a failed re-arm, or the wearer refocusing Armed after blurring in 'error'), captureNow() and startClip() return null or do nothing while the status reads 'armed'. A 'Clipso' or a tap on Clip or Extended is silently dropped: no chime, no error. A long recording takes seconds to stitch, so the window is real. Before this commit disarm deleted the recording, so the flag never blocked capture. Reproduced with a scratch test that holds the interrupted stitch, then runs arm(), emits 2 segments and calls captureNow(): it returns null at HEAD.
+- Arm, say "Clipso": a clip lands in the Library and the glasses chime twice.
+- `Documents/clipso-diagnostics.log` has `'hvc1' passthrough`, `HEALTH fps=` and `rotating: … fps=`, and no `MEM footprint` lines.
+- Fold the glasses briefly while armed: the Live Activity stays up through the automatic re-arm, and its clip count carries on (it does not reset to 0).
+- Start an extended recording, go to the Library and play a clip, then stop the recording: the clip has sound to the end. While capture is live, the Player sets `disableAudioSessionManagement`, so playback runs in the writer's `playAndRecord` session; check it plays from the speaker. react-native-video still deactivates the session when the Player unmounts; the writer logs `audio engine stopped underneath the writer` and restarts the mic at the next rotation, so expect at most one segment without sound.
 
-Fix: Drop `if (interrupted.length > 0) { this.saving = true; }` and the `.finally(() => { this.saving = false; })` in disarm(). The interrupted segments have already left the buffer through flushFromPin(), so nothing a re-armed session does can touch them: startClip, stopClip and saveWhileDown only act on the new buffer, saveWhileDown needs armedSince, and the wake word and cap timer are stopped before the first await. Add the test 'a re-arm while an interrupted recording stitches still clips on the wake word': holdNextStitch(), arm, emit, startClip, emit, await disarm(), await arm(), emit twice, expect(await captureNow()).not.toBeNull(), finishStitch(), expect 2 stitches. With this change it passes alongside the existing 19 CaptureController tests.
+Signing: `ios/Config/Signing.xcconfig` is per-developer and untracked (see `Signing.xcconfig.example`). On a free Personal Team set `CLIPSO_ENTITLEMENTS =`; the Wi-Fi entitlements need a paid team.
 
-**2. `app/src/core/CaptureController.ts:183` (behavior)**
+### 2. Known capture race (not fixed)
 
-Problem: The commit says 'an extended recording still pinned at disarm is saved instead of deleted', but the `!this.saving` guard leaves out stopClip's cut window, which can last up to 2s while it waits for a keyframe. Suppose Armed is blurred under the Library while recording, and the recording is stopped by the wake word or the cap: stopClip sets saving=true and awaits source.cut(). If the old Armed unmounts in that window (Library 'Go live' or a Connect reset), disarm takes interrupted=[] and then `this.buffer.clear()` unlinks every pinned segment. The cut then settles, because native stopRecording settles pending cuts. flushFromPin() returns [], stopClip throws 'Nothing recorded', and stateAfterSave keeps 'idle' with no lastError. The whole recording is deleted with no message. This predates the commit, but the new salvage path was meant to cover it. Confirmed with a scratch test (cut held on a gate, stopClip, then disarm, then release the gate): 0 stitches, state 'idle', lastError undefined.
+`MWDATNative.stopRecording()` carries no session token. Every `CaptureController.disarm()` calls it, including the unmount disarm of an Armed screen that is already idle (Library "Go live" resets the stack). If that call reached the bridge after a newer session's `start()`, it would detach the new writer while JS reports 'armed'. In practice the old stop is issued first (the new session still has to read settings, render and call `prepare()`), so this has not been observed. The robust fix is a token from `start()` that `stopRecording()` must match, in `MWDATBridge.swift` and `MWDATSource.ts`.
 
-Fix: In disarm(), leave the pinned recording to the stopClip that owns it: replace `this.buffer.clear();` with `if (!(this.saving && this.buffer.isPinned)) { this.buffer.clear(); }`, commented 'A stopClip still waiting on its cut owns the pinned recording: stopping the source settles that cut, and stopClip flushes from the pin next.' In stopClip(), change `await this.source.cut();` to `await this.source.cut().catch(() => {});`, so a failed cut loses only the in-flight segment and can never leave a disarmed buffer pinned, which would make the next arm() resume a phantom recording. Add the regression test (FakeSource.cut held on a gate; arm, 2 segments, startClip, 3 segments, stopClip(), settle, await disarm(), release the gate; expect one stitch whose last 3 paths are the recorded segments). Verified: the test passes with this change, and all existing CaptureController tests still pass.
+### 3. Android
 
-**3. `app/src/wakeword/MockWakeWord.ts:4` (minor)**
+`ClipStitcherModule.kt` changed since `be0c37c` and has not been compiled in this pass. Run `cd app/android && ./gradlew assembleDebug`.
 
-Problem: This file was touched by the commit, but its doc comment still misdescribes the class. It says it is a 'Manual trigger for development' and that 'the Armed screen shows a "Trigger" button wired to fire()'. In fact it is the user-selectable 'Manual button' option in Settings (SettingsScreen.tsx:173-175, available in release builds). ArmedScreen has no Trigger button: its primary 'Clip' button calls mockWakeWord.fire() (ArmedScreen.tsx:389-390), with the hint 'mock mode — tap Clip to save the look-back'.
+### 4. Lint warnings left
 
-Fix: Reword to: 'Manual trigger, chosen in Settings as "Manual button". The Armed screen's Clip button calls `fire()` instead of saving directly, so the whole capture loop runs without speech recognition. Detections carry no word timing, so the clip ends at the buffer boundary.'
-
-**4. `app/ios/Clipso/MWDATSegmentWriter.swift:65` (minor)**
-
-Problem: This commit deleted MockDeviceSource, but the writer's class doc still says it fulfils 'the same rolling-segment contract MockDeviceSource fulfils with the phone camera'. Neither that class nor the phone-camera source exists any more. This is not in followups.md.
-
-Fix: Native or writer group: change lines 64-66 to '/// Writes the MWDAT glasses stream as back-to-back MP4 segments of roughly `segmentSeconds` each, the rolling-segment contract of JS `DeviceVideoSource` (src/device/DeviceVideoSource.ts).'
-
-**5. `README.md:34` (minor)**
-
-Problem: README still describes the removed phone-camera source as how to run the app. Line 34: 'the mock device source uses the phone camera as the stand-in glasses feed'. Line 22: 'Running (Phase 1, mock device)'. Line 11: 'Mock Device support. MWDAT bridge still stubbed pending Meta toolkit access'. The core-7 followup in followups.md asks for this, but README.md has not been changed (docs/ARCHITECTURE.md is being edited; README is not).
-
-Fix: Whoever owns README applies the core-7 followup. Line 11: drop 'Mock Device support. MWDAT bridge still stubbed pending Meta toolkit access'. Line 22: make the heading 'Running'. Line 34: replace the phone-camera sentence with 'In the iOS Simulator the MWDAT bridge pairs MockDeviceKit glasses that stream the bundled MockFeed.mp4, and Settings → "Manual button" stands in for the spoken wake word.'
-
-### 2. Captioning/publishing review findings (not yet fixed)
-
-**1. `app/src/phase2/PublishService.ts:72` (minor)**
-
-Problem: publish() decides whether to reuse the captioned cut with hasBurnedCaptions(clip), which excludes captionProvider==='mock'. The spec's verifier correction said to keep `clip.captionState === 'ready' && clip.captionedFilePath`. As written, a mock-'ready' clip (any dev build without on-device captioning or a URL, plus legacy mock clips from earlier release builds) is sent to captionQueue.captionNow. Called without force, captionNow returns that clip unchanged, so the detour does nothing except hit its capture-live check: during an extended recording that keeps running under the Library, publishing such a clip with captions now throws 'Captions are paused while the glasses are recording…'. Before this change it published the existing copy. The comment 'Anything else, a mock copy included, is resolved by the queue' suggests the mock copy gets re-captioned, which it does not.
-
-Fix: Use the verifier's predicate: `filePath = clip.captionState === 'ready' && clip.captionedFilePath ? clip.captionedFilePath : await captionedCut(clip.id);`. Drop the hasBurnedCaptions import from PublishService (PublishScreen keeps using it for its label). Reword the comment to: 'A finished cut, mock copies included, is reused as is; anything else is captioned through the queue.' If the intent is for mock output to be re-captioned for real, do it explicitly instead: pass `{ force: clip.captionProvider === 'mock' }` through captionNow to push, and add a test for it.
-
-**2. `app/src/phase2/targets/FacebookPublishTarget.ts:95` (minor)**
-
-Problem: actualPrivacy is derived from Graph's `published` on every poll, including while video_status is 'processing'. A Page video's post is normally only published once processing finishes, so `published` is likely false at that stage (Graph tracks this separately as status.publishing_phase). pollPublishStatus shows every intermediate status, so a user who asked for 'public' would see 'Actual visibility: private (you requested public — the platform overrode it)' in warning colour next to the processing spinner until the video is ready. This is likely from the Graph field semantics but has not been tested against the API.
-
-Fix: Report visibility only once it is final: `actualPrivacy: videoStatus === 'ready' && typeof json.published === 'boolean' ? (json.published ? 'public' : 'private') : undefined`. In publishing.test.ts, add a case where `{status:{video_status:'processing'}, published:false}` gives actualPrivacy undefined.
-
-**3. `app/src/phase2/CaptionQueue.ts:262` (minor)**
-
-Problem: This bug predates the refactor and only affects dev builds, but the rewritten testRender.ts kept it alive. A test-render clip is stored with captionedFilePath === filePath (both `<id>.rendered.mp4`). Tapping Restyle/Caption in the Player on that clip runs the job, which writes `<id>.rendered.captioned.<style>.mp4`. discardPrevious then unlinks clip.captionedFilePath because it differs from the new path, and that file is the clip's own source. After that the clip's filePath points at a deleted file: a later Restyle fails, and publishing with captions off ('Raw cut') fails.
-
-Fix: Never let discardPrevious delete the source: `if (clip.captionedFilePath && clip.captionedFilePath !== nextPath && clip.captionedFilePath !== clip.filePath)`. Add a CaptionQueue test: seed a ready clip with captionedFilePath equal to filePath, call retry, and expect filePath to still exist on disk.
-
-**4. `app/src/types.ts:52` (minor)**
-
-Problem: The DeviceKind doc added in 4b74e99 says 'Only mwdat (Meta glasses) is recorded now; mock remains for clips captured by the phone-camera stand-in of earlier builds'. The dev test render (phase2/testRender.ts:100) still records new clips with sourceKind 'mock', and PlayerScreen labels them 'phone camera'.
-
-Fix: Reword to: "What recorded a clip. Glasses captures are 'mwdat'. 'mock' is recorded by the dev test render (phase2/testRender.ts) and remains on phone-camera clips from earlier builds." Optionally, in a UI follow-up, have PlayerScreen label 'mock' as 'sample' rather than 'phone camera'.
-
-**5. `app/src/phase2/CaptionQueue.ts:30` (minor)**
-
-Problem: The class doc says 'all providers write `<clip>.captioned.<style>.mp4`'. With hook-first on, OnDeviceCaptioningProvider writes `<clip>.captioned.hook.<style>.mp4` (OnDeviceCaptioningProvider.ts:54), so the comment states the collision path wrongly. The rationale still holds: the same clip with the same settings gets the same output path. docs/ARCHITECTURE.md:144-145 (working tree) repeats the wording.
-
-Fix: Say: 'every provider derives the output path from the clip and the current settings (`<clip>.captioned.[hook.]<style>.mp4`), so a second render of the same clip outside the queue would delete or overwrite the file this one records.' Send the matching ARCHITECTURE.md wording to the docs owner as a followup.
-
-### 3. Review the UI and repo pass (it landed unreviewed)
-
-Adversarially review the changes the final commit made to these areas against the commit before it, then fix what holds up: capture screens (`App.tsx`, `ArmedScreen`, `ConnectScreen`, `OnboardingScreen`, `GlassesPreview`, `ClipsoSplash`), library screens (`LibraryScreen`, `PlayerScreen`, `PublishScreen`, `SettingsScreen`, `PaywallScreen`, `components.tsx`, `theme.ts`, new files under `src/ui/`, `ClipStore.ts`), and repo files (`package.json`/lock, `Podfile.lock`, `Info.plist`, docs, READMEs, scripts, `server/`, `brand/`). What each implementer applied and skipped is listed below.
-
-#### ui-capture
-
-Applied:
-
-- ui-capture-1: Verified: the focus effect was keyed on status.state, and a failed arm clears armedRef in a microtask before React renders 'error', so a failed arm was retried at once, without limit, bypassing the bounded recovery. Split it into a focus effect that arms on [isFocused, session, arm] and a blur effect that disarms on [isFocused, session, status.state] (still deferred while recording or saving). The mock-path variant no longer applies because core-7 already removed hasArmedOnce. Test: against HEAD it times out in the retry loop; now it makes 1 arm plus 3 delayed retries and then stops.
-- objc-misc-m1 (also covers ui-capture-2): The Live Activity now stays up through a stall recovery. `recovering = isFocused && session && (state === 'arming' || (state === 'error' && recoveryAttempts < MAX_RECOVERY_ATTEMPTS))`, and it is ORed into `capturing`. Refinement: an attempt is now counted when its timer fires, not when it is scheduled. That way the value read during render matches exactly what the recovery effect will do next, and the activity is not ended early when a re-render in 'error' happens while the last attempt is still pending. It also means a timer cancelled by blur or by a foreground re-arm no longer uses up an attempt. Comments rewritten. Tests: the activity is kept (start called once, end never) through a failed attempt followed by a successful one, and it ends once recovery gives up. Against HEAD, end() is called on the stall.
-- ui-capture-3: The AppState 'active' handler now re-arms only from 'idle' or 'error', so it can no longer re-arm over a save that is in flight (which reset the clip count and showed 'Starting…'). The test covers both directions: no arm while saving, one arm from error. Against HEAD the test fails.
-- ui-capture-4: ConnectScreen effects now depend on the primitives hasDevice and linkState instead of the `device` object, which is new on every 2s poll. The auto-open is skipped while AppState.currentState === 'background'. A feed released in the background is no longer reopened while still backgrounded, a failed open is no longer retried on every poll, and the AppState listener is no longer re-subscribed on every poll. A failed open is retried when linkState changes, on Retry, or on return to the foreground. Tests: all three cases fail against HEAD.
-- ui-capture-5: getDiagnostics() is now single-flight: requests that arrive while a call is running are answered by one follow-up call. Written as a local `run` loop rather than having the useCallback refer to itself. Test: against HEAD, 6 calls overlap; now at most 1 is in flight.
-- ui-capture-6: The toast's translateY interpolation is now created once, with useMemo([toast]), so the 1 Hz re-render no longer builds a new AnimatedProps and re-attaches the native-driver nodes every second. I checked this against RN's createAnimatedPropsMemoHook. I used useMemo instead of the spec's useRef(toast.interpolate(...)), because useRef would still evaluate its argument on every render.
-- ui-capture-8: App.tsx: a failed read of the onboarding flag now routes to Onboarding instead of leaving a blank screen. OnboardingScreen: a failed write of the flag no longer leaves 'Let's clip' dead. Tests in __tests__/AppBoot.test.tsx; both fail against HEAD.
-- ui-capture-9 (+ core-15 ArmedScreen comments): GlassesPreview: the component JSDoc moved down to the function, the previewViewers doc and the focus and defer comments were rewritten, and the stale replace('Armed') references were removed. glassesLease: the grace-period doc now describes the navigation.reset handoff. ArmedScreen: the clock, goLibrary, focus, recovery and armedSecs comments now describe current behaviour (Armed is always reached via reset). ConnectScreen: the AUTO_MOCK const moved below the imports, and the auto-advance comment was condensed.
-- ui-capture-10: Onboarding permissions copy now lists Bluetooth, the microphone and speech recognition, and says the glasses camera is granted in Meta AI. Verified: capture is glasses-only, so the phone camera prompt never appears. It also no longer says when the prompts will appear.
-- bridge-8: MWDATNative.ts, doc-only: the MWDATStreamHealthEvent doc now says the report is sent only while a preview is visible and the app is in the foreground. Verified against MWDATBridge.swift, where it is gated on previewEnabled && !appInBackground.
-- core-10 optional: ConnectScreen's MWDATStreamState listener is now typed with MWDATStateEvent, so the documented type has a real user.
-- extra-preview-mount: ArmedScreen now mounts GlassesPreview unconditionally instead of only once `session` exists. The gate was left over from the removed mock/camera split. Because the session is built asynchronously, the gate made Armed's preview mount after GlassesPreview's one-tick deferral had already run, so the Connect → Armed reset switched preview emission off and back on. Switching it off also resets the native preview decoder, so Armed had to wait for a keyframe. Comment added.
-- extra-format-import: ArmedScreen imports formatDuration from '../format' instead of './LibraryScreen'. The ui-library engineer left a re-export in LibraryScreen asking for this change. It also stops the capture screen from importing the Library screen module.
-- extra-connect-doc: Fixed the previewEpoch doc in ConnectScreen. It said the counter is bumped when native tears the stream down; it is actually bumped on Retry and on return to the foreground.
-
-Skipped:
-
-- ui-capture-2 (isCaptureLive variant): Not applied separately; objc-misc-m1 covers the same issue, as the group instructions say. The isCaptureLive version still loses the banner when the first recovery attempt fails: that arm's internal disarm clears armedSince, so capturing turns false, end() runs, and the next background start() is refused.
-- ui-capture-7: Already landed in c26fe4a. No jsProbe or bump references remain in my files.
-- ClipsoSplash.tsx, navigation.ts, index.js: Reviewed and found nothing to justify a change. The splash already guards against onEnd and onError both firing, and the other two files are minimal.
-- ConnectScreen state-declaration reordering: Moving the previewEpoch/mockReady useState lines above the effects would be cosmetic churn, so I left them.
-
-Followups left for other files:
-
-- `app/src/ui/screens/LibraryScreen.tsx`: ui-library: ArmedScreen now imports formatDuration from '../format', so delete the compatibility re-export `export { formatDuration } from '../format';` and its two-line comment ('ArmedScreen still imports formatDuration from here…').
-- `app/src/core/CaptureController.ts`: core, product decision, not required: arm() sets sessionClipCount = 0 on every arm, including a stall-recovery re-arm where armedSince is still set. The 'arming' status also drops sessionClipCount. ArmedScreen now keeps one Live Activity through a recovery, so after a stall the banner's clip count and the 'Save #N' toast restart from 0 or 1 mid-session. Consider keeping the count when arm() starts with this.armedSince !== null, and carrying it in the 'arming' status.
-
-#### ui-library
-
-Applied:
-
-- ui-library-1: Verified: App.tsx runs the launch sweep before Library mounts, so the 'N clips expired' notice never showed for launch-swept clips. ClipStore now has a private unreportedExpired counter and takeUnreportedExpired(). It differs from the spec in one way: the count goes up inside the mutate() change callback, when the clips leave the list, not after persist. The spec's placement misses a launch sweep that is still writing when the Library's sweep returns []. A new concurrency test fails with the spec's placement and passes with mine. Library's focus effect now has .catch() before .then() so a failed sweep still loads the grid, adds the taken count to the notice, and reloads. Tests were added to ClipStoreRetention and ClipStoreConcurrency.
-- ui-library-2: Verified that the interval could start after unmount, overlapped slow requests, threw unhandled rejections (YouTube's checkStatus can throw), and stopped on 'pending'. Polling now lives in a new src/ui/pollPublishStatus.ts. It is a sequential loop that checks, reports, and sleeps 2s only while the state is not final, asks isActive() before each check and before each report, and treats a thrown check as {state:'failed', error}. PublishScreen uses a mounted ref with its own effect. doPublish returns from the catch after the upload and polls outside the try, so a failed status check shows the status view instead of inviting a re-publish. Dropped `void` (no-void). 7 jest tests are in src/ui/__tests__/pollPublishStatus.test.ts.
-- ui-library-3: Verified: ConnectorConfig.update notifies only after AsyncStorage.setItem, so the controlled TextInputs snapped back and dropped keystrokes. Added a ConnectorField component that keeps its own text and writes through to the store, with a doc comment explaining why. Settings waits for the connector config, which now starts as null. The TikTok audit Choice still reads the live config.
-- ui-library-4: Player's onLoad now calls setAtEnd(false), so a new source (captions landing) no longer keeps the stale replay badge and the 'Replay' label over a playing video.
-- ui-library-5: Removed the redundant `name` state; the screen uses clip.name from the live copy. startRename now seeds the draft from the current name, so a cancelled edit no longer comes back. The rename Modal has onRequestClose for the Android back button.
-- ui-library-6: Verified that RNV memoizes `src` on the source object's identity, so the inline {uri} re-initialized an extra AVPlayer on every keystroke in the caption field. Also verified that ClipStitcher writes the thumbnail from frame 0 of filePath. The Publish preview is now an <Image> of thumbnailPath, and the react-native-video import is removed.
-- ui-library-7: The countdown tick now runs only while the Library is focused (setNow on focus, interval cleared on blur). ClipCard is memoized and takes (clip)=>void handlers. openClip and renderItem are wrapped in useCallback. clipKey and saveClip are module-level; saveClip shows an Alert on failure where it used to leave an unhandled rejection. keyExtractor and the grid styles are stable, which also clears the inline-style lint warning.
-- ui-library-8: TIME_FORMAT and DAY_FORMAT (Intl.DateTimeFormat) are now built once at module level in the new format.ts. I confirmed RN 0.86 builds Hermes with HERMES_ENABLE_INTL=true on iOS and Android, so creating them at module load is safe.
-- ui-library-9: The `progress` state is replaced by a ScrubBar child that uses ref-as-prop (React 19) and useImperativeHandle, plus a durationRef. Progress events at 4 Hz now re-render only the bar, not the whole screen and the <Video> wrapper.
-- ui-library-11: Removed the unused Chip component and its styles, Button's sublabel prop, and the 'blue'/'success' tones (dangerLabel is now a StyleSheet entry). Removed the theme tokens accentPressed, blue, blueSoft and successSoft. grep found no other users.
-- ui-library-12: New src/ui/useLiveClip.ts replaces the store-sync effect that was copied into both Player and Publish.
-- ui-library-13: New src/ui/format.ts holds formatRemaining, formatDuration and relativeDate. relativeDate gains an optional `now` parameter for tests. New src/ui/shareClip.ts holds shareClip. LibraryScreen no longer exports them or imports Share and deliverablePath. PlayerScreen imports from the new modules. ArmedScreen's owner had already switched it to '../format', so no re-export shim was needed. Tests are in src/ui/__tests__/format.test.ts.
-- ui-library-14: Rewrote comments as present-tense rules: Player's source memo, focus pause and `controls` warning (the deleted probe is no longer mentioned, which also covers core-6); Library's FlatList memory note; a new comment on why Go live uses reset instead of navigate (verified against StackRouter's NAVIGATE semantics); the Publish caption-toggle comment, moved out of <Text>; and the Settings CaptionStyleOption doc, which no longer says 'ffmpeg server-side' (covers phase2-15 and the objc-media note).
-- ui-library-15: GlassesConnection uses styles.choiceBusy instead of an inline { opacity: 0.5 }.
-- followup:phase2-1: PublishScreen now uses hasBurnedCaptions from ClipStore. Deleted the local captionsAlreadyBurned and the unused Clip type import.
-- followup:phase2-4: The 'needs setup' alert adds 'Use the mock platform…' only when __DEV__ is true. The mock target is dev-only.
-- followup:phase2-8: Settings renders {__DEV__ ? <TestRender /> : null}, and TestRender's doc now says it is for dev builds only.
-- followup:phase2-3/phase2-5: Changed the hosting placeholder to '(required for Instagram, Facebook, TikTok)' and the captioning placeholder to '(blank = on-device only)'. Both were checked against PublishService.hostingFor and captioner.ts.
-- followup:dev-clear-entitlement: Kept the button visible and added a comment: it is the counterpart of the Paywall's 'Dev unlock', which is the only way to get Pro until billing lands, in release builds too. Testers can return to the free tier with it. TODO(billing): remove both. Hiding it behind __DEV__ alone would leave release testers stuck on Pro.
-
-Skipped:
-
-- ui-library-10: Already landed: there is no src/debug and no bump() calls in Library or Player.
-- followup:writer disableAudioSessionManagement: Real issue: an extended recording keeps going after Armed blurs, and opening a clip lets RNV set the audio session to .playback, which stops the writer's mic. But the Player needs a 'capture is live' signal. That signal lives in services/capture.ts as a module-private Set, and no getter is exported, so the fix needs a change outside my files. It also changes audio routing (no .playback category, so ignoreSilentSwitch and speaker routing no longer apply) and needs testing on a device. See followups.
-
-Followups left for other files:
-
-- `app/src/services/capture.ts`: For the writer followup on disableAudioSessionManagement: export a read-only live-capture signal, e.g. `export function isAnyCaptureLive(): boolean { return liveControllers.size > 0; }` plus a subscribe(listener) that fires on the same transitions that call captionQueue.setCaptureActive. Then PlayerScreen.tsx (ui-library) can pass `disableAudioSessionManagement={captureLive}` to <Video>. Test on a device first: with management off, playback runs in the writer's playAndRecord session, so check speaker vs receiver routing and the silent switch. RNV reads the flag only when it next reconfigures the session.
-- `app/src/ui/__tests__/format.test.ts`: New tests were placed under app/src/ui/__tests__/ (format.test.ts, pollPublishStatus.test.ts) because new files in app/__tests__ are outside ui-library's ownership. Jest picks them up. To follow the repo convention, move both to app/__tests__/ and change imports to '../src/ui/format', '../src/ui/pollPublishStatus' and '../src/phase2/PublishTarget'.
-- `app/__tests__/ArmedScreen.test.tsx`: Not ui-library: tsc reports TS2554 at line 26 (`start: (name: string) => mockLiveActivity.start(name)`, where the jest.fn mock is typed with zero parameters). Typing the mock as jest.fn(async (_name: string) => true) fixes it. The file belongs to the engineer working on ArmedScreen.
-- `docs/VIDEO-QUALITY.md`: Optional: line 134 says '`shareClip` hands the raw `.mp4` to `Share.open`'. shareClip (now app/src/ui/shareClip.ts) shares deliverablePath(clip), which is the captioned cut once it exists.
-
-#### repo
-
-Applied:
-
-- core-7 / repo-3 (deps): Ran `npm uninstall react-native-vision-camera @react-native/new-app-screen` (registry reachable). Only those two entries and their lock objects were removed, plus npm's usual dev/devOptional flag recalculation on fsevents and typescript. I confirmed nothing in src, App.tsx, __tests__, iOS, Android or the Podfile references either package. I kept react-test-renderer and @types/react-test-renderer: MWDATSource, AppBoot, ConnectScreen and ArmedScreen tests now import them.
-- core-7 (Podfile.lock): Removed the VisionCamera entries from app/ios/Podfile.lock by hand: the PODS block (VisionCamera, /Core, /React), the DEPENDENCIES line, EXTERNAL SOURCES and SPEC CHECKSUMS. No VisionCamera lines are left. PODFILE CHECKSUM is unchanged because the Podfile itself did not change. Someone still has to run `cd app/ios && bundle exec pod install` on a Mac (this machine is not one) to resync Pods and confirm the lockfile.
-- repo-1: Info.plist: the microphone and speech-recognition permission strings no longer promise that no audio leaves the phone. SpeechWakeWord.m still retries an empty on-device pass server-side (it also goes straight to the server when on-device is unsupported). New text: mic = 'records audio with your clips and listens for your trigger word while you record'; speech = 'uses Apple speech recognition to hear “Clipso” while you record and to caption your clips. It runs on your iPhone where it can; otherwise Apple transcribes the audio.' The file parses with plistlib. The UI strings that make the same claim are listed in followups.
-- repo-2: setup.sh now runs `npm ci` when node_modules is missing or package-lock.json is newer than node_modules/.package-lock.json, with a comment explaining why. I checked that npm writes the hidden lockfile after package-lock.json, so the step is skipped right after an npm install/uninstall. The ACTION NEEDED text now names CLIPSO_BUNDLE_ID (the key the script actually checks) instead of PRODUCT_BUNDLE_IDENTIFIER. `bash -n` passes.
-- repo-4: Deleted the tracked bytecode server/captioning/__pycache__/main.cpython-314.pyc from disk. It shows as an unstaged deletion; I did not touch the index. Root .gitignore already ignores __pycache__/ and *.pyc.
-- repo-5: Deleted app/scripts/add-widget-target.rb. The ClipsoWidgets target already exists in project.pbxproj (31FB67C9839FC08DA1545447), so the script exits at its idempotency check, and git grep finds no reference to it outside the file. Gemfile left alone.
-- repo-6: Clipso.xcscheme: removed the TestableReference to ClipsoTests (00E356ED1AD99517003FC87E). That target does not exist in the pbxproj, which has only Clipso and ClipsoWidgets, and no Podfile entry names it. <Testables> is left empty. The XML parses.
-- repo-11 (config half): react-native.config.js: uses path.join instead of string concatenation (fixes the no-path-concat lint warning; it resolves to the same absolute path) and has a comment saying why the local module is declared here for autolinking. The captionTimeline.test.ts half is not my file and is in followups.
-- repo-12: Deleted brand/rejected/ (17 PNGs, about 10 MB) and brand/OLD-jarvis-icon-backup.png. Nothing outside brand/ references them, brand/lineart/preview.html embeds its images as data URIs, and the build's icon is byte-identical to the kept brand/clipso-icon-1024.png. Both are superseded (rejected candidates, pre-rebrand icon) and remain in git history at 93e7192.
-- repo-8 + doc followups: Rewrote docs/ARCHITECTURE.md for the current system. It covers: the src layout; boot and the Connect gate; glassesLease and the preview reference count; a capture diagram; states, triggers (wake word trimmed on the word, extended recording, save-while-down) and recovery; key decisions (keyframe-aligned HEVC passthrough segments with phone-mic AAC and why the glasses' Bluetooth mic is avoided; MWDATSource as the only source; wake word on-device first with one server retry); CaptionQueue with its capture hold and captionNow; getCaptioner order with the release-build failure; CaptionEngine (renderEdit, 45 s / 1 s windows split at the overlap midpoint, PCM placed by timestamp); the hook-first edit; publishing (hosting resolved before captioning, captionNow, connectors); a native-module table (MWDATBridge, MWDATSegmentWriter/DiagnosticLog, ClipStitcher, SpeechWakeWord, CaptionEngine, ClimaxEngine, LiveActivityBridge/ClipsoWidgets, AppDelegate); the __DEV__-only stand-ins; and tests. This folds in the objc-media renderEdit, core-7 and phase2-1/2/3/5/13 doc followups.
-- repo-7 + core-7/phase2-5 README followups: README.md: iOS records from the glasses and Android has no glasses support yet; Phase 1 now names MWDAT 1.0.1 and the 'Clipso' wake word instead of 'fade away', with no 'stubbed bridge' claim; captioning runs 'once capture stops'; the first style is labelled Hormozi; the ClipHosting mock is marked dev-only; iOS captioning is 'normally' on-device, with the fallback stated; the phase2-5 wording about the mock captioner and release-build failure. The layout section adds server/, brand/, the native module and a link to app/README. 'Running' is now setup.sh plus the workspace, followed by a no-glasses paragraph (Simulator Debug build with MockDeviceKit and MockFeed.mp4, Manual button) and an accurate sentence on the wake word's on-device-first / server-retry behaviour.
-- repo-10: app/README.md: replaced the ~100 lines of stock RN template text with a short 'Day to day' section: npm start (Debug builds from Xcode start Metro, which I checked against the Start Packager phase), npm test, tsc, lint, the no-glasses Simulator path, Android being capture-less, and the server unittest command.
-- repo-9 + objc-media VIDEO-QUALITY followup: docs/VIDEO-QUALITY.md, only statements that are now false: the status line says §1-§7 are the 2026-08-04 investigation and §8 is current; §2's share row points at `shareClip` instead of the stale LibraryScreen.tsx:362; §3.3 is retitled with a061fb7 (git log -S confirms it), points at MWDATBridge.requestedResolution and drops 'Not yet committed'; §6.1 becomes NOT STARTED and the whisper.cpp 'Blocked' note is removed (renderSize still equals the source size); §6.2 is marked SUPERSEDED by §8 (the Wi-Fi entitlements were the lever) with a pointer to re-run §4.3; the stale §6.5 'commit the hunk' task is deleted. I checked §8 against the code (HEALTH/high-held log lines, 26 fps threshold, 2 s cut/tail waits, chime migration, sourceTrackIDForFrameTiming), found it accurate, and left it unchanged.
-
-Skipped:
-
-- repo-3 (react-test-renderer, @types/react-test-renderer): Not removed, as the group instructions say: app/__tests__/MWDATSource.test.ts, AppBoot.test.tsx, ConnectScreen.test.tsx and ArmedScreen.test.tsx import react-test-renderer.
-- repo-11 (captionTimeline.test.ts): app/__tests__/captionTimeline.test.ts is not in my ownership; listed in followups. The lint warning is still there (203:11 no-shadow).
-- NSCameraUsageDescription / Android CAMERA permission: Left unchanged, as core-7's followup said. No app code requests the iPhone camera now that VisionCamera is gone, but removing a usage key is safe only if no linked framework calls AVCaptureDevice access, and I cannot verify that here. AndroidManifest is not my file.
-- PrivacyInfo.xcprivacy, jest.config.js, .gitignore files: Checked and nothing needs changing: the privacy manifest's required-reason entries still match what the app uses (CACurrentMediaTime is covered by SystemBootTime 35F9.1); jest's default testMatch already picks up src/ui/__tests__; the ignore rules are correct.
-
-Followups left for other files:
-
-- `app/ios/Podfile.lock`: On a Mac: `cd app/ios && bundle exec pod install` (or `./scripts/setup.sh`) to resync Pods after the hand-edited VisionCamera removal, then commit whatever lockfile it writes.
-- `app/__tests__/captionTimeline.test.ts`: repo-11: at ~lines 203-204, rename the local `words` (it shadows the `words()` helper on line 24) to `single`: `const single: TimedWord[] = [...]; expect(splitPhrases(single)).toEqual(single);`. This fixes the @typescript-eslint/no-shadow warning.
-- `app/src/ui/screens/SettingsScreen.tsx`: repo-1 UI half: the Voice trigger hint (~line 181) 'Uses your phone's own speech recognition — free, on-device, no account, no setup' is false, because SpeechWakeWord.m retries empty segments on Apple's servers. Suggested: 'Uses Apple's speech recognition — free, no account, no setup. It runs on your iPhone where it can; otherwise Apple transcribes the audio.'
-- `app/src/ui/screens/OnboardingScreen.tsx`: repo-1 UI half: the permissions card (~line 61) says 'no audio leaves the device', and the battery card (~68-69) says it 'transcribes on-device'. Both are false for the wake word, which retries on Apple's servers. Suggest dropping 'and no audio leaves the device', and changing 'transcribes on-device' to 'listens for the trigger word', to match the new Info.plist strings.
-- `app/src/device/MWDATSource.ts`: Class doc says the native side 'muxes in mic audio (glasses Bluetooth mic while connected)'. In fact MWDATSegmentWriter records the PHONE mic and deliberately does not set .allowBluetooth: the glasses' HFP mic shares the camera link and starves the video (MWDATSegmentWriter.swift ~485-495). Change to 'muxes in phone-mic audio'.
-- `app/ios/Clipso/MWDATSegmentWriter.swift`: Lines ~64-66: '— the same rolling-segment contract MockDeviceSource fulfils with the phone camera.' MockDeviceSource has been deleted. Change to '— the rolling-segment contract of DeviceVideoSource (src/device/DeviceVideoSource.ts).'
-- `app/ios/Config/Signing.xcconfig.example`: The comment header still documents 'PRODUCT_BUNDLE_IDENTIFIER — Must be unique to YOU', but the value a developer sets is CLIPSO_BUNDLE_ID (PRODUCT_BUNDLE_IDENTIFIER derives from it). Rename that heading to CLIPSO_BUNDLE_ID so it matches setup.sh's corrected instructions.
-- `server/captioning/test_captions.py`: Failing since a061fb7 (1 of 21): lines 197-198 assert 'Arial Black,<size>', but captions.py's classic style now uses font 'Montserrat ExtraBold'. Use f"{CLASSIC.font},{round(1920 * CLASSIC.font_scale)}" (and the 1080 line likewise) so the test checks size scaling, not a hardcoded font. server/** source is outside my artifacts-only ownership.
-
-### 4. Needs a Mac (cannot be done in the cloud container)
-
-- `cd app/ios && pod install`: `react-native-vision-camera` was removed from package.json and its entries hand-deleted from `Podfile.lock`.
-- Build in Xcode. All Swift/ObjC changes since `be0c37c` are syntax-checked only. Fix any compile errors.
-- On device: arm, say "Clipso", check `Documents/clipso-diagnostics.log` for `'hvc1' passthrough`, `HEALTH fps=…`, `rotating: … fps=…`, and that no `MEM footprint` lines appear.
-- Wi-Fi entitlements need a paid Apple team; on a Personal Team set `CLIPSO_ENTITLEMENTS =` in `app/ios/Config/Signing.xcconfig`.
+- `src/phase2/CaptionQueue.ts`: `void` on the drain loop (no-void).
+- `src/phase2/climaxScoring.ts`: two `>>` (no-bitwise). They mirror the Python scorer the port is parity-tested against.
+- `src/ui/components.tsx`: three inline styles that carry Animated values or one-off geometry.
 
 ### 5. Optional, deliberately skipped
 
-- One shared ObjC header for the `TrackHasContent`/`LoadAssetKeys` helpers duplicated across `ClipStitcher.m`, `SpeechWakeWord.m`, `CaptionEngine.m`, `ClimaxEngine.m` (skipped: new header without a compiler).
-- Wake word: possessive strip makes "that clip's so good" match "clip so" (product decision, see `phraseMatch.ts`).
+- The Live Activity starts at the first 'arming', so a first arm that never succeeds shows the banner for the ~12 s of recovery attempts. Starting it only once capture is live would lose it whenever that first arm completes in the background.
+- One shared ObjC header for the `TrackHasContent`/`LoadAssetKeys` helpers duplicated across `ClipStitcher.m`, `SpeechWakeWord.m`, `CaptionEngine.m`, `ClimaxEngine.m`.
+- Wake word: the possessive strip makes "that clip's so good" match "clip so" (product decision, see `phraseMatch.ts`).
+- PlayerScreen labels `sourceKind: 'mock'` as "phone camera"; new mock clips come from the dev test render.
+- `NSCameraUsageDescription` and the Android `CAMERA` permission stay until it is confirmed that no linked framework requests iPhone camera access.

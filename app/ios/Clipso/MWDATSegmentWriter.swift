@@ -68,10 +68,11 @@ enum DiagnosticLog {
 /// The bridge requests `.hvc1`, so frames arrive as the glasses' own HEVC and
 /// are written untouched (passthrough), the way Meta's CameraAccess sample
 /// records: no phone-side decode or re-encode, so no quality generation lost
-/// and no realtime encoder to drop frames under load. A frame that carries a
-/// decoded pixel buffer instead (the SDK does not document what MockDeviceKit
-/// delivers for `.hvc1`) is encoded to H.264 — the `passthrough == false`
-/// branches below. ClipStitcher's transcode fallback mirrors that bitrate.
+/// and no realtime encoder to drop frames under load. MockDeviceKit delivers
+/// compressed `hvc1` as well, so the Simulator runs the same path. A frame
+/// that carries a decoded pixel buffer instead (the SDK does not promise
+/// either form) is encoded to H.264: the `passthrough == false` branches
+/// below. ClipStitcher's transcode fallback mirrors that bitrate.
 ///
 /// A compressed segment can only begin on a keyframe, so rotation waits for
 /// the first keyframe after the segment's time is up: segments run a little
