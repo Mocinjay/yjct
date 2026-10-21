@@ -1,4 +1,4 @@
-import { formatDuration, formatRemaining, relativeDate } from '../format';
+import { formatDuration, formatRemaining, relativeDate } from '../src/ui/format';
 
 describe('formatRemaining', () => {
   it('counts hours, then minutes, then says expiring', () => {

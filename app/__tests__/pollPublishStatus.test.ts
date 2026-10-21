@@ -1,5 +1,5 @@
-import type { PublishStatus } from '../../phase2/PublishTarget';
-import { pollPublishStatus } from '../pollPublishStatus';
+import type { PublishStatus } from '../src/phase2/PublishTarget';
+import { pollPublishStatus } from '../src/ui/pollPublishStatus';
 
 /** Lets pending promise callbacks run without advancing fake time. */
 const flush = () => new Promise<void>(resolve => jest.requireActual('timers').setImmediate(resolve));

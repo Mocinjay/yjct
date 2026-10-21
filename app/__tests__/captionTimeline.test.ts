@@ -200,8 +200,8 @@ describe('splitPhrases', () => {
   });
 
   it('leaves single words and their timings untouched', () => {
-    const words: TimedWord[] = [{ text: 'hopefully', start: 1, end: 1.4 }];
-    expect(splitPhrases(words)).toEqual(words);
+    const single: TimedWord[] = [{ text: 'hopefully', start: 1, end: 1.4 }];
+    expect(splitPhrases(single)).toEqual(single);
   });
 
   it('makes maxWords count actual words', () => {
