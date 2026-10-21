@@ -1,8 +1,10 @@
 import type { WakeDetection, WakeWordProvider } from './WakeWordProvider';
 
 /**
- * Manual trigger for development: the Armed screen shows a "Trigger" button
- * wired to `fire()`. Lets the whole capture loop run with no microphone.
+ * Manual trigger, chosen in Settings as "Manual button". The Armed screen's
+ * Clip button calls `fire()` instead of saving directly, so the whole capture
+ * loop runs without speech recognition. Detections carry no word timing, so
+ * the clip ends at the buffer boundary.
  */
 export class MockWakeWord implements WakeWordProvider {
   private onDetected: ((detection?: WakeDetection) => void) | null = null;

@@ -16,7 +16,7 @@ import type { WakeWordProvider } from '../wakeword/WakeWordProvider';
  */
 export interface CaptureSession {
   controller: CaptureController;
-  /** Set when the mock wake word is active — the Armed screen shows a trigger button. */
+  /** Set when Settings picks "Manual button": the Armed screen's Clip button fires it. */
   mockWakeWord?: MockWakeWord;
 }
 

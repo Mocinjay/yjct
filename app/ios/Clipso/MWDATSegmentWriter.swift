@@ -62,8 +62,8 @@ enum DiagnosticLog {
 }
 
 /// Writes the MWDAT glasses stream as back-to-back MP4 segments of roughly
-/// `segmentSeconds` each — the same rolling-segment contract MockDeviceSource
-/// fulfils with the phone camera.
+/// `segmentSeconds` each, the rolling-segment contract of JS
+/// `DeviceVideoSource` (src/device/DeviceVideoSource.ts).
 ///
 /// The bridge requests `.hvc1`, so frames arrive as the glasses' own HEVC and
 /// are written untouched (passthrough), the way Meta's CameraAccess sample

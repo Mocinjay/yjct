@@ -16,8 +16,8 @@ import { closeGlassesIfUnleased } from './glassesLease';
  * camera session via the native MWDATBridge (ios/Clipso/MWDATBridge.swift).
  *
  * The native side opens a wearables session, streams glasses video, muxes in
- * mic audio (glasses Bluetooth mic while connected), and reports fixed-length
- * segment files. This is the only source the app uses; tests drive the capture
+ * phone-mic audio (the glasses' Bluetooth mic shares the camera link and would
+ * starve it; see MWDATSegmentWriter), and reports fixed-length segment files. This is the only source the app uses; tests drive the capture
  * loop with fakes behind the same DeviceVideoSource contract.
  *
  * Requires one-time registration with the Meta AI app (Settings → “Connect
