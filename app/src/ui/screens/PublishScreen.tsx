@@ -98,16 +98,26 @@ export function PublishScreen({ route }: Props) {
         privacy,
         withCaptions,
       }));
-      // Publishing is an implicit save — a clip the user put on a platform
-      // must not evaporate when its retention clock runs out.
-      await clipStore.markPublished(clip.id, target.platform);
     } catch (err) {
       setPhase({ step: 'compose' });
       Alert.alert('Publish failed', err instanceof Error ? err.message : String(err));
       return;
     }
-    // The upload is done, so a failed status check shows on the status view
-    // rather than sending the user back to compose to publish it twice.
+    // From here the upload is done, so nothing sends the user back to compose
+    // to publish it twice: a failed status check shows on the status view, and
+    // a failed index write is reported on its own.
+    //
+    // Publishing is an implicit save — a clip the user put on a platform
+    // must not evaporate when its retention clock runs out.
+    clipStore.markPublished(clip.id, target.platform).catch(err =>
+      Alert.alert(
+        'Published, but not kept',
+        `The clip is on ${target.displayName}, but it could not be marked as ` +
+          `kept, so it may still expire. Save it from the library. (${
+            err instanceof Error ? err.message : String(err)
+          })`,
+      ),
+    );
     await pollPublishStatus(
       () => publishService.checkStatus(target, publishId),
       status => setPhase({ step: 'status', target, publishId, status }),
