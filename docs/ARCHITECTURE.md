@@ -10,12 +10,20 @@ Clipso is a React Native (TypeScript) app with two native layers:
 Glasses capture is iOS-only. The Android build compiles and has a stitcher and
 a live-mic wake word, but no video source yet.
 
+The product goal is full resolution: every clip cut from the glasses' own
+1520x2032 HDR recording, which Meta AI syncs into the photo library, rather
+than from the 720x1280 live stream. The live stream supplies the instant clip
+that the full-resolution cut replaces. See "Full resolution" below and
+[MAX-RESOLUTION.md](MAX-RESOLUTION.md).
+
 | `app/src/` | What lives there |
 | --- | --- |
-| `core/` | Capture loop (`CaptureController`), rolling buffer, clip library (`ClipStore`), settings, Pro entitlement |
+| `core/` | Capture loop (`CaptureController`), glasses-only listening (`ListeningController`), rolling buffer, clip library (`ClipStore`), settings, Pro entitlement |
+| `markers/` | Full-resolution import: markers, matching them to the glasses' recordings, the import pass and swap |
 | `device/` | The video source (`MWDATSource`) and the glasses-session lease |
 | `wakeword/` | Trigger providers and the phrase matcher |
-| `services/capture.ts` | Builds one capture session per Armed screen and holds captioning while it is live |
+| `services/capture.ts` | Builds one capture session per Armed screen (live or glasses-only) and holds captioning while a live one runs |
+| `services/glassesImport.ts` | Runs the full-resolution import for the life of the app |
 | `phase2/` | Everything after capture: captioning, the hook-first edit, publishing |
 | `native/` | Typed wrappers over the native modules |
 | `ui/` | Screens, components, theme |
@@ -104,6 +112,34 @@ when capture is disarmed is saved, not deleted. The pipeline details are in
 The Armed screen mirrors capture state to a Lock Screen / Dynamic Island Live
 Activity, so a wearer with the phone pocketed can see that capture is live and
 how many clips have landed.
+
+## Full resolution
+
+- **Markers.** Every trigger writes a marker to `MarkerStore`: the moment's
+  wall-clock span, and in live mode the id of the 720p clip cut for it.
+  `CaptureController` writes it before stitching (a lost marker loses the
+  full-resolution cut for good); `ListeningController` writes one per "Clipso"
+  heard on the phone microphone in glasses-only mode.
+- **Import.** `GlassesImportController` runs on a photo-library change, on
+  foreground and shortly after a new marker. It filters Photos by marker time
+  without opening anything, confirms a candidate came off the glasses
+  (`GlassesMediaLibrary`), copies the original once, and cuts each marked span
+  by passthrough (`ClipStitcher.extractRange`). A cut that covers its 720p
+  clip's span (±1.5 s) replaces it in place (`ClipStore.replaceWithMaster`:
+  same id, name, saved state; captions reset and re-queued); otherwise it is
+  added as a new clip, beside the 720p one when the recording started too late.
+- **Modes.** `Settings.captureMode` is `live` (stream + 720p clip, upgraded
+  when the glasses recorded too) or `glasses` (no stream; the phone listens and
+  the clip arrives after the sync). `Settings.fullResolution` turns the upgrade
+  off in live mode. Glasses-only mode boots straight to the capture screen,
+  which shows a listening panel and a Mark button and holds no stream lease.
+- **Quality.** `Clip.quality` is `proxy` (720p live stream) or `master` (the
+  glasses' recording, `sourceKind: 'glasses-library'`). The caption burn
+  composites in the source's colour space and exports HEVC for HDR, so a master
+  keeps its 10-bit HLG through captioning.
+- **Open question.** Whether the stream survives while the glasses record is
+  scored per recording by the concurrency probe (`MWDATStreamTimeline` +
+  `markers/streamConcurrency.ts`); see MAX-RESOLUTION.md.
 
 ## Key decisions
 
@@ -236,8 +272,10 @@ Off by default (Settings).
 | --- | --- | --- |
 | `MWDATBridge` (`ios/Clipso/MWDATBridge.swift`) | iOS, Swift | Owns the glasses: registration, camera permission, MockDeviceKit pairing, one session and `.hvc1` 30 fps stream shared by preview and recording, the health watchdog and stall recovery, the `.high`/`.medium` choice, and the HEVC preview decoder. Emits `MWDATSegment`, `MWDATError`, `MWDATStreamState`, `MWDATRegistrationState`, `MWDATDevices`, `MWDATPreviewFrame` and `MWDATStreamHealth`. |
 | `MWDATSegmentWriter` (same folder) | iOS, Swift | Writes the stream into keyframe-aligned MP4 segments (HEVC passthrough + phone-mic AAC), keeping the glasses' frame timing. Also holds `DiagnosticLog`, which mirrors native logs to `Documents/clipso-diagnostics.log`. |
-| `ClipStitcher` | iOS ObjC / Android Kotlin | Joins segment MP4s into one clip (passthrough `AVMutableComposition` export, H.264 transcode only when segment formats differ; `MediaMuxer` remux on Android), trims the end for wake-word clips, writes a poster JPEG. |
-| `SpeechWakeWord` | iOS ObjC / Android Kotlin | iOS: transcribes each finished segment (level-boosted copy, on-device then one server retry) and returns per-word end times. Android: continuous mic recognition that emits transcript events. |
+| `ClipStitcher` | iOS ObjC / Android Kotlin | Joins segment MP4s into one clip (passthrough `AVMutableComposition` export, H.264 transcode only when segment formats differ; `MediaMuxer` remux on Android), trims the end for wake-word clips, writes a poster JPEG.; on iOS also `extractRange`, which cuts a window out of one glasses recording by passthrough (the HEVC preset, then H.264, as fallbacks). |
+| `SpeechWakeWord` | iOS ObjC / Android Kotlin | iOS: transcribes each finished segment (level-boosted copy, on-device then one server retry) and returns per-word end times. Android: continuous mic recognition that emits transcript events. In glasses-only mode iOS also runs `MicSegmentRecorder` and emits its segments. |
+| `GlassesMediaLibrary` | iOS ObjC | Photos access, recognising the glasses' own recordings (model/copyright metadata), their capture time, copying the original bytes, and the library-change event. Never writes to the library. |
+| `MicSegmentRecorder` | iOS ObjC | The phone microphone as wall-clock-stamped 5 s segments for glasses-only mode, started through `SpeechWakeWord.startListening`; survives interruptions, route changes and media-server resets with a bounded restart budget. |
 | `CaptionEngine` | iOS ObjC | On-device transcription and the single caption/edit export described above. No Android counterpart; Android uses the HTTP service. |
 | `ClimaxEngine` | iOS ObjC | Audio features (RMS, spectral flux, zero-crossing rate, onset peaks via vDSP) and visual features (frame difference, histogram scene change) on one 20 Hz grid. |
 | `LiveActivityBridge` + `ClipsoWidgets` extension | iOS, Swift | The Lock Screen / Dynamic Island "LIVE" activity. Best-effort: ActivityKit only allows a start from the foreground. |

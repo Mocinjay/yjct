@@ -5,7 +5,8 @@ Status of the whole-codebase refactor on branch `claude/laughing-curie-4r4s4g`, 
 ## State
 
 - The refactor (native, capture core, captioning/publishing, UI and repo) is in, and every review finding from the earlier passes is fixed: `git log --oneline 97b8d6a..HEAD`.
-- JS: `npx tsc --noEmit -p .` clean, `npx jest` 267/267 (cold and warm cache), `npx eslint src __tests__ App.tsx` 0 errors and 6 warnings (listed below).
+- Full resolution is the product goal and is built: markers for every moment, the import of the glasses' own 1520x2032 HDR recordings from Photos, the in-place upgrade of 720p clips, glasses-only mode and the HDR-preserving caption burn ([MAX-RESOLUTION.md](MAX-RESOLUTION.md)). Not yet run on hardware.
+- JS: `npx tsc --noEmit -p .` clean, `npx jest` 318/318 (cold and warm cache), `npx eslint src __tests__ App.tsx` 0 errors and 6 warnings (listed below).
 - `server/captioning`: `python3 -m unittest` 21/21.
 - iOS: `pod install` (CocoaPods 1.16.2) is in sync with the lockfile, with no VisionCamera. The Clipso scheme builds with Xcode 27 for the Simulator (Debug) and for a generic iOS device (Release, unsigned), with no errors or warnings in `ios/Clipso`, `ios/ClipsoWidgets` or `modules/clip-stitcher/ios`. The Podfile lifts pod targets below the app's iOS 16.0 floor, because Xcode 27 rejects anything below 15.0.
 - Simulator run (Debug, MockDeviceKit glasses, Mac microphone): Connect pairs the mock glasses and hands off to Armed. Capture arms and `Documents/clipso-diagnostics.log` shows `video input: 504x896 'hvc1' passthrough (no re-encode)`, `HEALTH fps=24.0 … resolution=high recording=YES`, and `rotating: … fps=24.0 mode=passthrough keyframes=11` every ~5.5 s. No `MEM footprint` lines. MockDeviceKit delivers compressed `hvc1`, so the Simulator exercises the passthrough writer. A failed arm runs 1 + 3 recovery attempts 4 s apart, then ends the Live Activity.
@@ -14,7 +15,7 @@ Status of the whole-codebase refactor on branch `claude/laughing-curie-4r4s4g`, 
 
 ### 1. Run on a device with the glasses
 
-Not done: the phone was offline. Build and run the Clipso scheme on the iPhone, then check:
+Not done: the phone was offline. Build and run the Clipso scheme on the iPhone. First the full-resolution procedure in [MAX-RESOLUTION.md](MAX-RESOLUTION.md) ("Verifying on a device"), glasses-only mode then live mode, recording the concurrency-probe verdict there. Then:
 
 - Arm, say "Clipso": a clip lands in the Library and the glasses chime twice.
 - `Documents/clipso-diagnostics.log` has `'hvc1' passthrough`, `HEALTH fps=` and `rotating: … fps=`, and no `MEM footprint` lines.
@@ -26,6 +27,10 @@ Signing: `ios/Config/Signing.xcconfig` is per-developer and untracked (see `Sign
 ### 2. Known capture race (not fixed)
 
 `MWDATNative.stopRecording()` carries no session token. Every `CaptureController.disarm()` calls it, including the unmount disarm of an Armed screen that is already idle (Library "Go live" resets the stack). If that call reached the bridge after a newer session's `start()`, it would detach the new writer while JS reports 'armed'. In practice the old stop is issued first (the new session still has to read settings, render and call `prepare()`), so this has not been observed. The robust fix is a token from `start()` that `stopRecording()` must match, in `MWDATBridge.swift` and `MWDATSource.ts`.
+
+Full Photos access ("All Photos") and Meta AI saving to Photos are prerequisites for the import. In the Simulator the import starts and raises the full-access prompt, but `simctl` cannot grant full Photos access and there is no Simulator.app GUI here to tap it, so the import was not exercised end to end outside the unit tests.
+
+Build note: a Release build switches React Native's prebuilt core in `ios/Pods` to its release flavour, and a following Debug build then fails to link (missing `facebook::react` debug symbols). Reset with `printf Release > Pods/React-Core-prebuilt/.last_build_configuration` (same for `Pods/ReactNativeDependencies`) and run `node ../node_modules/react-native/scripts/replace-rncore-version.js -c Debug -r 0.86.0 -p "$PWD"` and `node ../node_modules/react-native/third-party-podspecs/replace_dependencies_version.js -c Debug -r 0.86.0 -p "$PWD"` from `ios/Pods`.
 
 ### 3. Android
 
