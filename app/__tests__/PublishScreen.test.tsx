@@ -35,6 +35,11 @@ import { Alert, Text } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { PublishScreen } from '../src/ui/screens/PublishScreen';
 
+// The first render loads React Native's lazily required components. On a cold
+// transform cache, with suites running in parallel, that alone can outlast
+// jest's default 5s, so these render tests get more time.
+jest.setTimeout(30_000);
+
 const clip: Clip = {
   id: 'a',
   name: 'a',
