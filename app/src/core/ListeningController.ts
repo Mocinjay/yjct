@@ -5,7 +5,7 @@ import type { CaptureStatus } from './CaptureController';
 /**
  * Glasses-only capture: nothing streams. The wearer records on the glasses
  * themselves, at full resolution, and this listens on the phone for
- * "Clipso". Each trigger becomes a marker, the wall-clock span of the moment,
+ * "Clypso". Each trigger becomes a marker, the wall-clock span of the moment,
  * which the full-resolution import cuts out of the recording once Meta AI has
  * synced it (services/glassesImport.ts).
  *

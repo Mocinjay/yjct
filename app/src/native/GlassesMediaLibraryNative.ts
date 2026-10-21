@@ -74,7 +74,7 @@ interface GlassesMediaLibraryModule {
   exportOriginal(localIdentifier: string): Promise<GlassesExportResult>;
   startWatching(): Promise<boolean>;
   stopWatching(): Promise<boolean>;
-  /** Appends a line to Documents/clipso-diagnostics.log. */
+  /** Appends a line to Documents/clypso-diagnostics.log. */
   log(message: string): void;
 }
 

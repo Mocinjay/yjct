@@ -59,7 +59,7 @@ export type ClipQuality = 'proxy' | 'master';
 
 /**
  * How capture works. 'live' streams from the glasses into a rolling buffer
- * and saves a 720p clip the moment "Clipso" is heard, upgraded to full
+ * and saves a 720p clip the moment "Clypso" is heard, upgraded to full
  * resolution when the glasses recorded the same moment themselves. 'glasses'
  * streams nothing: the wearer records on the glasses, the phone listens, and
  * full-resolution clips arrive once Meta AI syncs the recording.

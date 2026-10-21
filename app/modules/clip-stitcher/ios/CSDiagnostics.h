@@ -3,7 +3,7 @@
 #import <unistd.h>
 
 /**
- * Appends one line to Documents/clipso-diagnostics.log, the file the Swift
+ * Appends one line to Documents/clypso-diagnostics.log, the file the Swift
  * `DiagnosticLog` (MWDATSegmentWriter.swift) writes too, so a single pull off
  * the device reads as one timeline across capture, import, cutting and
  * captioning.
@@ -20,8 +20,8 @@ static inline void CSDiagAppend(NSString *tag, NSString *message)
   dispatch_once(&once, ^{
     path = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
                                                 NSUserDomainMask, YES).firstObject
-        stringByAppendingPathComponent:@"clipso-diagnostics.log"];
-    queue = dispatch_queue_create("com.mocinjay.clipso.csdiag", DISPATCH_QUEUE_SERIAL);
+        stringByAppendingPathComponent:@"clypso-diagnostics.log"];
+    queue = dispatch_queue_create("com.mocinjay.clypso.csdiag", DISPATCH_QUEUE_SERIAL);
   });
   if (path == nil) {
     return;

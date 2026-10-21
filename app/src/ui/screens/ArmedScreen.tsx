@@ -30,7 +30,7 @@ const RECOVERY_DELAY_MS = 4000;
 
 /**
  * Always-on live view: the rolling buffer arms as soon as the session is
- * ready. Voice (“Clipso”) is the primary trigger; the on-screen
+ * ready. Voice (“Clypso”) is the primary trigger; the on-screen
  * controls are a quiet clip / extended affordance, not a camera shutter.
  */
 export function ArmedScreen({ navigation }: Props) {
@@ -124,7 +124,7 @@ export function ArmedScreen({ navigation }: Props) {
   }, [status.state]);
 
   // The Live Activity mirrors capture onto the Lock Screen and Dynamic Island,
-  // so leaving the app does not mean losing sight of whether Clipso is armed.
+  // so leaving the app does not mean losing sight of whether Clypso is armed.
   //
   // ActivityKit only allows a *start* from the foreground; updates and the end
   // work from the background. The auto-recovery below re-arms from the
@@ -276,7 +276,7 @@ export function ArmedScreen({ navigation }: Props) {
         return;
       }
       // Only a session that is down. Re-arming over a save in flight (a
-      // "Clipso" said with the phone pocketed, then the app opened) would
+      // "Clypso" said with the phone pocketed, then the app opened) would
       // reset the session's clip count and show "Starting…" over the save.
       if (status.state !== 'idle' && status.state !== 'error') {
         return;
@@ -358,8 +358,8 @@ export function ArmedScreen({ navigation }: Props) {
             <View style={styles.listening}>
               <Text style={styles.listeningTitle}>Recording happens on your glasses</Text>
               <Text style={styles.listeningBody}>
-                Start a video on the glasses, then say “Clipso” when something happens.
-                Clipso cuts that moment at full resolution once Meta AI syncs the video
+                Start a video on the glasses, then say “Clypso” when something happens.
+                Clypso cuts that moment at full resolution once Meta AI syncs the video
                 to your photos.
               </Text>
             </View>
@@ -412,7 +412,7 @@ export function ArmedScreen({ navigation }: Props) {
               ? glassesOnly
                 ? 'manual mode — tap Mark to mark the moment'
                 : 'mock mode — tap Clip to save the look-back'
-              : 'say “Clipso”'}
+              : 'say “Clypso”'}
         </Text>
 
         <View style={styles.actions}>

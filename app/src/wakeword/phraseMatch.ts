@@ -1,7 +1,7 @@
 /**
  * Wake-phrase matching over noisy speech-to-text output.
  *
- * Trigger word: "Clipso" (clip + so). Recognizers rarely know it, so they
+ * Trigger word: "Clypso", said "clip so". Recognizers rarely know it, so they
  * split, soften, or substitute — "clip so", "clips oh", "clipse o", "calypso".
  * Match it alone or buried in a sentence.
  *
@@ -35,7 +35,7 @@ export function matchesWakePhrase(transcript: string): boolean {
 
   // Whole-word brand forms — works alone or mid-sentence.
   if (
-    /\bclipso+h?\b/.test(text) ||
+    /\bcl[iy]pso+h?\b/.test(text) ||
     /\bklipso+h?\b/.test(text) ||
     /\bclipzo+\b/.test(text) ||
     /\bclipsaw\b/.test(text) ||
@@ -63,7 +63,7 @@ export function matchesWakePhrase(transcript: string): boolean {
   // "clipsoplease"). Require a non-letter edge so "eclipse" stays out.
   const compact = ` ${text.replace(/\s/g, '')} `;
   if (
-    /[^a-z]clipso+h?[^a-z]/.test(compact) ||
+    /[^a-z]cl[iy]pso+h?[^a-z]/.test(compact) ||
     /[^a-z]klipso+h?[^a-z]/.test(compact) ||
     /[^a-z]clipzo+[^a-z]/.test(compact) ||
     /[^a-z]calypso[^a-z]/.test(compact)

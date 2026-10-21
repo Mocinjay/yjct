@@ -3,7 +3,7 @@ import type { StreamTimelineEntry } from '../markers/streamConcurrency';
 
 /**
  * Native bridge to the Meta Wearables Device Access Toolkit (iOS: Swift
- * bridge in ios/Clipso/MWDATBridge.swift; Android bridge lands later).
+ * bridge in ios/Clypso/MWDATBridge.swift; Android bridge lands later).
  */
 export interface MWDATSegmentEvent {
   path: string;

@@ -15,9 +15,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-               BuildableName = "Clipso.app"
-               BlueprintName = "Clipso"
-               ReferencedContainer = "container:Clipso.xcodeproj">
+               BuildableName = "Clypso.app"
+               BlueprintName = "Clypso"
+               ReferencedContainer = "container:Clypso.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -45,9 +45,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-            BuildableName = "Clipso.app"
-            BlueprintName = "Clipso"
-            ReferencedContainer = "container:Clipso.xcodeproj">
+            BuildableName = "Clypso.app"
+            BlueprintName = "Clypso"
+            ReferencedContainer = "container:Clypso.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -62,9 +62,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-            BuildableName = "Clipso.app"
-            BlueprintName = "Clipso"
-            ReferencedContainer = "container:Clipso.xcodeproj">
+            BuildableName = "Clypso.app"
+            BlueprintName = "Clypso"
+            ReferencedContainer = "container:Clypso.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

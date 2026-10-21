@@ -627,7 +627,7 @@ RCT_EXPORT_MODULE();
   static dispatch_queue_t queue;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
-    queue = dispatch_queue_create("com.clipso.captionengine", DISPATCH_QUEUE_SERIAL);
+    queue = dispatch_queue_create("com.clypso.captionengine", DISPATCH_QUEUE_SERIAL);
   });
   return queue;
 }
@@ -781,7 +781,7 @@ RCT_EXPORT_METHOD(transcribeClip:(NSString *)path
   request.shouldReportPartialResults = YES;
   request.requiresOnDeviceRecognition = YES;
   request.taskHint = SFSpeechRecognitionTaskHintDictation;
-  // Deliberately no contextualStrings. The wake word biases toward "Clipso";
+  // Deliberately no contextualStrings. The wake word biases toward "Clypso";
   // doing that here would bend ordinary speech toward the brand name.
 
   CERecognitionCollector *collector = [[CERecognitionCollector alloc] init];

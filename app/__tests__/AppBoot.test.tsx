@@ -35,10 +35,10 @@ jest.mock('@react-navigation/native-stack', () => {
     }),
   };
 });
-jest.mock('../src/ui/ClipsoSplash', () => {
+jest.mock('../src/ui/ClypsoSplash', () => {
   const { useEffect } = require('react');
   return {
-    ClipsoSplash: ({ onFinished }: { onFinished: () => void }) => {
+    ClypsoSplash: ({ onFinished }: { onFinished: () => void }) => {
       useEffect(onFinished, [onFinished]);
       return null;
     },

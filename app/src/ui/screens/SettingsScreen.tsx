@@ -142,7 +142,7 @@ export function SettingsScreen({ navigation }: Props) {
 
       <Section title="Meta glasses">
         <Text style={styles.hint}>
-          Clipso records from your glasses' camera and microphone. Keep them
+          Clypso records from your glasses' camera and microphone. Keep them
           paired and connected in the Meta AI app.
         </Text>
         <GlassesConnection />
@@ -268,7 +268,7 @@ export function SettingsScreen({ navigation }: Props) {
         </Text>
       </Section>
 
-      <Section title="Clipso Pro">
+      <Section title="Clypso Pro">
         <View style={styles.rowBetween}>
           <Text style={styles.hint}>
             {isPro
@@ -295,7 +295,7 @@ export function SettingsScreen({ navigation }: Props) {
       </Section>
 
       <Text style={styles.footer}>
-        Clipso · say “Clipso” · clips stay on this phone until you
+        Clypso · say “Clypso” · clips stay on this phone until you
         share them
       </Text>
     </ScrollView>
@@ -563,7 +563,7 @@ function FullResolution({ settings }: { settings: Settings }) {
     <Section title="Full resolution">
       <Text style={styles.hint}>
         The glasses record 1520x2032 HDR to their own storage; the live stream
-        tops out at 720x1280. Clipso cuts the moments you mark out of those
+        tops out at 720x1280. Clypso cuts the moments you mark out of those
         recordings once Meta AI syncs them to your photos.
       </Text>
       <View style={styles.row}>
@@ -580,8 +580,8 @@ function FullResolution({ settings }: { settings: Settings }) {
       </View>
       <Text style={styles.hint}>
         {glassesOnly
-          ? 'Nothing streams. Record on your glasses and say “Clipso”; the full-resolution clip appears after Meta AI syncs.'
-          : 'Streams from the glasses and saves a 720p clip the moment you say “Clipso”. If the glasses were recording too, that clip is replaced by the full-resolution cut once it syncs.'}
+          ? 'Nothing streams. Record on your glasses and say “Clypso”; the full-resolution clip appears after Meta AI syncs.'
+          : 'Streams from the glasses and saves a 720p clip the moment you say “Clypso”. If the glasses were recording too, that clip is replaced by the full-resolution cut once it syncs.'}
       </Text>
       {glassesOnly ? null : (
         <View style={styles.row}>

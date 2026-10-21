@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Clipso</string>
+	<string>Clypso</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -31,7 +31,7 @@
 			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 			<key>CFBundleURLSchemes</key>
 			<!--
-			  Still "jarvis" after the rename to Clipso, on purpose: this scheme
+			  Still "jarvis" after the rename to Clypso, on purpose: this scheme
 			  is registered on the Meta side as the MWDAT AppLinkURLScheme, and
 			  the two must match or glasses registration never returns. Rename
 			  it here only in the same change that updates the Meta app config.
@@ -74,7 +74,7 @@
 		<true/>
 	</dict>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Clipso connects to your Meta glasses over Bluetooth to buffer their camera feed.</string>
+	<string>Clypso connects to your Meta glasses over Bluetooth to buffer their camera feed.</string>
 	<key>NSBonjourServices</key>
 	<!--
 	  `_meta-datax._tcp` is the service the Meta Wearables SDK browses for on
@@ -86,15 +86,15 @@
 		<string>_meta-datax._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>Clipso buffers video from your camera while recording so saying “Clipso” can save the last moments as a clip.</string>
+	<string>Clypso buffers video from your camera while recording so saying “Clypso” can save the last moments as a clip.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Clipso finds and streams from your Meta glasses over local Wi-Fi.</string>
+	<string>Clypso finds and streams from your Meta glasses over local Wi-Fi.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Clipso finds the videos your glasses recorded and cuts the moments you marked at full resolution. It never changes or deletes anything in your library.</string>
+	<string>Clypso finds the videos your glasses recorded and cuts the moments you marked at full resolution. It never changes or deletes anything in your library.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Clipso records audio with your clips and listens for your trigger word while you record.</string>
+	<string>Clypso records audio with your clips and listens for your trigger word while you record.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Clipso uses Apple speech recognition to hear “Clipso” while you record and to caption your clips. It runs on your iPhone where it can; otherwise Apple transcribes the audio.</string>
+	<string>Clypso uses Apple speech recognition to hear “Clypso” while you record and to caption your clips. It runs on your iPhone where it can; otherwise Apple transcribes the audio.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>NSSupportsLiveActivities</key>
@@ -105,7 +105,7 @@
 		  `audio` is what keeps the AVAudioSession mic tap alive once the app is
 		  backgrounded. bluetooth-central keeps the *process* running for BT
 		  events, but without `audio` iOS deactivates the session, the writer's
-		  audio engine stops, and the "Clipso" wake word goes deaf.
+		  audio engine stops, and the "Clypso" wake word goes deaf.
 		-->
 		<string>audio</string>
 		<string>bluetooth-central</string>

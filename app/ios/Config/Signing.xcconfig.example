@@ -11,33 +11,33 @@
 //   Your 10-character Apple Developer Team ID.
 //   Xcode > Settings > Accounts > pick your team; the ID is in parentheses.
 //
-// CLIPSO_BUNDLE_ID
+// CLYPSO_BUNDLE_ID
 //   Must be unique to YOU — reverse-DNS on a domain or name you control.
 //   Never reuse a teammate's. Bundle ids are globally unique to one Apple
 //   team, and the Meta Wearables app registration is keyed to the bundle id
 //   too, so sharing one means whoever does not own it gets signing failures
 //   and silent glasses-registration failures. One id per developer:
-//     com.mocinjay.clipso     — Allen Williams
-//     com.ajdinahmedi.clipso  — Ajdin Ahmedi
+//     com.mocinjay.clypso     — Allen Williams
+//     com.ajdinahmedi.clypso  — Ajdin Ahmedi
 //   Add your own line rather than borrowing either of these.
 //
 // Free "Personal Team" accounts get 7-day provisioning profiles. When the app
 // stops launching after a week, rebuild from Xcode and it reissues. They also
 // cannot sign the Wi-Fi entitlements the glasses' high-bandwidth link needs, so
-// on a Personal Team uncomment the CLIPSO_ENTITLEMENTS line below: the build
+// on a Personal Team uncomment the CLYPSO_ENTITLEMENTS line below: the build
 // then streams over Bluetooth only (about 504x896, frame rate as the link allows).
 
 DEVELOPMENT_TEAM = ABCDE12345
 
-// Set your id ONCE here. The app takes it as-is; the ClipsoWidgets extension
+// Set your id ONCE here. The app takes it as-is; the ClypsoWidgets extension
 // derives its own id underneath it, because Apple requires an extension's
 // bundle id to be prefixed by its containing app's. Never write the literal id
 // anywhere else or the two drift and the extension fails to install.
-CLIPSO_BUNDLE_ID = com.yourname.clipso
-PRODUCT_BUNDLE_IDENTIFIER = $(CLIPSO_BUNDLE_ID)
+CLYPSO_BUNDLE_ID = com.yourname.clypso
+PRODUCT_BUNDLE_IDENTIFIER = $(CLYPSO_BUNDLE_ID)
 
 // Personal Team only — see above.
-// CLIPSO_ENTITLEMENTS =
+// CLYPSO_ENTITLEMENTS =
 
 // MWDAT_CLIENT_TOKEN
 //   The Client Token from Wearables Developer Center. Leave it empty while the

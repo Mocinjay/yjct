@@ -5,12 +5,12 @@ import WidgetKit
 /// The "LIVE" surface: Lock Screen banner and Dynamic Island.
 ///
 /// This is the whole point of the widget — the wearer is out with the phone
-/// pocketed, using some other app, and needs to know at a glance that Clipso
+/// pocketed, using some other app, and needs to know at a glance that Clypso
 /// is still listening and how many clips it has saved so far.
 @available(iOS 16.2, *)
-struct ClipsoLiveActivity: Widget {
+struct ClypsoLiveActivity: Widget {
   var body: some WidgetConfiguration {
-    ActivityConfiguration(for: ClipsoActivityAttributes.self) { context in
+    ActivityConfiguration(for: ClypsoActivityAttributes.self) { context in
       LockScreenView(context: context)
         .activityBackgroundTint(Color.black.opacity(0.55))
         .activitySystemActionForegroundColor(Color.white)
@@ -45,7 +45,7 @@ struct ClipsoLiveActivity: Widget {
         StatusDot(recording: context.state.recording)
       } compactTrailing: {
         // The save count is the single most useful glanceable number: it is
-        // how the wearer confirms the last "Clipso" actually landed.
+        // how the wearer confirms the last "Clypso" actually landed.
         Text("\(context.state.clipCount)")
           .font(.caption2.weight(.bold))
           .foregroundStyle(recColor)
@@ -57,7 +57,7 @@ struct ClipsoLiveActivity: Widget {
   }
 }
 
-/// Clipso's REC-red, matching `ui/theme.ts` `colors.accent`.
+/// Clypso's REC-red, matching `ui/theme.ts` `colors.accent`.
 private let recColor = Color(red: 1.0, green: 0.23, blue: 0.36)
 
 @available(iOS 16.2, *)
@@ -74,7 +74,7 @@ private struct StatusDot: View {
 
 @available(iOS 16.2, *)
 private struct LockScreenView: View {
-  let context: ActivityViewContext<ClipsoActivityAttributes>
+  let context: ActivityViewContext<ClypsoActivityAttributes>
 
   var body: some View {
     HStack(alignment: .center, spacing: 12) {
@@ -118,10 +118,10 @@ private struct LockScreenView: View {
   }
 }
 
-private func bufferLine(_ state: ClipsoActivityAttributes.ContentState) -> String {
+private func bufferLine(_ state: ClypsoActivityAttributes.ContentState) -> String {
   state.recording
     ? "look-back + everything since you started"
-    : "say “Clipso” · \(state.bufferedSeconds)s buffered"
+    : "say “Clypso” · \(state.bufferedSeconds)s buffered"
 }
 
 private func savesLine(_ count: Int) -> String {

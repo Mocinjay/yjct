@@ -1,9 +1,9 @@
 # Architecture
 
-Clipso is a React Native (TypeScript) app with two native layers:
+Clypso is a React Native (TypeScript) app with two native layers:
 
 - a Swift bridge to the Meta Wearables Device Access Toolkit (MWDAT 1.0.1) in
-  `app/ios/Clipso/`, and
+  `app/ios/Clypso/`, and
 - a local native module, `app/modules/clip-stitcher/` (ObjC on iOS, Kotlin on
   Android), autolinked through `app/react-native.config.js`.
 
@@ -81,14 +81,14 @@ the wake word to transcribe.
 
 **Triggers.**
 
-- *"Clipso"* (`captureNow`) saves the look-back window. With word timings the
+- *"Clypso"* (`captureNow`) saves the look-back window. With word timings the
   clip ends on the word: the buffer is flushed up to the segment the word was
   heard in, and the dead air after it is trimmed off that segment. Without
   timings (manual button, Android) the in-flight segment is cut and the whole
   window is saved. Capture keeps running.
 - *Extended* (`startClip` / `stopClip`): the REC button pins the window and
   records until the stop button, the wake word, or the 180 s safety cap.
-- *Save while down*: a "Clipso" transcribed while the feed is in `error` (or in
+- *Save while down*: a "Clypso" transcribed while the feed is in `error` (or in
   the re-arm after it) is saved straight from the buffer. Stitching needs no
   live stream, and a failed re-arm would clear the buffer.
 
@@ -118,7 +118,7 @@ how many clips have landed.
 - **Markers.** Every trigger writes a marker to `MarkerStore`: the moment's
   wall-clock span, and in live mode the id of the 720p clip cut for it.
   `CaptureController` writes it before stitching (a lost marker loses the
-  full-resolution cut for good); `ListeningController` writes one per "Clipso"
+  full-resolution cut for good); `ListeningController` writes one per "Clypso"
   heard on the phone microphone in glasses-only mode.
 - **Import.** `GlassesImportController` runs on a photo-library change, on
   foreground and shortly after a new marker. It filters Photos by marker time
@@ -161,8 +161,8 @@ re-arm does not renegotiate the link (the glasses chime on every stop/start).
 **The wake word is ours, not Meta's.** There is no third-party "Hey Meta" hook.
 `SpeechWakeWord` transcribes each segment with Apple's speech recognition. It
 tries on-device first, and retries once on Apple's servers when the on-device
-pass hears nothing: the on-device model largely ignores the "Clipso" vocabulary
-hint. `phraseMatch.ts` scores the transcript for "Clipso" and its common
+pass hears nothing: the on-device model largely ignores the "Clypso" vocabulary
+hint. `phraseMatch.ts` scores the transcript for "Clypso" and its common
 mis-hearings ("clip so", "clips o"). Detection trails the word by up to one
 segment; the look-back window still contains the moment. `MockWakeWord`
 (Settings → Voice trigger → Manual button) replaces it with a tap.
@@ -204,7 +204,7 @@ continuously. Onboarding says so before the wearer ever arms.
   with 1 s overlap (Speech limits how much audio one request may carry) and
   merges them by splitting each overlap at its midpoint. PCM is placed by
   buffer timestamp, so word timings survive gaps in the audio. It does **not**
-  reuse `SpeechWakeWord`, which biases toward "Clipso" and may use Apple's
+  reuse `SpeechWakeWord`, which biases toward "Clypso" and may use Apple's
   servers. `renderEdit` composes one container layer per cue with two text
   layers per word (base + highlight), because a `CATextLayer`'s attributed
   string is not animatable. It copies the file instead of exporting when there
@@ -270,15 +270,15 @@ Off by default (Settings).
 
 | Module | Platform | What it does |
 | --- | --- | --- |
-| `MWDATBridge` (`ios/Clipso/MWDATBridge.swift`) | iOS, Swift | Owns the glasses: registration, camera permission, MockDeviceKit pairing, one session and `.hvc1` 30 fps stream shared by preview and recording, the health watchdog and stall recovery, the `.high`/`.medium` choice, and the HEVC preview decoder. Emits `MWDATSegment`, `MWDATError`, `MWDATStreamState`, `MWDATRegistrationState`, `MWDATDevices`, `MWDATPreviewFrame` and `MWDATStreamHealth`. |
-| `MWDATSegmentWriter` (same folder) | iOS, Swift | Writes the stream into keyframe-aligned MP4 segments (HEVC passthrough + phone-mic AAC), keeping the glasses' frame timing. Also holds `DiagnosticLog`, which mirrors native logs to `Documents/clipso-diagnostics.log`. |
+| `MWDATBridge` (`ios/Clypso/MWDATBridge.swift`) | iOS, Swift | Owns the glasses: registration, camera permission, MockDeviceKit pairing, one session and `.hvc1` 30 fps stream shared by preview and recording, the health watchdog and stall recovery, the `.high`/`.medium` choice, and the HEVC preview decoder. Emits `MWDATSegment`, `MWDATError`, `MWDATStreamState`, `MWDATRegistrationState`, `MWDATDevices`, `MWDATPreviewFrame` and `MWDATStreamHealth`. |
+| `MWDATSegmentWriter` (same folder) | iOS, Swift | Writes the stream into keyframe-aligned MP4 segments (HEVC passthrough + phone-mic AAC), keeping the glasses' frame timing. Also holds `DiagnosticLog`, which mirrors native logs to `Documents/clypso-diagnostics.log`. |
 | `ClipStitcher` | iOS ObjC / Android Kotlin | Joins segment MP4s into one clip (passthrough `AVMutableComposition` export, H.264 transcode only when segment formats differ; `MediaMuxer` remux on Android), trims the end for wake-word clips, writes a poster JPEG.; on iOS also `extractRange`, which cuts a window out of one glasses recording by passthrough (the HEVC preset, then H.264, as fallbacks). |
 | `SpeechWakeWord` | iOS ObjC / Android Kotlin | iOS: transcribes each finished segment (level-boosted copy, on-device then one server retry) and returns per-word end times. Android: continuous mic recognition that emits transcript events. In glasses-only mode iOS also runs `MicSegmentRecorder` and emits its segments. |
 | `GlassesMediaLibrary` | iOS ObjC | Photos access, recognising the glasses' own recordings (model/copyright metadata), their capture time, copying the original bytes, and the library-change event. Never writes to the library. |
 | `MicSegmentRecorder` | iOS ObjC | The phone microphone as wall-clock-stamped 5 s segments for glasses-only mode, started through `SpeechWakeWord.startListening`; survives interruptions, route changes and media-server resets with a bounded restart budget. |
 | `CaptionEngine` | iOS ObjC | On-device transcription and the single caption/edit export described above. No Android counterpart; Android uses the HTTP service. |
 | `ClimaxEngine` | iOS ObjC | Audio features (RMS, spectral flux, zero-crossing rate, onset peaks via vDSP) and visual features (frame difference, histogram scene change) on one 20 Hz grid. |
-| `LiveActivityBridge` + `ClipsoWidgets` extension | iOS, Swift | The Lock Screen / Dynamic Island "LIVE" activity. Best-effort: ActivityKit only allows a start from the foreground. |
+| `LiveActivityBridge` + `ClypsoWidgets` extension | iOS, Swift | The Lock Screen / Dynamic Island "LIVE" activity. Best-effort: ActivityKit only allows a start from the foreground. |
 
 `AppDelegate` releases the glasses on terminate (otherwise the glasses keep the
 capture slot until power-cycled), keeps an armed session through backgrounding
@@ -290,7 +290,7 @@ These are gated on `__DEV__` and do nothing in a release build:
 
 - **MockDeviceKit glasses**: a Debug build in the Simulator pairs them
   automatically on the Connect screen (`MWDATBridge.mockEnable`). They stream the
-  bundled `ios/Clipso/MockFeed.mp4`.
+  bundled `ios/Clypso/MockFeed.mp4`.
 - **`MockCaptioningProvider`**, the **mock publish target** and
   **`MockClipHosting`** (used only by the mock target).
 - **Test render** (Settings): runs the on-device caption pipeline on

@@ -1,4 +1,4 @@
-// Base configuration for the Clipso target, Debug.
+// Base configuration for the Clypso target, Debug.
 //
 // CocoaPods normally owns `baseConfigurationReference`. This file takes it
 // over and #includes the generated Pods config instead — an arrangement
@@ -6,15 +6,15 @@
 // saying a custom base configuration is set; that is expected and harmless
 // as long as the #include below is kept.
 
-#include "../Pods/Target Support Files/Pods-Clipso/Pods-Clipso.debug.xcconfig"
+#include "../Pods/Target Support Files/Pods-Clypso/Pods-Clypso.debug.xcconfig"
 
 // Wi-Fi entitlements (Hotspot Configuration, Access Wi-Fi Information): what
 // lets the glasses stream over their Wi-Fi link instead of Bluetooth. Free
 // "Personal Team" accounts cannot sign them; such a developer sets
-// `CLIPSO_ENTITLEMENTS =` in Signing.xcconfig and gets a Bluetooth-only build.
+// `CLYPSO_ENTITLEMENTS =` in Signing.xcconfig and gets a Bluetooth-only build.
 // Set here, not in the project, so that per-developer override can win.
-CLIPSO_ENTITLEMENTS = Clipso/Clipso.entitlements
-CODE_SIGN_ENTITLEMENTS = $(CLIPSO_ENTITLEMENTS)
+CLYPSO_ENTITLEMENTS = Clypso/Clypso.entitlements
+CODE_SIGN_ENTITLEMENTS = $(CLYPSO_ENTITLEMENTS)
 
 // Per-developer signing. Untracked — see Signing.xcconfig.example.
 // Optional include, so a missing file degrades to an Xcode signing error

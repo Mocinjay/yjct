@@ -3,14 +3,14 @@ import Foundation
 #if canImport(ActivityKit)
 import ActivityKit
 
-/// The contract between the app and the ClipsoWidgets extension.
+/// The contract between the app and the ClypsoWidgets extension.
 ///
 /// This file is compiled into BOTH targets — the app starts and updates the
 /// activity, the widget extension renders it — and ActivityKit matches the two
 /// sides by type name. Any change here has to land in both, which is exactly
 /// why it is one shared file rather than two declarations.
 @available(iOS 16.2, *)
-struct ClipsoActivityAttributes: ActivityAttributes {
+struct ClypsoActivityAttributes: ActivityAttributes {
   /// Everything that changes while the wearer is out clipping. Kept small on
   /// purpose: every update crosses to the system process, and ActivityKit
   /// budgets how often that may happen.

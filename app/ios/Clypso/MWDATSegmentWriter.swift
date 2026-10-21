@@ -15,10 +15,10 @@ import Foundation
 /// MWDATBridge and LiveActivityBridge log through this too, and SpeechWakeWord.m
 /// appends to the same file through its own descriptor.
 enum DiagnosticLog {
-  private static let queue = DispatchQueue(label: "com.mocinjay.clipso.diaglog")
+  private static let queue = DispatchQueue(label: "com.mocinjay.clypso.diaglog")
   private static let path: String? = FileManager.default
     .urls(for: .documentDirectory, in: .userDomainMask).first?
-    .appendingPathComponent("clipso-diagnostics.log").path
+    .appendingPathComponent("clypso-diagnostics.log").path
   /// Past this size the file is emptied and starts over. A capture run can
   /// last hours, and the tail is the part that is read.
   private static let maxBytes: UInt64 = 8 * 1024 * 1024
@@ -88,7 +88,7 @@ final class MWDATSegmentWriter {
     let durationSec: Double
   }
 
-  private let queue = DispatchQueue(label: "com.mocinjay.clipso.mwdat.writer")
+  private let queue = DispatchQueue(label: "com.mocinjay.clypso.mwdat.writer")
   private let segmentSeconds: Double
   private let onSegment: (FinishedSegment) -> Void
   private let onError: (String) -> Void
@@ -1014,7 +1014,7 @@ final class MWDATSegmentWriter {
     clockOffset: CMTime
   ) throws -> Segment {
     let dir = NSTemporaryDirectory()
-    let path = (dir as NSString).appendingPathComponent("clipso-mwdat-\(UUID().uuidString).mp4")
+    let path = (dir as NSString).appendingPathComponent("clypso-mwdat-\(UUID().uuidString).mp4")
     let url = URL(fileURLWithPath: path)
     let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
 

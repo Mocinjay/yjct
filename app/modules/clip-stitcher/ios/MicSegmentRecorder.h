@@ -8,7 +8,7 @@ NS_ASSUME_NONNULL_BEGIN
  * In live mode the wake word rides on the audio track of the video segments
  * `MWDATSegmentWriter` writes. In glasses-only mode nothing streams, so there
  * are no segments; this class owns a microphone and nothing else, so "listen
- * for Clipso" does not imply "stream video from the glasses".
+ * for Clypso" does not imply "stream video from the glasses".
  *
  * It writes short AAC/m4a files and hands each one back as it closes. A single
  * `SFSpeechRecognitionTask` is ended by the system after about a minute of

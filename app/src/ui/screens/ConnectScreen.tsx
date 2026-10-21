@@ -260,7 +260,7 @@ export function ConnectScreen({ navigation }: Props) {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-      <Text style={styles.kicker}>● CLIPSO</Text>
+      <Text style={styles.kicker}>● CLYPSO</Text>
       <Text style={styles.title}>Link your{'\n'}Meta glasses.</Text>
 
       <View style={styles.previewBox}>
@@ -337,7 +337,7 @@ export function ConnectScreen({ navigation }: Props) {
 
       <Text style={styles.hint}>
         Glasses unfolded and on your head · paired in Meta AI · Developer Mode
-        on (Meta AI → Settings → App Info → tap App version 5×) · Clipso
+        on (Meta AI → Settings → App Info → tap App version 5×) · Clypso
         enabled under Meta AI → Settings → App connections.
         {streaming ? '\n\nOpening live view…' : ''}
       </Text>

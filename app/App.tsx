@@ -9,7 +9,7 @@ import { entitlementStore } from './src/core/EntitlementStore';
 import { settingsStore } from './src/core/SettingsStore';
 import { captionQueue } from './src/phase2/CaptionQueue';
 import { glassesImport } from './src/services/glassesImport';
-import { ClipsoSplash } from './src/ui/ClipsoSplash';
+import { ClypsoSplash } from './src/ui/ClypsoSplash';
 import type { RootStackParamList } from './src/ui/navigation';
 import { ArmedScreen } from './src/ui/screens/ArmedScreen';
 import { ConnectScreen } from './src/ui/screens/ConnectScreen';
@@ -83,14 +83,14 @@ export default function App() {
     });
   }, []);
 
-  // Native launch storyboard → JS splash (paperclip → CLIPSO wordmark).
+  // Native launch storyboard → JS splash (paperclip → CLYPSO wordmark).
   // Unmount the splash only after it finishes so the animation never restarts
   // while AsyncStorage is still resolving the first route.
   if (!splashDone) {
     return (
       <SafeAreaProvider>
         <StatusBar barStyle="light-content" />
-        <ClipsoSplash onFinished={onSplashFinished} />
+        <ClypsoSplash onFinished={onSplashFinished} />
       </SafeAreaProvider>
     );
   }

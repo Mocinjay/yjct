@@ -122,7 +122,7 @@ export function LibraryScreen({ navigation }: Props) {
       <View style={styles.brandRow}>
         <View style={styles.brand}>
           <RecDot size={9} live={false} />
-          <Text style={styles.brandName}>Clipso</Text>
+          <Text style={styles.brandName}>Clypso</Text>
           {isPro ? (
             <ProBadge />
           ) : (
@@ -143,7 +143,7 @@ export function LibraryScreen({ navigation }: Props) {
         <Text style={styles.title}>Your clips</Text>
         <Text style={styles.subtitle}>
           {clips.length === 0
-            ? 'say “Clipso”'
+            ? 'say “Clypso”'
             : `${saved.length} saved · ${recent.length} temporary${
                 captioning > 0 ? ` · ${captioning} captioning` : ''
               }`}
@@ -215,7 +215,7 @@ export function LibraryScreen({ navigation }: Props) {
           <View style={styles.recordDot} />
           <View>
             <Text style={styles.recordLabel}>Go live</Text>
-            <Text style={styles.recordSub}>“Clipso”</Text>
+            <Text style={styles.recordSub}>“Clypso”</Text>
           </View>
         </Pressable>
       </View>

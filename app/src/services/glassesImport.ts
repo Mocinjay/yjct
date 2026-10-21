@@ -122,7 +122,7 @@ class GlassesImportService {
       }
     });
     // A marker can arrive after its recording: the wearer stops recording,
-    // Meta AI syncs, and only then is "Clipso" said.
+    // Meta AI syncs, and only then is "Clypso" said.
     this.unsubscribeMarkers = markerStore.subscribe(() => this.scheduleSync());
 
     importLog('full-resolution import started');

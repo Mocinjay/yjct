@@ -192,7 +192,7 @@ describe('CaptureController', () => {
     for (let i = 0; i < 4; i++) {
       source.emit();
     }
-    const wakeSegment = source.emit(); // "Clipso" lands 1.2s into this one
+    const wakeSegment = source.emit(); // "Clypso" lands 1.2s into this one
     source.emit(); // ...and another segment finishes while it transcribes
 
     wake.fire({ segmentPath: wakeSegment, endOffsetSec: 1.2 });
@@ -220,7 +220,7 @@ describe('CaptureController', () => {
       source.emit();
     }
     const wakeSegment = source.emit();
-    // The feed drops; the segment holding "Clipso" is only transcribed after
+    // The feed drops; the segment holding "Clypso" is only transcribed after
     // the error has landed.
     source.fail('The glasses feed stalled');
     wake.fire({ segmentPath: wakeSegment, endOffsetSec: 1.2 });

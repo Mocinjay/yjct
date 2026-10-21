@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { errorText, importLog } from './importLog';
 import type { WakeMarker } from './markerMatching';
 
-const KEY = 'clipso.markers.v1';
+const KEY = 'clypso.markers.v1';
 
 /**
  * How long an unclaimed marker survives. The recording a marker belongs to

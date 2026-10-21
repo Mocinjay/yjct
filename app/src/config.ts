@@ -30,7 +30,7 @@ export const FREE_RETENTION_HOURS = 24;
  * The product's trigger word, as shown to the wearer. Say it and the
  * look-back window is saved. Detection lives in wakeword/phraseMatch.ts.
  */
-export const WAKE_PHRASE = 'Clipso';
+export const WAKE_PHRASE = 'Clypso';
 
 /**
  * Padding kept after the trigger word finishes when ending a clip on it.
@@ -51,7 +51,7 @@ export const MASTER_COVERAGE_TOLERANCE_SECONDS = 1.5;
 export const DEFAULT_SETTINGS: Settings = {
   bufferSeconds: 30,
   wakeWord: {
-    // Keyless OS speech recognition — say "Clipso" with zero setup, no
+    // Keyless OS speech recognition — say "Clypso" with zero setup, no
     // vendor key, no model download.
     provider: 'speech',
   },

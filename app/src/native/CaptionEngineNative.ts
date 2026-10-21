@@ -11,7 +11,7 @@ import type { FeatureGrid } from '../phase2/climaxScoring';
  * goes through the HTTP captioning service.
  *
  * `CaptionEngine` is deliberately separate from `SpeechWakeWord` even though
- * both transcribe. The wake word biases the recognizer toward "Clipso" via
+ * both transcribe. The wake word biases the recognizer toward "Clypso" via
  * contextualStrings and falls back to Apple's servers when on-device finds
  * nothing — both wrong here. Brand biasing corrupts ordinary speech, and
  * captioning that silently uploaded the wearer's audio would defeat the point

@@ -215,7 +215,7 @@ describe('ArmedScreen', () => {
     renderer = await mount();
     expect(mockArm).toHaveBeenCalledTimes(1);
 
-    // A "Clipso" said with the phone pocketed is still stitching.
+    // A "Clypso" said with the phone pocketed is still stitching.
     await act(async () => {
       mockEmit({ ...mockStatus, state: 'saving' });
     });

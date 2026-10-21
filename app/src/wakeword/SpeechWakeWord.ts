@@ -35,7 +35,7 @@ function findPhraseEndSec(words: TranscriptWord[]): number | null {
 }
 
 /**
- * Keyless "Clipso" detection with the OS's own speech
+ * Keyless "Clypso" detection with the OS's own speech
  * recognition — no vendor, no API key, on-device where supported.
  *
  * iOS, live mode: the capture controller feeds each recorded video segment
@@ -67,7 +67,7 @@ export class SpeechWakeWord implements WakeWordProvider {
     if (!ok) {
       throw new Error(
         Platform.OS === 'ios'
-          ? 'Speech recognition permission denied — enable it in iOS Settings → Clipso.'
+          ? 'Speech recognition permission denied — enable it in iOS Settings → Clypso.'
           : 'Speech recognition is not available on this device.',
       );
     }

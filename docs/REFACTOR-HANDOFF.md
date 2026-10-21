@@ -8,21 +8,21 @@ Status of the whole-codebase refactor on branch `claude/laughing-curie-4r4s4g`, 
 - Full resolution is the product goal and is built: markers for every moment, the import of the glasses' own 1520x2032 HDR recordings from Photos, the in-place upgrade of 720p clips, glasses-only mode and the HDR-preserving caption burn ([MAX-RESOLUTION.md](MAX-RESOLUTION.md)). Not yet run on hardware.
 - JS: `npx tsc --noEmit -p .` clean, `npx jest` 318/318 (cold and warm cache), `npx eslint src __tests__ App.tsx` 0 errors and 6 warnings (listed below).
 - `server/captioning`: `python3 -m unittest` 21/21.
-- iOS: `pod install` (CocoaPods 1.16.2) is in sync with the lockfile, with no VisionCamera. The Clipso scheme builds with Xcode 27 for the Simulator (Debug) and for a generic iOS device (Release, unsigned), with no errors or warnings in `ios/Clipso`, `ios/ClipsoWidgets` or `modules/clip-stitcher/ios`. The Podfile lifts pod targets below the app's iOS 16.0 floor, because Xcode 27 rejects anything below 15.0.
-- Simulator run (Debug, MockDeviceKit glasses, Mac microphone): Connect pairs the mock glasses and hands off to Armed. Capture arms and `Documents/clipso-diagnostics.log` shows `video input: 504x896 'hvc1' passthrough (no re-encode)`, `HEALTH fps=24.0 … resolution=high recording=YES`, and `rotating: … fps=24.0 mode=passthrough keyframes=11` every ~5.5 s. No `MEM footprint` lines. MockDeviceKit delivers compressed `hvc1`, so the Simulator exercises the passthrough writer. A failed arm runs 1 + 3 recovery attempts 4 s apart, then ends the Live Activity.
+- iOS: `pod install` (CocoaPods 1.16.2) is in sync with the lockfile, with no VisionCamera. The Clypso scheme builds with Xcode 27 for the Simulator (Debug) and for a generic iOS device (Release, unsigned), with no errors or warnings in `ios/Clypso`, `ios/ClypsoWidgets` or `modules/clip-stitcher/ios`. The Podfile lifts pod targets below the app's iOS 16.0 floor, because Xcode 27 rejects anything below 15.0.
+- Simulator run (Debug, MockDeviceKit glasses, Mac microphone): Connect pairs the mock glasses and hands off to Armed. Capture arms and `Documents/clypso-diagnostics.log` shows `video input: 504x896 'hvc1' passthrough (no re-encode)`, `HEALTH fps=24.0 … resolution=high recording=YES`, and `rotating: … fps=24.0 mode=passthrough keyframes=11` every ~5.5 s. No `MEM footprint` lines. MockDeviceKit delivers compressed `hvc1`, so the Simulator exercises the passthrough writer. A failed arm runs 1 + 3 recovery attempts 4 s apart, then ends the Live Activity.
 
 ## Open work, in order
 
 ### 1. Run on a device with the glasses
 
-Not done: the phone was offline. Build and run the Clipso scheme on the iPhone. First the full-resolution procedure in [MAX-RESOLUTION.md](MAX-RESOLUTION.md) ("Verifying on a device"), glasses-only mode then live mode, recording the concurrency-probe verdict there. Then:
+Not done: the phone was offline. Build and run the Clypso scheme on the iPhone. First the full-resolution procedure in [MAX-RESOLUTION.md](MAX-RESOLUTION.md) ("Verifying on a device"), glasses-only mode then live mode, recording the concurrency-probe verdict there. Then:
 
-- Arm, say "Clipso": a clip lands in the Library and the glasses chime twice.
-- `Documents/clipso-diagnostics.log` has `'hvc1' passthrough`, `HEALTH fps=` and `rotating: … fps=`, and no `MEM footprint` lines.
+- Arm, say "Clypso": a clip lands in the Library and the glasses chime twice.
+- `Documents/clypso-diagnostics.log` has `'hvc1' passthrough`, `HEALTH fps=` and `rotating: … fps=`, and no `MEM footprint` lines.
 - Fold the glasses briefly while armed: the Live Activity stays up through the automatic re-arm, and its clip count carries on (it does not reset to 0).
 - Start an extended recording, go to the Library and play a clip, then stop the recording: the clip has sound to the end. While capture is live, the Player sets `disableAudioSessionManagement`, so playback runs in the writer's `playAndRecord` session; check it plays from the speaker. react-native-video still deactivates the session when the Player unmounts; the writer logs `audio engine stopped underneath the writer` and restarts the mic at the next rotation, so expect at most one segment without sound.
 
-Signing: `ios/Config/Signing.xcconfig` is per-developer and untracked (see `Signing.xcconfig.example`). On a free Personal Team set `CLIPSO_ENTITLEMENTS =`; the Wi-Fi entitlements need a paid team.
+Signing: `ios/Config/Signing.xcconfig` is per-developer and untracked (see `Signing.xcconfig.example`). On a free Personal Team set `CLYPSO_ENTITLEMENTS =`; the Wi-Fi entitlements need a paid team.
 
 ### 2. Known capture race (not fixed)
 

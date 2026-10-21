@@ -123,11 +123,11 @@ final class MWDATBridge: RCTEventEmitter {
   private var mockActive = false
   private var mockGlasses: (any MockGlasses)?
 
-  private let previewQueue = DispatchQueue(label: "com.mocinjay.clipso.mwdat.preview")
+  private let previewQueue = DispatchQueue(label: "com.mocinjay.clypso.mwdat.preview")
   /// The stream is compressed HEVC, so the preview has to decode it. Every frame
   /// is decoded while the preview is on, not just the ones shown — each depends
   /// on the one before. Decoder state is only touched on this queue.
-  private let previewDecodeQueue = DispatchQueue(label: "com.mocinjay.clipso.mwdat.decode")
+  private let previewDecodeQueue = DispatchQueue(label: "com.mocinjay.clypso.mwdat.decode")
   private var previewDecoder: MWDATPreviewDecoder?
   /// No preview work while the app is in the background: nothing is on screen,
   /// and an armed capture keeps the stream (and its frames) running there.
@@ -172,7 +172,7 @@ final class MWDATBridge: RCTEventEmitter {
   private var openingForRecovery = false
   private static let maxRecoveryAttempts = 3
   private var healthTimer: DispatchSourceTimer?
-  private let healthQueue = DispatchQueue(label: "com.mocinjay.clipso.mwdat.health")
+  private let healthQueue = DispatchQueue(label: "com.mocinjay.clypso.mwdat.health")
   /// What the stream did second by second, for `getStreamTimeline`.
   private let timeline = MWDATStreamTimeline()
   /// Delivered fps over the stream's first seconds, to judge the requested
@@ -885,7 +885,7 @@ final class MWDATBridge: RCTEventEmitter {
           userInfo: [
             NSLocalizedDescriptionKey:
               "No glasses found. Unfold them, put them on, check they show "
-              + "as Connected in Meta AI, and that Clipso is enabled under "
+              + "as Connected in Meta AI, and that Clypso is enabled under "
               + "Meta AI → Settings → App connections.",
           ]
         )
@@ -1099,7 +1099,7 @@ final class MWDATBridge: RCTEventEmitter {
               "Glasses camera stream never started (last state: "
               + "\(String(describing: newStream.state)); cause: \(cause)). "
               + "Check the glasses are unfolded and being worn, not overheating, "
-              + "and that camera access is allowed for Clipso in Meta AI.",
+              + "and that camera access is allowed for Clypso in Meta AI.",
           ]
         )
       }
@@ -1679,7 +1679,7 @@ final class MWDATStreamTimeline {
     }
   }
 
-  private let queue = DispatchQueue(label: "com.mocinjay.clipso.mwdat.timeline")
+  private let queue = DispatchQueue(label: "com.mocinjay.clypso.mwdat.timeline")
   private var entries: [Entry] = []
 
   func record(kind: String, detail: String, fps: Double = -1) {

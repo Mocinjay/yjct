@@ -46,7 +46,7 @@ export interface CaptureStatus {
   lastClip?: Clip;
   /**
    * How many clips have been saved since this armed session started, so the
-   * wearer can hear "Clipso" land and see *which* one it was — "Save #3" —
+   * wearer can hear "Clypso" land and see *which* one it was — "Save #3" —
    * without opening the library. Reset by an `arm()` that starts a session;
    * a re-arm from 'error' (stall recovery, Retry) continues the session.
    */
@@ -73,7 +73,7 @@ export function isCaptureLive(status: CaptureStatus): boolean {
  * The core loop:
  *
  *   armed      — rolling buffer keeps the last N seconds, evicting old files
- *   "clipso"   — the wake word AUTO-SAVES the look-back window as a clip
+ *   "clypso"   — the wake word AUTO-SAVES the look-back window as a clip
  *   extended   — the manual REC button instead pins the window and keeps
  *                recording until stopped (stop button / wake phrase /
  *                safety cap): [start − N seconds … stop]
@@ -236,7 +236,7 @@ export class CaptureController {
   /**
    * A wake word heard while capture is down mid-session. The segment open when
    * the glasses' feed drops is only finished once the native side rebuilds the
-   * stream — after the error has already reached here — so its "Clipso" is
+   * stream — after the error has already reached here — so its "Clypso" is
    * transcribed in 'error' (or in the 'arming' of the re-arm that follows).
    *
    * The footage is already in the buffer and saving it needs no live stream,

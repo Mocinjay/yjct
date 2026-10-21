@@ -2,7 +2,7 @@ import React, { useCallback, useRef } from 'react';
 import { Dimensions, StyleSheet, View } from 'react-native';
 import Video from 'react-native-video';
 
-const SPLASH = require('./assets/clipso-splash.mp4');
+const SPLASH = require('./assets/clypso-splash.mp4');
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 // The source is square and the wordmark only spans ~85% of it, so oversize the
@@ -15,10 +15,10 @@ type Props = {
 };
 
 /**
- * Launch splash: the CLIPSO logo animation plays centered on black, then the
+ * Launch splash: the CLYPSO logo animation plays centered on black, then the
  * screen yields to the app.
  */
-export function ClipsoSplash({ onFinished }: Props) {
+export function ClypsoSplash({ onFinished }: Props) {
   const done = useRef(false);
 
   // onEnd and onError can both fire; the app must only advance once.

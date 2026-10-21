@@ -4,6 +4,9 @@ describe('matchesWakePhrase', () => {
   it.each([
     // bare / cased / punctuated
     'clipso',
+    // the brand spelling, when the recognizer takes the hint
+    'Clypso',
+    'hey clypso',
     'Clipso!',
     'CLIPSO',
     'clipsoh',

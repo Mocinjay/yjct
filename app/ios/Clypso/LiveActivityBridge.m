@@ -3,7 +3,7 @@
 /**
  * ObjC registration for the Swift LiveActivityBridge. In the app target rather
  * than a pod, for the same reason as MWDATBridge: it shares
- * ClipsoActivityAttributes.swift with the ClipsoWidgets extension, and that
+ * ClypsoActivityAttributes.swift with the ClypsoWidgets extension, and that
  * type is only visible to app-target sources.
  */
 @interface RCT_EXTERN_MODULE (LiveActivityBridge, NSObject)

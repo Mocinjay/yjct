@@ -8,7 +8,7 @@
 #import <math.h>
 #import <unistd.h>
 
-/// Mirror into Documents/clipso-diagnostics.log, the same file MWDATSegmentWriter
+/// Mirror into Documents/clypso-diagnostics.log, the same file MWDATSegmentWriter
 /// appends to. A capture run can then be pulled off the device with one
 /// `devicectl device copy from --domain-type appDataContainer`, and the video
 /// and speech halves of the wake-word path read as a single timeline. The live
@@ -29,8 +29,8 @@ static void SWWDiag(NSString *message)
   dispatch_once(&once, ^{
     path = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
                                                 NSUserDomainMask, YES).firstObject
-        stringByAppendingPathComponent:@"clipso-diagnostics.log"];
-    queue = dispatch_queue_create("com.mocinjay.clipso.swwdiag",
+        stringByAppendingPathComponent:@"clypso-diagnostics.log"];
+    queue = dispatch_queue_create("com.mocinjay.clypso.swwdiag",
                                   DISPATCH_QUEUE_SERIAL);
     formatter = [NSISO8601DateFormatter new];
   });
@@ -278,7 +278,7 @@ static NSString *const SWWErrorEvent = @"SpeechWakeWordError";
  * Keyless wake-word detection using Apple's Speech framework.
  *
  * Segment files are transcribed here (on-device first, server as a fallback)
- * and JS matches "Clipso" against the text. In live mode JS feeds the video
+ * and JS matches "Clypso" against the text. In live mode JS feeds the video
  * segments the glasses stream produces. In glasses-only mode nothing streams,
  * so `startListening` runs a `MicSegmentRecorder` that pushes microphone
  * segments to JS as `SpeechWakeWordSegment` events, each stamped with the wall
@@ -546,7 +546,7 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
             BOOL emptyResult = (error != nil || text.length == 0);
             // On-device is tried first because it is free, offline and private,
             // but its acoustic model is the stricter of the two and it largely
-            // ignores contextualStrings — so "Clipso" gets no vocabulary help
+            // ignores contextualStrings — so "Clypso" gets no vocabulary help
             // there. When it comes back with nothing, one server retry gets
             // both a more forgiving model and real biasing toward the trigger.
             if (emptyResult && canRunOnDevice) {
@@ -592,11 +592,12 @@ RCT_EXPORT_METHOD(transcribeFile:(NSString *)path
   SFSpeechURLRecognitionRequest *request =
       [[SFSpeechURLRecognitionRequest alloc] initWithURL:url];
   request.shouldReportPartialResults = NO;
-  // "Clipso" is not in the default vocabulary, so without hints it comes back
-  // as "clip so" / "calypso" / garbage. Bias toward the brand only: it is the
-  // sole phrase the JS matcher acts on.
+  // "Clypso" (said "clip so") is not in the default vocabulary, so without
+  // hints it comes back as "clip so" / "calypso" / garbage. Both spellings are
+  // hinted: "Clipso" is the one a recognizer can spell from the sound, and the
+  // JS matcher accepts either.
   request.contextualStrings = @[
-    @"Clipso", @"clipso", @"yo Clipso", @"yo clipso", @"hey Clipso",
+    @"Clypso", @"Clipso", @"clipso", @"yo Clipso", @"hey Clipso",
   ];
   request.taskHint = SFSpeechRecognitionTaskHintDictation;
   request.requiresOnDeviceRecognition = onDevice;

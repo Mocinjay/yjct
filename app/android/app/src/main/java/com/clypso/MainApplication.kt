@@ -1,4 +1,4 @@
-package com.clipso
+package com.clypso
 
 import android.app.Application
 import com.facebook.react.PackageList

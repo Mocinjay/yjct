@@ -113,7 +113,7 @@ static AVAudioPCMBuffer *MSRCopyBuffer(AVAudioPCMBuffer *source)
   _silenceThreshold = 0.01f;
   // No engine yet — see `startEngineLocked` for why it cannot be built until
   // the audio session is active.
-  _queue = dispatch_queue_create("com.mocinjay.clipso.mic", DISPATCH_QUEUE_SERIAL);
+  _queue = dispatch_queue_create("com.mocinjay.clypso.mic", DISPATCH_QUEUE_SERIAL);
 
   // Caches, not Documents: these are transient, and a day of listening has no
   // business inflating the user's iCloud backup. A purge under storage
@@ -121,7 +121,7 @@ static AVAudioPCMBuffer *MSRCopyBuffer(AVAudioPCMBuffer *source)
   // by wall clock, not by these files.
   NSString *caches = NSSearchPathForDirectoriesInDomains(
                          NSCachesDirectory, NSUserDomainMask, YES).firstObject;
-  _directory = [caches stringByAppendingPathComponent:@"clipso-wake"];
+  _directory = [caches stringByAppendingPathComponent:@"clypso-wake"];
   [[NSFileManager defaultManager] createDirectoryAtPath:_directory
                             withIntermediateDirectories:YES
                                              attributes:nil

@@ -28,7 +28,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     LiveActivityBridge.endOrphanedActivities()
 
     factory.startReactNative(
-      withModuleName: "Clipso",
+      withModuleName: "Clypso",
       in: window,
       launchOptions: launchOptions
     )

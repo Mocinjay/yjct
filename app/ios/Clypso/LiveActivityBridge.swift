@@ -5,7 +5,7 @@ import React
 /// Drives the Lock Screen / Dynamic Island "LIVE" activity from JS.
 ///
 /// The activity exists so the wearer can leave the app — which is the normal
-/// case, phone pocketed, using something else — and still see that Clipso is
+/// case, phone pocketed, using something else — and still see that Clypso is
 /// listening and how many clips have landed.
 ///
 /// ActivityKit only permits a *start* while the app is in the foreground;
@@ -23,7 +23,7 @@ class LiveActivityBridge: NSObject {
   @objc static func requiresMainQueueSetup() -> Bool { false }
 
   /// The one activity we run.
-  private var activity: Activity<ClipsoActivityAttributes>?
+  private var activity: Activity<ClypsoActivityAttributes>?
 
   /// ActivityKit budgets update frequency, and a rejected update is silently
   /// dropped. The buffer ticks every segment, so unchanged or too-frequent
@@ -38,7 +38,7 @@ class LiveActivityBridge: NSObject {
     DiagnosticLog.write("[LiveActivity] \(message)")
   }
 
-  /// Ends every Clipso Live Activity that no bridge instance owns.
+  /// Ends every Clypso Live Activity that no bridge instance owns.
   ///
   /// An activity outlives the process that started it, so after a crash, a
   /// force-quit or a background memory kill the old "LIVE" banner stays on the
@@ -47,7 +47,7 @@ class LiveActivityBridge: NSObject {
   /// can arm. `start()` calls it too, which covers a JS reload: the new bridge
   /// instance does not know the old instance's activity.
   static func endOrphanedActivities() {
-    for orphan in Activity<ClipsoActivityAttributes>.activities {
+    for orphan in Activity<ClypsoActivityAttributes>.activities {
       Self.log("ending orphaned activity \(orphan.id)")
       Task { await orphan.end(nil, dismissalPolicy: .immediate) }
     }
@@ -59,7 +59,7 @@ class LiveActivityBridge: NSObject {
     reject: @escaping RCTPromiseRejectBlock
   ) {
     guard ActivityAuthorizationInfo().areActivitiesEnabled else {
-      Self.log("not started — Live Activities are disabled for Clipso in Settings")
+      Self.log("not started — Live Activities are disabled for Clypso in Settings")
       resolve(false)
       return
     }
@@ -70,7 +70,7 @@ class LiveActivityBridge: NSObject {
     }
     // Nothing is owned here, so anything ActivityKit still lists is left over.
     Self.endOrphanedActivities()
-    let initial = ClipsoActivityAttributes.ContentState(
+    let initial = ClypsoActivityAttributes.ContentState(
       bufferedSeconds: 0,
       clipCount: 0,
       recording: false,
@@ -78,7 +78,7 @@ class LiveActivityBridge: NSObject {
     )
     do {
       activity = try Activity.request(
-        attributes: ClipsoActivityAttributes(deviceName: deviceName),
+        attributes: ClypsoActivityAttributes(deviceName: deviceName),
         content: .init(state: initial, staleDate: nil)
       )
       lastPushedAt = 0
@@ -126,7 +126,7 @@ class LiveActivityBridge: NSObject {
     lastClipCount = clips
     lastRecording = isRecording
 
-    let content = ClipsoActivityAttributes.ContentState(
+    let content = ClypsoActivityAttributes.ContentState(
       bufferedSeconds: bufferedSeconds.intValue,
       clipCount: clips,
       recording: isRecording,

@@ -2,7 +2,7 @@ import { GlassesMediaLibraryNative } from '../native/GlassesMediaLibraryNative';
 
 /**
  * Logs a full-resolution import decision to the console in dev builds and to
- * Documents/clipso-diagnostics.log always. The import runs minutes or hours
+ * Documents/clypso-diagnostics.log always. The import runs minutes or hours
  * after the moment, usually backgrounded, so the diagnostics file is the only
  * place its decisions can be read afterwards.
  */

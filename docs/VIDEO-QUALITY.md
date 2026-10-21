@@ -12,13 +12,13 @@ iOS 26.5.2), not estimated. Reproduction commands are at the bottom.
 
 ## 1. Project context
 
-**Clipso** (repo `yjct`, local folder `~/Desktop/jarvis`) is a React Native
+**Clypso** (repo `yjct`, local folder `~/Desktop/jarvis`) is a React Native
 companion app for Meta smart glasses — Ray-Ban Meta, Oakley Meta HSTN, Ray-Ban
 Display — aimed at clippers and streamers.
 
 The core loop:
 
-> wake word ("Clipso") → flush the last N seconds from a rolling video buffer →
+> wake word ("Clypso") → flush the last N seconds from a rolling video buffer →
 > clip lands in the local library → captions burn in → share via the native OS
 > share sheet
 
@@ -41,7 +41,7 @@ Two facts shape every decision about picture quality:
 | # | Stage | File | What it does to the pixels |
 |---|-------|------|---------------------------|
 | 1 | Glasses → phone | MWDAT SDK | Compressed over the link, decoded by the SDK. Hands us **raw `420v` CVPixelBuffers**. |
-| 2 | Segment encode | `ios/Clipso/MWDATSegmentWriter.swift` | Encodes rolling 5s MP4 segments. **This is the only place the glasses' pixels are encoded at full fidelity.** |
+| 2 | Segment encode | `ios/Clypso/MWDATSegmentWriter.swift` | Encodes rolling 5s MP4 segments. **This is the only place the glasses' pixels are encoded at full fidelity.** |
 | 3 | Ring buffer | `src/core/SegmentRingBuffer.ts` | Holds segments, evicts old ones. No transcode. |
 | 4 | Stitch | `modules/clip-stitcher/ios/ClipStitcher.m` | Concatenates the covering window. **Passthrough — no re-encode.** |
 | 5 | Caption burn | `modules/clip-stitcher/ios/CaptionEngine.m` | Composition + Core Animation caption overlay, then one `AVAssetExportSession`. **One encode generation.** |
@@ -85,7 +85,7 @@ Confirmed working: clips now arrive at 720x1280.
 
 ### 3.4 Verification that all three landed
 
-From `Documents/clipso-diagnostics.log`:
+From `Documents/clypso-diagnostics.log`:
 
 ```
 source video format: subtype='420v' 720x1280 compressed=false
@@ -277,15 +277,15 @@ directory, and `--username` is not a valid flag):
 
 ```bash
 xcrun devicectl device copy from --device <UDID> --domain-type appDataContainer \
-  --domain-identifier com.mocinjay.clipso \
-  --source Documents/clipso-diagnostics.log --destination /tmp/
+  --domain-identifier com.mocinjay.clypso \
+  --source Documents/clypso-diagnostics.log --destination /tmp/
 ```
 
 Pull the whole clip library:
 
 ```bash
 xcrun devicectl device copy from --device <UDID> --domain-type appDataContainer \
-  --domain-identifier com.mocinjay.clipso \
+  --domain-identifier com.mocinjay.clypso \
   --source Documents/clips --destination /tmp/clipsdir
 ```
 
@@ -320,11 +320,11 @@ Live console for the caption stage — `CELog` writes `[CaptionEngine]` lines to
 NSLog, alongside the `[MWDAT]` lines:
 
 ```bash
-xcrun devicectl device process launch --console --terminate-existing com.mocinjay.clipso
+xcrun devicectl device process launch --console --terminate-existing com.mocinjay.clypso
 ```
 
 > The console connection reliably drops during long *capture* runs, which is why
-> `MWDATSegmentWriter` also mirrors to `clipso-diagnostics.log`. A caption export
+> `MWDATSegmentWriter` also mirrors to `clypso-diagnostics.log`. A caption export
 > is short enough that the live console is fine.
 
 ---
@@ -342,14 +342,14 @@ the way.
 
 | Change | Where | Why |
 |---|---|---|
-| Wi-Fi entitlements (`HotspotConfiguration`, `wifi-info`) | `ios/Clipso/Clipso.entitlements`, wired in `Config/Debug.xcconfig` / `Release.xcconfig` | The SDK joins the glasses' Wi-Fi with `NEHotspotConfigurationManager`. With no entitlements file the app could only ever stream over Bluetooth, where the ladder caps resolution and cuts frame rate. Same pair as Meta's CameraAccess sample. Needs the two capabilities on the App ID, which only paid teams get; a free Personal Team sets `CLIPSO_ENTITLEMENTS =` in `Signing.xcconfig` for a Bluetooth-only build. |
+| Wi-Fi entitlements (`HotspotConfiguration`, `wifi-info`) | `ios/Clypso/Clypso.entitlements`, wired in `Config/Debug.xcconfig` / `Release.xcconfig` | The SDK joins the glasses' Wi-Fi with `NEHotspotConfigurationManager`. With no entitlements file the app could only ever stream over Bluetooth, where the ladder caps resolution and cuts frame rate. Same pair as Meta's CameraAccess sample. Needs the two capabilities on the App ID, which only paid teams get; a free Personal Team sets `CLYPSO_ENTITLEMENTS =` in `Signing.xcconfig` for a Bluetooth-only build. |
 | `ClientToken` under `MWDAT`, `_meta-datax._tcp` in `NSBonjourServices` | `Info.plist` | Completes the attestation config (empty in Developer Mode, `MWDAT_CLIENT_TOKEN` otherwise); lets iOS allow the SDK's local-network browse. |
 | SDK 0.8.0 → 1.0.1, iOS 17.2 minimum | project, `Package.resolved` | Adds the Wi-Fi Aware transport with SoftAP fallback. `addStream` → `addCamera(config:).stream`. |
 | Stream `.raw` → `.hvc1`, segments written passthrough | `MWDATBridge.swift`, `MWDATSegmentWriter.swift` | The glasses' own HEVC is stored bit for bit — no phone-side decode and H.264 re-encode, so one fewer quality generation and no realtime encoder to drop frames (`notReady`) when other work holds the hardware. This is how Meta's sample records. |
 | Segments start on keyframes | `MWDATSegmentWriter.swift` | Passthrough requires it. Rotation waits for the first keyframe after `segmentSeconds`, so segments abut with no lost frames; `cut()` waits up to 2s for one. Before a stall recovery or a rebuilt pipeline tears the stream down, the open segment is finished and kept (with up to 2s of sound past its last frame, and a duration that covers it), so a dropout's last seconds reach the buffer. Gaps that recover by themselves stay inside the open segment. A passthrough frame the writer cannot take makes it skip to the next keyframe rather than write a GOP of undecodable pictures. |
 | Glasses timestamps kept | `MWDATSegmentWriter.swift` | Frames used to be stamped with phone arrival time, which wrote the link's burstiness into the file as judder. Now the glasses' spacing is kept, shifted onto the host clock by the lowest observed delay (re-measured per segment) so phone-mic audio stays in sync. A stall leaves the offset alone (late frames keep their capture times); only a jump in the glasses' own clock re-anchors it. A writer's first segment opens after ~0.5s of frames so its offset is not just the opening keyframe's. |
 | Mic audio routed by timestamp | `MWDATSegmentWriter.swift` | Video arrives late by the link's delay, so audio appended as it came put the start of each segment's sound at the end of the previous one: a freeze then silence at every join. Audio now waits for the video it belongs under. |
-| Terminal stream stops rebuilt at once | `MWDATBridge.swift` | Since SDK 0.9 taking the glasses off ends the stream instead of pausing it. The bridge rebuilds immediately (keeping the open segment) instead of after the 10s no-frame watchdog, and a stopped or unwatched stream no longer passes for an open pipeline on re-arm. A recovery restores the writer only if the wearer is still armed when the stream comes back, stands down if a re-arm already rebuilt the pipeline, keeps an armed session through backgrounding, and aborts its open if the pipeline is released meanwhile (an arm the wearer started still completes in the background). A "Clipso" heard while capture is down is saved straight from the buffer, without waiting for the stream to return; during an interrupted extended recording it stops and saves the whole recording. A re-arm after the drop carries an interrupted extended recording on (same start, remaining safety cap) instead of arming over its pin. When two arms overlap only the newest one counts: a superseded arm neither attaches a writer nor, by failing late, disarms the newer one, and a released open stops waiting for its stream at once. An arm that completes in the background, where iOS will not start the mic, gets its microphone on return to the foreground. |
+| Terminal stream stops rebuilt at once | `MWDATBridge.swift` | Since SDK 0.9 taking the glasses off ends the stream instead of pausing it. The bridge rebuilds immediately (keeping the open segment) instead of after the 10s no-frame watchdog, and a stopped or unwatched stream no longer passes for an open pipeline on re-arm. A recovery restores the writer only if the wearer is still armed when the stream comes back, stands down if a re-arm already rebuilt the pipeline, keeps an armed session through backgrounding, and aborts its open if the pipeline is released meanwhile (an arm the wearer started still completes in the background). A "Clypso" heard while capture is down is saved straight from the buffer, without waiting for the stream to return; during an interrupted extended recording it stops and saves the whole recording. A re-arm after the drop carries an interrupted extended recording on (same start, remaining safety cap) instead of arming over its pin. When two arms overlap only the newest one counts: a superseded arm neither attaches a writer nor, by failing late, disarms the newer one, and a released open stops waiting for its stream at once. An arm that completes in the background, where iOS will not start the mic, gets its microphone on return to the foreground. |
 | Preview decodes HEVC itself | `MWDATPreviewDecoder` in `MWDATBridge.swift` | `.hvc1` frames carry no pixel buffer. Decoding runs only while a preview is visible and never in the background. |
 | `.medium` fallback | `MWDATBridge.requestedResolution` | If a `.high` stream averages under 26 fps over its first ~10s, later streams in the process ask for `.medium` @ 30 (§4.3: Bluetooth `.high` carried ~504p of detail anyway). The live stream is never renegotiated. Streams rebuilt by stall recovery, opened in the background, or from MockDeviceKit are not judged. |
 | Caption export keeps source frame timing | `CaptionEngine.m` | `sourceTrackIDForFrameTiming` instead of resampling to `round(nominalFrameRate)`, which duplicated and dropped frames on variable-rate capture. |
@@ -361,7 +361,7 @@ glasses' bitstream). Captioned clips are re-encoded by the caption export as
 before. §5's HEVC concern for third-party share targets applies to the
 uncaptioned ones.
 
-**Verify on device** (`Documents/clipso-diagnostics.log`):
+**Verify on device** (`Documents/clypso-diagnostics.log`):
 
 - `addCamera(codec: hvc1, resolution: high, fps: 30)` and
   `FRAME ANATOMY — subtype='hvc1' 720x1280 … keyframe=…`

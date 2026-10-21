@@ -3,12 +3,12 @@ import { DeviceEventEmitter, NativeModules, Platform } from 'react-native';
 const mockNative = {
   requestPermission: jest.fn(async () => true),
   transcribeFile: jest.fn(async () => ({
-    transcript: 'that was sick clipso',
+    transcript: 'that was sick clypso',
     words: [
       { text: 'that', end: 0.4 },
       { text: 'was', end: 0.7 },
       { text: 'sick', end: 1.1 },
-      { text: 'clipso', end: 1.8 },
+      { text: 'clypso', end: 1.8 },
     ],
   })),
   startListening: jest.fn(async () => true),

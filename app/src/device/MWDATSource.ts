@@ -13,7 +13,7 @@ import { closeGlassesIfUnleased } from './glassesLease';
 
 /**
  * Meta Wearables Device Access Toolkit source — Ray-Ban / Oakley Meta glasses
- * camera session via the native MWDATBridge (ios/Clipso/MWDATBridge.swift).
+ * camera session via the native MWDATBridge (ios/Clypso/MWDATBridge.swift).
  *
  * The native side opens a wearables session, streams glasses video, muxes in
  * phone-mic audio (the glasses' Bluetooth mic shares the camera link and would

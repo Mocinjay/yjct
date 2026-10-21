@@ -1,18 +1,18 @@
 # Maximum resolution
 
-Clipso's goal is that every clip is the best footage the glasses can record: **1520x2032 HEVC in HLG HDR, from the glasses' own camera recording**, not the 720x1280 the live stream carries. Everything below serves that goal; the live stream is the fallback and the instant preview, never the target.
+Clypso's goal is that every clip is the best footage the glasses can record: **1520x2032 HEVC in HLG HDR, from the glasses' own camera recording**, not the 720x1280 the live stream carries. Everything below serves that goal; the live stream is the fallback and the instant preview, never the target.
 
 ## Why the live stream cannot get there
 
 - The Meta Wearables Device Access Toolkit (MWDAT) streams at most **720x1280**. `StreamingResolution` has three cases and `.high` is 720x1280; `MWDATBridge` already asks for it. There is no higher setting, flag or private API.
 - The glasses' Wi-Fi link (paid Apple team entitlements) makes `.high` *reachable* instead of falling back to 504x896. It does not raise the ceiling.
 - `.hvc1` passthrough removes the phone's re-encode, so a live clip loses nothing between the glasses and the file. It changes the codec, not the resolution.
-- The glasses write **1520x2032 HEVC, HLG colour, their own microphones** to their storage: about 3.4x the pixels. No toolkit API reaches that file. Meta AI syncs it into the iPhone's photo library like any camera would, and that is where Clipso picks it up. Nothing is jailbroken or bypassed: it is the user's own video, read with Photos access they grant.
+- The glasses write **1520x2032 HEVC, HLG colour, their own microphones** to their storage: about 3.4x the pixels. No toolkit API reaches that file. Meta AI syncs it into the iPhone's photo library like any camera would, and that is where Clypso picks it up. Nothing is jailbroken or bypassed: it is the user's own video, read with Photos access they grant.
 
 ## How it works
 
 ```
-"Clipso" (or the Clip / Mark button)
+"Clypso" (or the Clip / Mark button)
    │
    ├─▶ marker: the moment's wall-clock span (+ the 720p clip's id in live mode)   MarkerStore, persisted first
    │
@@ -33,10 +33,10 @@ Clipso's goal is that every clip is the best footage the glasses can record: **1
 | | Live (default) | Glasses only |
 |---|---|---|
 | Stream from the glasses | yes, 720x1280 at best | no |
-| Clip when "Clipso" is heard | 720p clip at once from the rolling buffer | none yet; the moment is marked |
+| Clip when "Clypso" is heard | 720p clip at once from the rolling buffer | none yet; the moment is marked |
 | Full resolution | replaces the 720p clip if the glasses were recording that moment too | always, from the recording the wearer made on the glasses |
-| Who hears "Clipso" | speech recognition on the stream segments' audio | the phone microphone (`MicSegmentRecorder`) |
-| What the wearer does | arm and talk | start a video on the glasses (button or "Hey Meta"), then say "Clipso" |
+| Who hears "Clypso" | speech recognition on the stream segments' audio | the phone microphone (`MicSegmentRecorder`) |
+| What the wearer does | arm and talk | start a video on the glasses (button or "Hey Meta"), then say "Clypso" |
 
 Live mode always produces a clip and upgrades it when it can. Glasses-only mode is for wearers who record on the glasses anyway: nothing streams, the glasses' battery is spared, and every clip arrives at full resolution.
 
@@ -47,7 +47,7 @@ Live mode always produces a clip and upgrades it when it can. Glasses-only mode 
 - **Replace only what is covered.** A cut replaces its 720p clip only when it spans that clip within 1.5 s at each end (`MASTER_COVERAGE_TOLERANCE_SECONDS`, for keyframe placement and clock skew). Otherwise both are kept, so no footage the wearer already has disappears.
 - **Captions follow the file.** Replacing a clip resets its captions; a caption render that finishes on the old 720p file is discarded and redone on the new one (`CaptionQueue`).
 - **Never re-encode the master.** The original is copied with `PHAssetResourceManager`, cut by passthrough (HEVC preset as the fallback, H.264 only if both fail), and the caption burn composites in the source's BT.2020/HLG colour space and exports HEVC.
-- **Only marked footage is touched.** Photos is filtered by marker time before anything is opened; a recording nobody marked is never opened, copied or changed. Clipso never writes to the photo library.
+- **Only marked footage is touched.** Photos is filtered by marker time before anything is opened; a recording nobody marked is never opened, copied or changed. Clypso never writes to the photo library.
 - **Markers wait 30 days.** Syncs happen when Meta AI gets to them.
 
 ### Requirements
@@ -78,23 +78,23 @@ Pull the log after a worn session:
 
 ```bash
 xcrun devicectl device copy from --device <UDID> --domain-type appDataContainer \
-  --domain-identifier <bundle id> --source Documents/clipso-diagnostics.log --destination /tmp/
+  --domain-identifier <bundle id> --source Documents/clypso-diagnostics.log --destination /tmp/
 ```
 
-1. **Glasses only** (Settings → Full resolution → Glasses only). Start a video on the glasses, say "Clipso" during it, stop, let Meta AI sync, open Clipso.
-2. **Live**: arm, start a video on the glasses as well, say "Clipso", stop, let Meta AI sync, open Clipso. The 720p clip should turn into a full-resolution one (Library card shows FULL RES).
+1. **Glasses only** (Settings → Full resolution → Glasses only). Start a video on the glasses, say "Clypso" during it, stop, let Meta AI sync, open Clypso.
+2. **Live**: arm, start a video on the glasses as well, say "Clypso", stop, let Meta AI sync, open Clypso. The 720p clip should turn into a full-resolution one (Library card shows FULL RES).
 
 Read, in order:
 
 ```bash
-grep "marker recorded"            /tmp/clipso-diagnostics.log   # the trigger was written down
-grep "import pass"                /tmp/clipso-diagnostics.log   # pendingMarkers / recentVideos / candidates
-grep "NOT glasses footage"        /tmp/clipso-diagnostics.log   # identity test failed: shows the metadata it saw
-grep "marker alignment"           /tmp/clipso-diagnostics.log   # where each marker landed; clock skew
-grep -E "extracting|cut by"       /tmp/clipso-diagnostics.log   # "cut by passthrough - WROTE …: 1520x2032 hevc HDR"
-grep -E "upgraded clip|added full-resolution clip" /tmp/clipso-diagnostics.log
-grep -E "burn:|burned|WARNING"    /tmp/clipso-diagnostics.log   # HDR through the caption burn (Pro)
-grep "concurrency probe"          /tmp/clipso-diagnostics.log   # live mode: did the stream survive?
+grep "marker recorded"            /tmp/clypso-diagnostics.log   # the trigger was written down
+grep "import pass"                /tmp/clypso-diagnostics.log   # pendingMarkers / recentVideos / candidates
+grep "NOT glasses footage"        /tmp/clypso-diagnostics.log   # identity test failed: shows the metadata it saw
+grep "marker alignment"           /tmp/clypso-diagnostics.log   # where each marker landed; clock skew
+grep -E "extracting|cut by"       /tmp/clypso-diagnostics.log   # "cut by passthrough - WROTE …: 1520x2032 hevc HDR"
+grep -E "upgraded clip|added full-resolution clip" /tmp/clypso-diagnostics.log
+grep -E "burn:|burned|WARNING"    /tmp/clypso-diagnostics.log   # HDR through the caption burn (Pro)
+grep "concurrency probe"          /tmp/clypso-diagnostics.log   # live mode: did the stream survive?
 ```
 
 - `candidates: 0` with markers pending: the recording has not synced, Photos access is limited, or Meta AI is not saving to Photos.

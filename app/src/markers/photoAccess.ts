@@ -12,22 +12,22 @@ export function photoAccessBlocker(status: PhotoAccessStatus): string | null {
       return null;
     case 'limited':
       return (
-        'Clipso can’t see your glasses recordings while Photos is set to ' +
+        'Clypso can’t see your glasses recordings while Photos is set to ' +
         'Selected Photos. Meta AI syncs them in on its own, so they’re never ' +
         'part of a selection you made by hand. Settings → Privacy & Security → ' +
-        'Photos → Clipso → All Photos.'
+        'Photos → Clypso → All Photos.'
       );
     case 'denied':
       return (
-        'Clipso needs access to your photo library to find what your glasses ' +
-        'recorded. Settings → Privacy & Security → Photos → Clipso → All Photos.'
+        'Clypso needs access to your photo library to find what your glasses ' +
+        'recorded. Settings → Privacy & Security → Photos → Clypso → All Photos.'
       );
     case 'restricted':
       return (
-        'Photo library access is blocked on this phone, so Clipso can’t reach ' +
+        'Photo library access is blocked on this phone, so Clypso can’t reach ' +
         'your glasses recordings. Check Screen Time restrictions.'
       );
     case 'undetermined':
-      return 'Clipso hasn’t been given access to your photo library yet.';
+      return 'Clypso hasn’t been given access to your photo library yet.';
   }
 }
