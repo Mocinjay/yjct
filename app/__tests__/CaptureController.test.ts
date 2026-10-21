@@ -1,4 +1,5 @@
 import type { DeviceVideoSource } from '../src/device/DeviceVideoSource';
+import type { WakeMarker } from '../src/markers/markerMatching';
 import type { Segment } from '../src/types';
 import type {
   WakeDetection,
@@ -536,6 +537,62 @@ describe('CaptureController', () => {
     } finally {
       await controller.disarm();
     }
+  });
+});
+
+describe('full-resolution markers', () => {
+  beforeEach(async () => {
+    mockFiles.clear();
+    mockStitch.mockClear();
+    clipStore.resetCache();
+    await entitlementStore.clear();
+  });
+
+  it('records the 720p clip\'s span and id before stitching it', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const order: string[] = [];
+    const markers: WakeMarker[] = [];
+    const controller = new CaptureController(source, wake, 10, false, undefined, async m => {
+      order.push('marker');
+      markers.push(m);
+    });
+    mockStitch.mockImplementationOnce(async (paths: string[], out: string, trim: number) => {
+      order.push('stitch');
+      return { outputPath: out, thumbnailPath: out, durationSec: paths.length * 5 - trim };
+    });
+
+    await controller.arm();
+    for (let i = 0; i < 4; i++) {
+      source.emit(); // segments start at 0, 5000, 10000 and 15000 ms
+    }
+    const wakeSegment = source.emit(); // starts at 20000 ms
+    wake.fire({ segmentPath: wakeSegment, endOffsetSec: 1.2 });
+    await settle();
+    await settle();
+
+    expect(order).toEqual(['marker', 'stitch']);
+    const [clip] = await clipStore.list();
+    expect(clip.quality).toBe('proxy');
+    // Two segments make the 10 s window, ending on the word plus padding.
+    expect(markers).toEqual([
+      { id: `mark_${clip.id}`, startMs: 15000, atMs: 21500, proxyClipId: clip.id },
+    ]);
+    await controller.disarm();
+  });
+
+  it('still saves the clip when the marker cannot be written', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10, false, undefined, async () => {
+      throw new Error('storage full');
+    });
+
+    await controller.arm();
+    source.emit();
+    expect(await controller.captureNow()).not.toBeNull();
+    expect(await clipStore.list()).toHaveLength(1);
+    await controller.disarm();
   });
 });
 

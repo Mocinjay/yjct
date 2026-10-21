@@ -54,6 +54,9 @@ jest.mock('../src/phase2/CaptionQueue', () => ({
   captionQueue: { resume: async () => {} },
 }));
 // Screens other than onboarding are never rendered by the fake navigator.
+jest.mock('../src/services/glassesImport', () => ({
+  glassesImport: { syncWithSettings: jest.fn(async () => {}) },
+}));
 jest.mock('../src/ui/screens/ArmedScreen', () => ({ ArmedScreen: () => null }));
 jest.mock('../src/ui/screens/ConnectScreen', () => ({ ConnectScreen: () => null }));
 jest.mock('../src/ui/screens/LibraryScreen', () => ({ LibraryScreen: () => null }));

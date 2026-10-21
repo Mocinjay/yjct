@@ -5,6 +5,7 @@ import {
   WAKE_TRIM_PADDING_SECONDS,
 } from '../config';
 import type { DeviceVideoSource } from '../device/DeviceVideoSource';
+import type { WakeMarker } from '../markers/markerMatching';
 import { stitchSegments } from '../native/ClipStitcher';
 import type { Clip, Segment } from '../types';
 import type { WakeDetection, WakeWordProvider } from '../wakeword/WakeWordProvider';
@@ -50,6 +51,11 @@ export interface CaptureStatus {
    * a re-arm from 'error' (stall recovery, Retry) continues the session.
    */
   sessionClipCount?: number;
+  /**
+   * Glasses-only mode: epoch ms of the latest moment marked this session. Its
+   * full-resolution clip arrives once Meta AI syncs the recording.
+   */
+  lastMarkAt?: number;
 }
 
 /**
@@ -94,6 +100,10 @@ export class CaptureController {
    * `onClipSaved` fires once a clip is in the library. Post-capture work
    * (auto-captioning) hangs off this rather than being called from here, so
    * the capture loop keeps no dependency on Phase 2 — see services/capture.ts.
+   *
+   * `recordMarker`, when given, receives every saved clip's wall-clock span
+   * and id, so the full-resolution import can later re-cut the same moment
+   * from the glasses' own recording and replace the 720p clip with it.
    */
   constructor(
     private source: DeviceVideoSource,
@@ -101,6 +111,7 @@ export class CaptureController {
     private windowSeconds: number,
     private chimeEnabled: boolean,
     private onClipSaved?: (clip: Clip) => void,
+    private recordMarker?: (marker: WakeMarker) => Promise<void>,
   ) {
     this.buffer = new SegmentRingBuffer(windowSeconds, seg => {
       RNFS.unlink(seg.path).catch(() => {});
@@ -411,8 +422,11 @@ export class CaptureController {
    * it.)
    */
   private async saveClip(segments: Segment[], trimEndSec = 0): Promise<Clip> {
+    const capturedAt = Date.now();
+    const id = newClipId(capturedAt);
     try {
-      const clip = await this.stitch(segments, trimEndSec);
+      await this.markMoment(id, segments, trimEndSec);
+      const clip = await this.stitch(id, capturedAt, segments, trimEndSec);
       await clipStore.add(clip);
       this.sessionClipCount += 1;
       this.announceSaved(clip);
@@ -422,9 +436,33 @@ export class CaptureController {
     }
   }
 
-  private async stitch(segments: Segment[], trimEndSec = 0): Promise<Clip> {
-    const capturedAt = Date.now();
-    const id = newClipId(capturedAt);
+  /**
+   * Writes the moment down for the full-resolution import: the span the 720p
+   * clip covers on the wall clock, and the clip's id. Done before the stitch,
+   * because a failed stitch costs only the 720p clip while a lost marker costs
+   * the full-resolution cut for good. Never fails the save; the sink reports
+   * its own failures.
+   */
+  private async markMoment(clipId: string, segments: Segment[], trimEndSec: number): Promise<void> {
+    if (!this.recordMarker || segments.length === 0) {
+      return;
+    }
+    const first = segments[0];
+    const last = segments[segments.length - 1];
+    await this.recordMarker({
+      id: `mark_${clipId}`,
+      startMs: first.startedAt,
+      atMs: last.startedAt + (last.durationSec - trimEndSec) * 1000,
+      proxyClipId: clipId,
+    }).catch(() => {});
+  }
+
+  private async stitch(
+    id: string,
+    capturedAt: number,
+    segments: Segment[],
+    trimEndSec: number,
+  ): Promise<Clip> {
     const dir = await clipStore.ensureDir();
     const outputPath = `${dir}/${id}.mp4`;
     const result = await stitchSegments(
@@ -443,6 +481,7 @@ export class CaptureController {
       capturedAt,
       durationSec: result.durationSec,
       sourceKind: this.source.kind,
+      quality: 'proxy',
       savedAt: isPro ? capturedAt : null,
       expiresAt: isPro ? null : capturedAt + FREE_RETENTION_HOURS * 3600_000,
     };

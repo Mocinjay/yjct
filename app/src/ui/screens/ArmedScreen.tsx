@@ -46,7 +46,9 @@ export function ArmedScreen({ navigation }: Props) {
   /** Automatic re-arms made since capture was last live. */
   const recoveryAttempts = useRef(0);
   const isFocused = useIsFocused();
-  useGlassesLease(isFocused);
+  // Glasses-only mode never opens the glasses stream, so holds no lease on it.
+  const glassesOnly = session?.mode === 'glasses';
+  useGlassesLease(isFocused && !glassesOnly);
   const insets = useSafeAreaInsets();
   const toast = useRef(new Animated.Value(0)).current;
   // Created once: a new interpolation node per render would make Animated
@@ -56,6 +58,7 @@ export function ArmedScreen({ navigation }: Props) {
     [toast],
   );
   const lastToastClip = useRef<string | null>(null);
+  const lastToastMark = useRef<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,10 +85,15 @@ export function ArmedScreen({ navigation }: Props) {
   }, [session]);
 
   useEffect(() => {
-    if (!status.lastClip || status.lastClip.id === lastToastClip.current) {
+    const clipId = status.lastClip?.id ?? null;
+    const markAt = status.lastMarkAt ?? null;
+    const newClip = clipId !== null && clipId !== lastToastClip.current;
+    const newMark = markAt !== null && markAt !== lastToastMark.current;
+    if (!newClip && !newMark) {
       return;
     }
-    lastToastClip.current = status.lastClip.id;
+    lastToastClip.current = clipId;
+    lastToastMark.current = markAt;
     toast.setValue(0);
     Animated.sequence([
       Animated.timing(toast, {
@@ -102,7 +110,7 @@ export function ArmedScreen({ navigation }: Props) {
         useNativeDriver: true,
       }),
     ]).start();
-  }, [status.lastClip, toast]);
+  }, [status.lastClip, status.lastMarkAt, toast]);
 
   // One 1 Hz clock drives the session/recording clocks and the buffered
   // readout. It runs while `armed` too: `bufferedSeconds` is only re-measured
@@ -324,7 +332,7 @@ export function ArmedScreen({ navigation }: Props) {
         <View style={[styles.statusPill, recording && styles.statusPillRec]}>
           <RecDot size={8} live={live || recording} />
           <Text style={styles.statusText}>
-            {statusLabel(status, recordingSecs, armedSecs)}
+            {statusLabel(status, recordingSecs, armedSecs, glassesOnly)}
           </Text>
         </View>
 
@@ -346,7 +354,18 @@ export function ArmedScreen({ navigation }: Props) {
               GlassesPreview waits after Connect's preview lets it go, so the
               Connect → Armed reset does not switch emission off and on again
               (which also resets the native preview decoder). */}
-          <GlassesPreview style={StyleSheet.absoluteFill} />
+          {glassesOnly ? (
+            <View style={styles.listening}>
+              <Text style={styles.listeningTitle}>Recording happens on your glasses</Text>
+              <Text style={styles.listeningBody}>
+                Start a video on the glasses, then say “Clipso” when something happens.
+                Clipso cuts that moment at full resolution once Meta AI syncs the video
+                to your photos.
+              </Text>
+            </View>
+          ) : (
+            <GlassesPreview style={StyleSheet.absoluteFill} />
+          )}
 
           <Animated.View
             pointerEvents="none"
@@ -356,9 +375,11 @@ export function ArmedScreen({ navigation }: Props) {
             ]}>
             <Text style={styles.toastCheck}>✓</Text>
             <Text style={styles.toastText}>
-              {status.sessionClipCount
-                ? `Save #${status.sessionClipCount} — in your library`
-                : 'Saved to library'}
+              {glassesOnly
+                ? `Marked #${status.sessionClipCount ?? 1} — full res after Meta AI syncs`
+                : status.sessionClipCount
+                  ? `Save #${status.sessionClipCount} — in your library`
+                  : 'Saved to library'}
             </Text>
           </Animated.View>
         </View>
@@ -388,12 +409,14 @@ export function ArmedScreen({ navigation }: Props) {
           {recording
             ? 'extended clip — tap Stop when you’re done'
             : session?.mockWakeWord
-              ? 'mock mode — tap Clip to save the look-back'
+              ? glassesOnly
+                ? 'manual mode — tap Mark to mark the moment'
+                : 'mock mode — tap Clip to save the look-back'
               : 'say “Clipso”'}
         </Text>
 
         <View style={styles.actions}>
-          {!recording ? (
+          {glassesOnly ? null : !recording ? (
             <Pressable
               onPress={startExtended}
               disabled={!live}
@@ -426,13 +449,17 @@ export function ArmedScreen({ navigation }: Props) {
               primaryDisabled && styles.dimmed,
             ]}>
             <Text style={styles.primaryLabel}>
-              {saving ? 'Saving…' : recording ? 'Stop' : 'Clip'}
+              {saving ? 'Saving…' : recording ? 'Stop' : glassesOnly ? 'Mark' : 'Clip'}
             </Text>
           </Pressable>
         </View>
 
         <Text style={styles.deckCaption}>
-          {recording
+          {glassesOnly
+            ? live
+              ? `listening · ${status.sessionClipCount ?? 0} marked this session`
+              : 'opening the microphone…'
+            : recording
             ? 'look-back plus everything since you started'
             : live
               ? `listening · last ${Math.floor(bufferedSecs)}s ready to clip${
@@ -451,13 +478,14 @@ function statusLabel(
   status: CaptureStatus,
   recordingSecs: number,
   armedSecs: number,
+  glassesOnly: boolean,
 ): string {
   switch (status.state) {
     case 'idle':
     case 'arming':
       return 'Starting…';
     case 'armed':
-      return `LIVE · ${formatDuration(armedSecs)}`;
+      return `${glassesOnly ? 'LISTENING' : 'LIVE'} · ${formatDuration(armedSecs)}`;
     case 'recording':
       return `REC ${formatDuration(recordingSecs)}`;
     case 'saving':
@@ -604,4 +632,13 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   deckCaption: { color: colors.textDim, fontSize: 12, textAlign: 'center' },
+  listening: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.l,
+    gap: spacing.m,
+  },
+  listeningTitle: { color: colors.text, fontSize: 18, fontWeight: '800', textAlign: 'center' },
+  listeningBody: { color: colors.textDim, fontSize: 14, lineHeight: 20, textAlign: 'center' },
 });

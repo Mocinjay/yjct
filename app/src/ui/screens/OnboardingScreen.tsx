@@ -3,6 +3,7 @@ import React from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { glassesImport } from '../../services/glassesImport';
 import { Button, Card, RecDot } from '../components';
 import type { RootStackParamList } from '../navigation';
 import { colors, radius, spacing, type } from '../theme';
@@ -17,6 +18,8 @@ export function OnboardingScreen({ navigation }: Props) {
     // A failed write only means onboarding shows again next launch; it must
     // not leave the button dead.
     await AsyncStorage.setItem(ONBOARDED_KEY, 'true').catch(() => {});
+    // Raises the Photos prompt the permissions card just described.
+    glassesImport.syncWithSettings().catch(() => {});
     navigation.reset({ index: 0, routes: [{ name: 'Connect' }] });
   };
 
@@ -56,9 +59,11 @@ export function OnboardingScreen({ navigation }: Props) {
         <Text style={styles.cardTitle}>What Clipso will ask for</Text>
         <Text style={styles.cardBody}>
           Bluetooth, to reach your glasses; the microphone, to record sound
-          with your clips; and speech recognition, to hear the trigger phrase.
-          Access to the glasses' camera is granted in Meta AI. Nothing is kept
-          unless you clip it.
+          with your clips; speech recognition, to hear the trigger phrase; and
+          all of your photos, to find the full-resolution videos your glasses
+          record and cut the moments you marked. Access to the glasses' camera
+          is granted in Meta AI. Nothing is kept unless you clip it, and
+          nothing in your photo library is changed.
         </Text>
       </Card>
 

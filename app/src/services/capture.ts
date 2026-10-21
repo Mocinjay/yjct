@@ -1,31 +1,43 @@
 import { FREE_BUFFER_SECONDS_MAX } from '../config';
 import { CaptureController, isCaptureLive } from '../core/CaptureController';
 import { entitlementStore } from '../core/EntitlementStore';
+import { ListeningController } from '../core/ListeningController';
 import { settingsStore } from '../core/SettingsStore';
 import { MWDATSource } from '../device/MWDATSource';
+import { errorText, importLog } from '../markers/importLog';
+import type { WakeMarker } from '../markers/markerMatching';
+import { markerStore } from '../markers/MarkerStore';
 import { captionQueue } from '../phase2/CaptionQueue';
-import type { Settings } from '../types';
+import type { CaptureMode, Settings } from '../types';
 import { MockWakeWord } from '../wakeword/MockWakeWord';
 import { SpeechWakeWord } from '../wakeword/SpeechWakeWord';
 import type { WakeWordProvider } from '../wakeword/WakeWordProvider';
 
+/** What the capture screen drives, in either mode. */
+export type SessionController = Pick<
+  CaptureController,
+  'subscribe' | 'arm' | 'disarm' | 'captureNow' | 'startClip' | 'stopClip' | 'lookBackSeconds'
+>;
+
 /**
- * Composition root for a capture session. A fresh controller is built per
- * Armed screen mount, so settings changes (wake word, buffer length, chime)
- * apply to the next session. The source is always the Meta glasses.
+ * Composition root for a capture session. A fresh session is built per Armed
+ * screen mount, so settings changes (mode, wake word, buffer length, chime)
+ * apply to the next one.
  */
 export interface CaptureSession {
-  controller: CaptureController;
+  mode: CaptureMode;
+  controller: SessionController;
   /** Set when Settings picks "Manual button": the Armed screen's Clip button fires it. */
   mockWakeWord?: MockWakeWord;
 }
 
 /**
- * Sessions whose glasses may be recording. Captioning is held while ANY of
- * them is (see CaptionQueue), not by whichever reported last: a screen that is
- * replaced (Library "Go live" resets to a fresh Armed) disarms asynchronously,
- * and its late 'idle' must not release the hold over the new session that is
- * already live.
+ * Live sessions whose glasses may be recording. Captioning is held while ANY
+ * of them is (see CaptionQueue), not by whichever reported last: a screen that
+ * is replaced (Library "Go live" resets to a fresh Armed) disarms
+ * asynchronously, and its late 'idle' must not release the hold over the new
+ * session that is already live. Glasses-only sessions record nothing on the
+ * phone and do not hold captioning.
  */
 const liveControllers = new Set<CaptureController>();
 const liveListeners = new Set<(live: boolean) => void>();
@@ -47,6 +59,16 @@ export function subscribeCaptureLive(listener: (live: boolean) => void): () => v
   };
 }
 
+/** Persists a marker for the full-resolution import, logging a failure. */
+async function recordMarker(marker: WakeMarker): Promise<void> {
+  try {
+    await markerStore.add(marker);
+  } catch (err) {
+    importLog('could not record marker', { id: marker.id, error: errorText(err) });
+    throw err;
+  }
+}
+
 export async function buildCaptureSession(): Promise<CaptureSession> {
   const settings = await settingsStore.get();
   const isPro = await entitlementStore.isPro();
@@ -55,7 +77,18 @@ export async function buildCaptureSession(): Promise<CaptureSession> {
   const windowSeconds = isPro
     ? settings.bufferSeconds
     : Math.min(settings.bufferSeconds, FREE_BUFFER_SECONDS_MAX);
-  const { wakeWord, mockWakeWord } = buildWakeWord(settings);
+
+  if (settings.captureMode === 'glasses') {
+    let controller: ListeningController | null = null;
+    const { wakeWord, mockWakeWord } = buildWakeWord(settings, {
+      ownMicrophone: true,
+      onListeningError: message => controller?.fail(message),
+    });
+    controller = new ListeningController(wakeWord, windowSeconds, recordMarker);
+    return { mode: 'glasses', controller, mockWakeWord };
+  }
+
+  const { wakeWord, mockWakeWord } = buildWakeWord(settings, {});
   const controller = new CaptureController(
     new MWDATSource(),
     wakeWord,
@@ -66,6 +99,7 @@ export async function buildCaptureSession(): Promise<CaptureSession> {
       // is tracked on the clip itself, so nothing here needs awaiting.
       captionQueue.enqueue(clip.id).catch(() => {});
     },
+    settings.fullResolution ? recordMarker : undefined,
   );
   controller.subscribe(status => {
     const wasLive = isAnyCaptureLive();
@@ -80,15 +114,15 @@ export async function buildCaptureSession(): Promise<CaptureSession> {
       liveListeners.forEach(listener => listener(live));
     }
   });
-  return { controller, mockWakeWord };
+  return { mode: 'live', controller, mockWakeWord };
 }
 
-function buildWakeWord(settings: Settings): {
-  wakeWord: WakeWordProvider;
-  mockWakeWord?: MockWakeWord;
-} {
+function buildWakeWord(
+  settings: Settings,
+  speechOptions: ConstructorParameters<typeof SpeechWakeWord>[0],
+): { wakeWord: WakeWordProvider; mockWakeWord?: MockWakeWord } {
   if (settings.wakeWord.provider === 'speech') {
-    return { wakeWord: new SpeechWakeWord() };
+    return { wakeWord: new SpeechWakeWord(speechOptions) };
   }
   const mockWakeWord = new MockWakeWord();
   return { wakeWord: mockWakeWord, mockWakeWord };

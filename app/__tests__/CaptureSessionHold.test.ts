@@ -37,6 +37,9 @@ jest.mock('../src/phase2/CaptionQueue', () => ({
   },
 }));
 jest.mock('react-native-fs', () => ({ unlink: jest.fn(async () => {}) }));
+jest.mock('../src/markers/MarkerStore', () => ({
+  markerStore: { add: jest.fn(async () => {}) },
+}));
 jest.mock('../src/native/ClipStitcher', () => ({ stitchSegments: jest.fn() }));
 
 import {

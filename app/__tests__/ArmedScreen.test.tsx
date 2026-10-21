@@ -12,7 +12,10 @@ jest.mock('@react-navigation/native', () => ({
 jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
-jest.mock('../src/device/glassesLease', () => ({ useGlassesLease: () => {} }));
+const mockLease = jest.fn();
+jest.mock('../src/device/glassesLease', () => ({
+  useGlassesLease: (active: boolean) => mockLease(active),
+}));
 jest.mock('../src/ui/GlassesPreview', () => ({ GlassesPreview: () => null }));
 jest.mock('../src/ui/components', () => ({ RecDot: () => null }));
 
@@ -44,8 +47,10 @@ const mockArm = jest.fn<Promise<void>, []>();
 const mockDisarm = jest.fn(async () => {
   mockEmit({ state: 'idle', bufferedSeconds: 0 });
 });
+let mockMode: 'live' | 'glasses' = 'live';
 jest.mock('../src/services/capture', () => ({
   buildCaptureSession: async () => ({
+    mode: mockMode,
     controller: {
       lookBackSeconds: 30,
       subscribe(listener: (s: CaptureStatus) => void) {
@@ -124,6 +129,8 @@ describe('ArmedScreen', () => {
   beforeEach(() => {
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
     mockFocused = true;
+    mockMode = 'live';
+    mockLease.mockClear();
     mockListeners.clear();
     mockStatus = { state: 'idle', bufferedSeconds: 0, bufferedAsOf: 0 };
     mockArm.mockReset();
@@ -269,6 +276,25 @@ describe('ArmedScreen', () => {
     });
     expect(clipButton().props.disabled).toBe(false);
     expect(opacity()).toBeUndefined();
+  });
+
+  it('in glasses-only mode, marks moments and never holds the glasses stream', async () => {
+    mockMode = 'glasses';
+    mockArm.mockImplementation(okArm);
+    renderer = await mount();
+    const r = renderer;
+    const texts = () =>
+      r.root.findAll(node => node.type === Text).map(node => String(node.props.children));
+
+    expect(texts()).toContain('Mark');
+    expect(texts()).not.toContain('Extended');
+    expect(texts()).toContain('Recording happens on your glasses');
+    expect(mockLease).toHaveBeenLastCalledWith(false);
+
+    await act(async () => {
+      mockEmit({ ...mockStatus, sessionClipCount: 1, lastMarkAt: 123 });
+    });
+    expect(texts()).toContain('Marked #1 — full res after Meta AI syncs');
   });
 
   it('disarms on blur only once a recording ends, and re-arms on refocus', async () => {

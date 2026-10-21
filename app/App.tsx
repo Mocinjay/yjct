@@ -6,7 +6,9 @@ import { StatusBar } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { clipStore } from './src/core/ClipStore';
 import { entitlementStore } from './src/core/EntitlementStore';
+import { settingsStore } from './src/core/SettingsStore';
 import { captionQueue } from './src/phase2/CaptionQueue';
+import { glassesImport } from './src/services/glassesImport';
 import { ClipsoSplash } from './src/ui/ClipsoSplash';
 import type { RootStackParamList } from './src/ui/navigation';
 import { ArmedScreen } from './src/ui/screens/ArmedScreen';
@@ -39,13 +41,31 @@ export default function App() {
   const onSplashFinished = useCallback(() => setSplashDone(true), []);
 
   useEffect(() => {
-    // Glasses-first boot: always land on Connect so the link to Meta AI is
-    // established (or visibly broken) before anything else. If the flag cannot
-    // be read, show onboarding again rather than a blank screen forever.
-    AsyncStorage.getItem(ONBOARDED_KEY)
-      .then(v => setInitialRoute(v ? 'Connect' : 'Onboarding'))
+    // Glasses-first boot: live mode lands on Connect so the link to Meta AI is
+    // established (or visibly broken) before anything else. Glasses-only mode
+    // streams nothing, so it goes straight to listening. If the flag cannot be
+    // read, show onboarding again rather than a blank screen forever.
+    Promise.all([AsyncStorage.getItem(ONBOARDED_KEY), settingsStore.get()])
+      .then(([onboarded, settings]) =>
+        setInitialRoute(
+          !onboarded ? 'Onboarding' : settings.captureMode === 'glasses' ? 'Armed' : 'Connect',
+        ),
+      )
       .catch(() => setInitialRoute('Onboarding'));
   }, []);
+
+  // The full-resolution import starts once onboarding has explained the Photos
+  // prompt it may raise (OnboardingScreen starts it for a fresh install), and
+  // follows the setting from then on.
+  useEffect(() => {
+    if (initialRoute === null || initialRoute === 'Onboarding') {
+      return;
+    }
+    glassesImport.syncWithSettings().catch(() => {});
+    return settingsStore.subscribe(() => {
+      glassesImport.syncWithSettings().catch(() => {});
+    });
+  }, [initialRoute]);
 
   useEffect(() => {
     // Retention runs at launch as well as on Library focus, so expired clips

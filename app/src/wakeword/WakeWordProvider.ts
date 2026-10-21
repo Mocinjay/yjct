@@ -20,6 +20,12 @@ export interface WakeDetection {
   segmentPath: string;
   /** Seconds from the start of that segment to the end of the phrase. */
   endOffsetSec: number;
+  /**
+   * Epoch ms at which the phrase finished, when the provider records its own
+   * segments and so knows when each began (glasses-only mode). It lets the
+   * moment be found later in a recording the phone took no part in.
+   */
+  atMs?: number;
 }
 
 export interface WakeWordProvider {
