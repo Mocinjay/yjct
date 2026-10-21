@@ -14,7 +14,9 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Onboarding'>;
 export function OnboardingScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const done = async () => {
-    await AsyncStorage.setItem(ONBOARDED_KEY, 'true');
+    // A failed write only means onboarding shows again next launch; it must
+    // not leave the button dead.
+    await AsyncStorage.setItem(ONBOARDED_KEY, 'true').catch(() => {});
     navigation.reset({ index: 0, routes: [{ name: 'Connect' }] });
   };
 
@@ -53,10 +55,10 @@ export function OnboardingScreen({ navigation }: Props) {
       <Card>
         <Text style={styles.cardTitle}>What Clipso will ask for</Text>
         <Text style={styles.cardBody}>
-          Camera and microphone — to fill the look-back buffer — and speech
-          recognition, to hear the trigger phrase. You'll see the prompts the
-          first time you record. Nothing is kept unless you clip it, and no
-          audio leaves the device.
+          Bluetooth, to reach your glasses; the microphone, to record sound
+          with your clips; and speech recognition, to hear the trigger phrase.
+          Access to the glasses' camera is granted in Meta AI. Nothing is kept
+          unless you clip it, and no audio leaves the device.
         </Text>
       </Card>
 

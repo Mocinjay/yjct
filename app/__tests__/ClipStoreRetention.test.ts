@@ -80,6 +80,18 @@ describe('retention', () => {
     expect(mockFiles.has(fresh.filePath)).toBe(true);
   });
 
+  it('keeps sweeps from before the Library mounted for its expiry notice', async () => {
+    clipStore.takeUnreportedExpired();
+    seed([makeClip('a', { expiresAt: 500 }), makeClip('b', { expiresAt: 600 })]);
+
+    // The launch sweep in App.tsx runs first; the Library's own finds nothing.
+    await clipStore.sweepExpired(1_000);
+    expect(await clipStore.sweepExpired(1_000)).toEqual([]);
+
+    expect(clipStore.takeUnreportedExpired()).toBe(2);
+    expect(clipStore.takeUnreportedExpired()).toBe(0);
+  });
+
   it('never sweeps a saved clip, however old', async () => {
     seed([makeClip('kept', { savedAt: 1, expiresAt: null })]);
 

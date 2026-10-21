@@ -40,10 +40,11 @@ export default function App() {
 
   useEffect(() => {
     // Glasses-first boot: always land on Connect so the link to Meta AI is
-    // established (or visibly broken) before anything else.
-    AsyncStorage.getItem(ONBOARDED_KEY).then(v =>
-      setInitialRoute(v ? 'Connect' : 'Onboarding'),
-    );
+    // established (or visibly broken) before anything else. If the flag cannot
+    // be read, show onboarding again rather than a blank screen forever.
+    AsyncStorage.getItem(ONBOARDED_KEY)
+      .then(v => setInitialRoute(v ? 'Connect' : 'Onboarding'))
+      .catch(() => setInitialRoute('Onboarding'));
   }, []);
 
   useEffect(() => {

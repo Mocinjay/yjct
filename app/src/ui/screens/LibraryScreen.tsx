@@ -1,6 +1,6 @@
 import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -12,11 +12,9 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Share from 'react-native-share';
 import { FREE_RETENTION_HOURS } from '../../config';
 import {
   clipStore,
-  deliverablePath,
   isCaptioning,
   isPending,
   msUntilExpiry,
@@ -25,7 +23,9 @@ import { entitlementStore } from '../../core/EntitlementStore';
 import { captionQueue } from '../../phase2/CaptionQueue';
 import type { Clip } from '../../types';
 import { ProBadge, RecDot, RecRings } from '../components';
+import { formatDuration, formatRemaining, relativeDate } from '../format';
 import type { RootStackParamList } from '../navigation';
+import { shareClip } from '../shareClip';
 import { colors, radius, spacing, type } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Library'>;
@@ -52,18 +52,30 @@ export function LibraryScreen({ navigation }: Props) {
     clipStore.list().then(setClips);
   }, []);
 
-  // Expiry is evaluated here and at launch — iOS gives no dependable
-  // background execution, so a clip outlives its deadline until the user
-  // opens the app, and the sweep reports what it took rather than having
-  // clips disappear without explanation.
+  // Expiry is evaluated here and at launch. iOS gives no dependable
+  // background execution, so a clip outlives its deadline until the app is
+  // opened. The notice reports every clip a sweep took, including the launch
+  // sweep that ran before this screen mounted, so none vanish unexplained.
+  //
+  // The countdown tick runs only while this screen is on top: native-stack
+  // keeps it mounted under Player, Settings and Paywall, where re-rendering the
+  // grid every minute is wasted work.
   useFocusEffect(
     useCallback(() => {
-      clipStore.sweepExpired().then(expired => {
-        if (expired.length > 0) {
-          setExpiredCount(expired.length);
-        }
-        reload();
-      });
+      setNow(Date.now());
+      clipStore
+        .sweepExpired()
+        // A failed sweep must still load the grid.
+        .catch(() => {})
+        .then(() => {
+          const expired = clipStore.takeUnreportedExpired();
+          if (expired > 0) {
+            setExpiredCount(count => count + expired);
+          }
+          reload();
+        });
+      const tick = setInterval(() => setNow(Date.now()), 60_000);
+      return () => clearInterval(tick);
     }, [reload]),
   );
 
@@ -78,15 +90,32 @@ export function LibraryScreen({ navigation }: Props) {
     });
     return entitlementStore.subscribe(setIsPro);
   }, []);
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 60_000);
-    return () => clearInterval(t);
-  }, []);
 
   const recent = useMemo(() => clips.filter(isPending), [clips]);
   const saved = useMemo(() => clips.filter(c => !isPending(c)), [clips]);
   const shown = tab === 'recent' ? recent : saved;
   const captioning = useMemo(() => clips.filter(isCaptioning).length, [clips]);
+
+  // Stable handlers and a memoized card: a caption-state change on one clip,
+  // a tab switch or the entitlement check re-renders only the cards whose
+  // props changed. ClipStore replaces only the clips it changes, so unchanged
+  // cards keep the same `clip` object.
+  const openClip = useCallback(
+    (clip: Clip) => navigation.navigate('Player', { clip }),
+    [navigation],
+  );
+  const renderItem = useCallback(
+    ({ item }: { item: Clip }) => (
+      <ClipCard
+        clip={item}
+        now={now}
+        onOpen={openClip}
+        onShare={shareClip}
+        onSave={saveClip}
+      />
+    ),
+    [now, openClip],
+  );
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + spacing.s }]}>
@@ -159,34 +188,26 @@ export function LibraryScreen({ navigation }: Props) {
         <FlatList
           data={shown}
           numColumns={2}
-          keyExtractor={c => c.id}
-          columnWrapperStyle={{ gap: spacing.m }}
-          contentContainerStyle={{
-            paddingHorizontal: spacing.m,
-            paddingBottom: 120,
-            gap: spacing.m,
-          }}
-          // Defaults keep ~80 cards mounted at 2 columns; each decoded
-          // thumbnail is ~0.9 MB, which is how the grid used to run the app
-          // out of memory on a large library.
+          keyExtractor={clipKey}
+          columnWrapperStyle={styles.gridRow}
+          contentContainerStyle={styles.grid}
+          // Keep few cards mounted: each decoded 9:16 thumbnail is ~0.9 MB,
+          // and FlatList's defaults (~80 cards at 2 columns) exhaust memory
+          // on a large library.
           initialNumToRender={8}
           maxToRenderPerBatch={6}
           windowSize={5}
           removeClippedSubviews
-          renderItem={({ item }) => (
-            <ClipCard
-              clip={item}
-              now={now}
-              onOpen={() => navigation.navigate('Player', { clip: item })}
-              onShare={() => shareClip(item)}
-              onSave={() => clipStore.save(item.id)}
-            />
-          )}
+          renderItem={renderItem}
         />
       )}
 
       <View style={[styles.recordDock, { paddingBottom: insets.bottom + spacing.m }]}>
         <Pressable
+          // reset, not navigate: Armed may still be mounted underneath (it
+          // pushes the Library when it is the root), and navigate() would push
+          // a second Armed, growing the stack and its mounted screens on every
+          // round trip.
           onPress={() =>
             navigation.reset({ index: 0, routes: [{ name: 'Armed' }] })
           }
@@ -224,7 +245,17 @@ function TabButton({
   );
 }
 
-function ClipCard({
+function clipKey(clip: Clip): string {
+  return clip.id;
+}
+
+function saveClip(clip: Clip): void {
+  clipStore.save(clip.id).catch(e => {
+    Alert.alert('Save failed', e instanceof Error ? e.message : String(e));
+  });
+}
+
+const ClipCard = memo(function ClipCardView({
   clip,
   now,
   onOpen,
@@ -233,14 +264,14 @@ function ClipCard({
 }: {
   clip: Clip;
   now: number;
-  onOpen: () => void;
-  onShare: () => void;
-  onSave: () => void;
+  onOpen: (clip: Clip) => void;
+  onShare: (clip: Clip) => void;
+  onSave: (clip: Clip) => void;
 }) {
   const remaining = msUntilExpiry(clip, now);
   return (
     <Pressable
-      onPress={onOpen}
+      onPress={() => onOpen(clip)}
       style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}>
       <Image
         source={{ uri: `file://${clip.thumbnailPath}` }}
@@ -262,7 +293,7 @@ function ClipCard({
         <Text style={styles.cardSub}>{relativeDate(clip.capturedAt)}</Text>
       </View>
       <Pressable
-        onPress={remaining !== null ? onSave : onShare}
+        onPress={() => (remaining !== null ? onSave(clip) : onShare(clip))}
         hitSlop={8}
         style={({ pressed }) => [styles.shareChip, pressed && styles.pressed]}>
         <Text style={styles.shareChipText}>
@@ -271,7 +302,7 @@ function ClipCard({
       </Pressable>
     </Pressable>
   );
-}
+});
 
 /**
  * Captioning progress, drawn over the poster frame.
@@ -320,55 +351,10 @@ function CaptionOverlay({ clip }: { clip: Clip }) {
   return null;
 }
 
-/** "23h left" / "42m left" / "expiring" once the clock has run out. */
-export function formatRemaining(ms: number): string {
-  if (ms <= 0) {
-    return 'expiring';
-  }
-  const minutes = Math.floor(ms / 60_000);
-  if (minutes < 60) {
-    return `${Math.max(1, minutes)}m left`;
-  }
-  return `${Math.floor(minutes / 60)}h left`;
-}
-
-export function formatDuration(sec: number): string {
-  const s = Math.max(0, Math.round(sec));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-}
-
-export function relativeDate(epochMs: number): string {
-  const d = new Date(epochMs);
-  const now = new Date();
-  const sameDay = d.toDateString() === now.toDateString();
-  if (sameDay) {
-    return `Today ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
-  }
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  if (d.toDateString() === yesterday.toDateString()) {
-    return 'Yesterday';
-  }
-  return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-}
-
-export async function shareClip(clip: Clip): Promise<void> {
-  try {
-    // Free tier: raw footage via the native OS share sheet. Not an API
-    // integration — same mechanism as sharing a Camera Roll video. Once
-    // captions are burned in, that is the cut the wearer meant to send.
-    await Share.open({
-      url: `file://${deliverablePath(clip)}`,
-      type: 'video/mp4',
-      failOnCancel: false,
-    });
-  } catch (e) {
-    Alert.alert('Share failed', e instanceof Error ? e.message : String(e));
-  }
-}
-
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
+  grid: { paddingHorizontal: spacing.m, paddingBottom: 120, gap: spacing.m },
+  gridRow: { gap: spacing.m },
   pressed: { transform: [{ scale: 0.97 }], opacity: 0.9 },
   brandRow: {
     flexDirection: 'row',

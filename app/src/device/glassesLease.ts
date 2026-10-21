@@ -18,11 +18,11 @@ let holders = 0;
 let pendingRelease: ReturnType<typeof setTimeout> | null = null;
 
 /**
- * Moving between two capture screens (`replace('Armed')`) blurs the outgoing
- * screen before the incoming one focuses, so the count dips through zero for a
- * frame. Tearing down there would cost a full session renegotiation — ~2s of
- * `waitingForDevice` -> `starting` -> `streaming` — just to reopen what we
- * already had. Wait out the gap before believing a release.
+ * The Connect → Armed `navigation.reset` drops Connect's lease before Armed
+ * takes one, so the count dips through zero for a moment. Tearing down there
+ * would cost a full session renegotiation (~2s of `waitingForDevice` ->
+ * `starting` -> `streaming`) to reopen what is already open, so a release only
+ * takes effect once this grace period passes with no new holder.
  */
 const RELEASE_GRACE_MS = 750;
 

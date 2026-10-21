@@ -90,9 +90,9 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Clipso finds and streams from your Meta glasses over local Wi-Fi.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Clipso records audio with your clips and listens on-device for your trigger word. No audio leaves your phone.</string>
+	<string>Clipso records audio with your clips and listens for your trigger word while you record.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Clipso transcribes your recording on-device to hear “Clipso”. Nothing is sent anywhere.</string>
+	<string>Clipso uses Apple speech recognition to hear “Clipso” while you record and to caption your clips. It runs on your iPhone where it can; otherwise Apple transcribes the audio.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>NSSupportsLiveActivities</key>

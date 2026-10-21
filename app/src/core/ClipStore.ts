@@ -34,6 +34,12 @@ export class ClipStore {
    */
   private writes: Promise<void> = Promise.resolve();
   private listeners = new Set<() => void>();
+  /**
+   * Clips swept since the Library last reported expiries. The launch sweep in
+   * App.tsx runs before the Library mounts, so without this count its
+   * deletions would never be shown to the user.
+   */
+  private unreportedExpired = 0;
 
   async ensureDir(): Promise<string> {
     await RNFS.mkdir(CLIPS_DIR);
@@ -146,20 +152,32 @@ export class ClipStore {
   }
 
   /**
-   * Deletes every clip whose clock has run out, along with its files.
-   * Returns what was removed so the UI can tell the user rather than having
-   * clips vanish silently.
+   * Deletes every clip whose clock has run out, along with its files, and
+   * returns them. The count is also kept for `takeUnreportedExpired()`, so the
+   * Library can tell the user about clips any sweep removed, rather than
+   * having them vanish silently.
    */
   async sweepExpired(now = Date.now()): Promise<Clip[]> {
     let expired: Clip[] = [];
     await this.mutate(clips => {
       expired = clips.filter(c => c.expiresAt !== null && c.expiresAt <= now);
+      // Counted as the clips leave the list, not once the write lands: a
+      // Library sweep that finds nothing must still see what an overlapping
+      // launch sweep has already taken.
+      this.unreportedExpired += expired.length;
       return expired.length === 0 ? clips : clips.filter(c => !expired.includes(c));
     });
     for (const clip of expired) {
       await deleteClipFiles(clip);
     }
     return expired;
+  }
+
+  /** Returns, and resets, how many swept clips the UI has not reported yet. */
+  takeUnreportedExpired(): number {
+    const count = this.unreportedExpired;
+    this.unreportedExpired = 0;
+    return count;
   }
 
   /** Deletes a clip and its files. An unknown id is a no-op. */

@@ -11,16 +11,12 @@ import {
 import { colors } from './theme';
 
 /**
- * Live wearer's-eye view: renders the throttled JPEG preview frames the
- * native bridge emits while the glasses stream is open (preview or armed).
- */
-/**
- * Number of previews currently *visible*, not merely mounted.
- *
- * Both ConnectScreen and ArmedScreen render a preview, and during
- * `replace('Armed')` both are briefly live at once, so the outgoing screen's
- * cleanup must not switch the feed off underneath the incoming one. Counting
- * handles that overlap.
+ * Number of previews currently *visible* (focused), not merely mounted.
+ * Emission is switched on by the first and off after the last. ConnectScreen
+ * and ArmedScreen each render one. On the Connect → Armed `navigation.reset`
+ * the outgoing preview lets go just before the incoming one claims the feed,
+ * so the switch-off is deferred a tick (see the cleanup) and skipped if a
+ * preview has claimed it by then.
  */
 let previewViewers = 0;
 
@@ -32,18 +28,18 @@ let previewViewers = 0;
  */
 const STALE_SECONDS = 2;
 
+/**
+ * Live wearer's-eye view: renders the throttled JPEG preview frames the
+ * native bridge emits while the glasses stream is open (preview or armed).
+ */
 export function GlassesPreview({ style }: { style?: ViewStyle }) {
   const [frameUri, setFrameUri] = useState<string | null>(null);
   const [stalledFor, setStalledFor] = useState(0);
-  // Focus, NOT mount. React Navigation keeps every screen below the top of the
-  // stack mounted so that going back restores its state, so ArmedScreen — and
-  // its preview — is still mounted while the Library and the clip player sit on
-  // top of it. Gating on mount therefore never turned the feed off: the bridge
-  // kept converting, JPEG-encoding and base64-ing ~7 frames/second, and this
-  // component kept calling setState on each one, the whole time a clip was
-  // playing. That is what starved the JS thread (video kept playing on the
-  // native side while every control went dead) and grew memory until iOS
-  // terminated the app.
+  // Gate on focus, not mount: React Navigation keeps covered screens mounted
+  // (ArmedScreen stays under the Library and the player). While emission is
+  // on, the bridge JPEG-encodes and base64s ~7 frames/s and this component
+  // sets state on each one; off-screen, that starves the JS thread and grows
+  // memory.
   const isFocused = useIsFocused();
 
   useEffect(() => {
@@ -77,9 +73,8 @@ export function GlassesPreview({ style }: { style?: ViewStyle }) {
       healthSub.remove();
       previewViewers -= 1;
       if (previewViewers === 0) {
-        // Defer: Connect → Live uses navigation.reset, so the outgoing preview
-        // unmounts before the incoming one mounts. Disabling synchronously
-        // left a frame where emission was off and the handoff looked dead.
+        // Deferred a tick so the preview mounting right after this one (the
+        // Connect → Armed reset) can claim the feed before it goes off.
         setTimeout(() => {
           if (previewViewers === 0) {
             MWDATNative.setPreviewEnabled(false).catch(() => {});

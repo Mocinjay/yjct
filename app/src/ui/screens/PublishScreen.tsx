@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -10,29 +11,20 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import Video from 'react-native-video';
-import { clipStore } from '../../core/ClipStore';
+import { clipStore, hasBurnedCaptions } from '../../core/ClipStore';
 import { publishService } from '../../phase2/PublishService';
 import type {
   PublishPrivacy,
   PublishStatus,
   PublishTarget,
 } from '../../phase2/PublishTarget';
-import type { Clip } from '../../types';
 import { Button, SectionLabel } from '../components';
 import type { RootStackParamList } from '../navigation';
+import { pollPublishStatus } from '../pollPublishStatus';
 import { colors, radius, spacing, type } from '../theme';
+import { useLiveClip } from '../useLiveClip';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Publish'>;
-
-/** True when a captioned cut already exists on disk for this clip. */
-function captionsAlreadyBurned(clip: Clip): boolean {
-  return (
-    clip.captionState === 'ready' &&
-    Boolean(clip.captionedFilePath) &&
-    clip.captionProvider !== 'mock'
-  );
-}
 
 type Phase =
   | { step: 'compose' }
@@ -46,26 +38,23 @@ export function PublishScreen({ route }: Props) {
   // Live copy, not the route snapshot: if this clip's captioning job finishes
   // while the screen is open, publishing must pick up the burned-in cut
   // instead of transcribing and re-encoding the whole thing a second time.
-  const [clip, setClip] = useState(openedClip);
+  const clip = useLiveClip(openedClip);
   const [targets, setTargets] = useState<Array<{ target: PublishTarget; ready: boolean }>>([]);
   const [selected, setSelected] = useState<PublishTarget | null>(null);
   const [caption, setCaption] = useState('');
   const [privacy, setPrivacy] = useState<PublishPrivacy>('public');
   const [withCaptions, setWithCaptions] = useState(true);
   const [phase, setPhase] = useState<Phase>({ step: 'compose' });
-  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Status polling stops once this is false. A publish can still be uploading
+  // when the user leaves, so the poll may start after unmount.
+  const mounted = useRef(true);
 
   useEffect(() => {
-    const sync = () =>
-      clipStore.list().then(all => {
-        const live = all.find(c => c.id === openedClip.id);
-        if (live) {
-          setClip(live);
-        }
-      });
-    sync();
-    return clipStore.subscribe(sync);
-  }, [openedClip.id]);
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     publishService
@@ -79,11 +68,6 @@ export function PublishScreen({ route }: Props) {
         ),
       )
       .then(setTargets);
-    return () => {
-      if (pollTimer.current) {
-        clearInterval(pollTimer.current);
-      }
-    };
   }, []);
 
   const confirmAndPublish = () => {
@@ -100,36 +84,35 @@ export function PublishScreen({ route }: Props) {
         'the actual visibility is shown after publishing.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Publish', onPress: () => void doPublish(selected) },
+        { text: 'Publish', onPress: () => doPublish(selected) },
       ],
     );
   };
 
   const doPublish = async (target: PublishTarget) => {
     setPhase({ step: 'publishing' });
+    let publishId: string;
     try {
-      const { publishId } = await publishService.publish(clip, target, {
+      ({ publishId } = await publishService.publish(clip, target, {
         caption,
         privacy,
         withCaptions,
-      });
+      }));
       // Publishing is an implicit save — a clip the user put on a platform
       // must not evaporate when its retention clock runs out.
       await clipStore.markPublished(clip.id, target.platform);
-      const status = await publishService.checkStatus(target, publishId);
-      setPhase({ step: 'status', target, publishId, status });
-      pollTimer.current = setInterval(async () => {
-        const next = await publishService.checkStatus(target, publishId);
-        setPhase({ step: 'status', target, publishId, status: next });
-        if (next.state !== 'processing' && pollTimer.current) {
-          clearInterval(pollTimer.current);
-          pollTimer.current = null;
-        }
-      }, 2000);
     } catch (err) {
       setPhase({ step: 'compose' });
       Alert.alert('Publish failed', err instanceof Error ? err.message : String(err));
+      return;
     }
+    // The upload is done, so a failed status check shows on the status view
+    // rather than sending the user back to compose to publish it twice.
+    await pollPublishStatus(
+      () => publishService.checkStatus(target, publishId),
+      status => setPhase({ step: 'status', target, publishId, status }),
+      () => mounted.current,
+    );
   };
 
   if (phase.step === 'status') {
@@ -138,10 +121,12 @@ export function PublishScreen({ route }: Props) {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-      <Video
-        source={{ uri: `file://${clip.filePath}` }}
+      {/* The thumbnail is frame 0 of the clip: what a paused player would
+          show, without a second AVPlayer while the Player's is still mounted
+          underneath. */}
+      <Image
+        source={{ uri: `file://${clip.thumbnailPath}` }}
         style={styles.preview}
-        paused
         resizeMode="cover"
       />
       <Text style={styles.clipName}>{clip.name}</Text>
@@ -163,7 +148,9 @@ export function PublishScreen({ route }: Props) {
                   ? setSelected(target)
                   : Alert.alert(
                       `${target.displayName} needs setup`,
-                      'This connector is built but not configured yet (OAuth client / API review pending). Use the mock platform to test the flow.',
+                      'This connector is built but not configured yet (OAuth client / API review pending).' +
+                        // The mock platform exists only in dev builds.
+                        (__DEV__ ? ' Use the mock platform to test the flow.' : ''),
                     )
               }>
               <View
@@ -210,6 +197,8 @@ export function PublishScreen({ route }: Props) {
         ))}
       </View>
 
+      {/* For a clip already captioned this picks that cut or the raw one;
+          otherwise it decides whether captions are burned in before upload. */}
       <Pressable
         style={({ pressed }) => [
           styles.choice,
@@ -219,10 +208,7 @@ export function PublishScreen({ route }: Props) {
         ]}
         onPress={() => setWithCaptions(v => !v)}>
         <Text style={[styles.choiceText, withCaptions && styles.choiceTextSelected]}>
-          {/* Captions are burned on capture now, so for an already-captioned
-              clip this chooses between that cut and the raw one — it is not
-              deciding whether captioning happens. */}
-          {captionsAlreadyBurned(clip)
+          {hasBurnedCaptions(clip)
             ? withCaptions
               ? '✓ Captioned cut'
               : 'Raw cut, no captions'

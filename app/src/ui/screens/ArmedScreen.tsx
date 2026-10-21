@@ -1,6 +1,6 @@
 import { useIsFocused } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   AppState,
@@ -18,12 +18,13 @@ import { buildCaptureSession } from '../../services/capture';
 import { LiveActivity } from '../../native/LiveActivity';
 import { GlassesPreview } from '../GlassesPreview';
 import { RecDot } from '../components';
+import { formatDuration } from '../format';
 import type { RootStackParamList } from '../navigation';
-import { formatDuration } from './LibraryScreen';
 import { colors, radius, spacing } from '../theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Armed'>;
 
+/** Automatic re-arms after capture drops into `error` (see the recovery effect). */
 const MAX_RECOVERY_ATTEMPTS = 3;
 const RECOVERY_DELAY_MS = 4000;
 
@@ -40,12 +41,20 @@ export function ArmedScreen({ navigation }: Props) {
     bufferedAsOf: Date.now(),
   });
   const [now, setNow] = useState(Date.now());
+  /** Set while an arm() is in flight or has succeeded; cleared by disarm or a failed arm. */
   const armedRef = useRef(false);
+  /** Automatic re-arms made since capture was last live. */
   const recoveryAttempts = useRef(0);
   const isFocused = useIsFocused();
   useGlassesLease(isFocused);
   const insets = useSafeAreaInsets();
   const toast = useRef(new Animated.Value(0)).current;
+  // Created once: a new interpolation node per render would make Animated
+  // rebuild the toast's native animation graph on every 1 Hz clock tick.
+  const toastY = useMemo(
+    () => toast.interpolate({ inputRange: [0, 1], outputRange: [24, 0] }),
+    [toast],
+  );
   const lastToastClip = useRef<string | null>(null);
 
   useEffect(() => {
@@ -95,10 +104,9 @@ export function ArmedScreen({ navigation }: Props) {
     ]).start();
   }, [status.lastClip, toast]);
 
-  // One 1 Hz clock drives both readouts. It has to run while merely `armed`
-  // too, not just while recording: `bufferedSeconds` is only re-measured when a
-  // segment closes, so without a tick the "Xs buffered" readout sat frozen at
-  // its last value for a whole SEGMENT_SECONDS and then jumped.
+  // One 1 Hz clock drives the session/recording clocks and the buffered
+  // readout. It runs while `armed` too: `bufferedSeconds` is only re-measured
+  // when a segment closes, so the readout is extrapolated between segments.
   useEffect(() => {
     if (status.state !== 'recording' && status.state !== 'armed') {
       return;
@@ -110,12 +118,28 @@ export function ArmedScreen({ navigation }: Props) {
   // The Live Activity mirrors capture onto the Lock Screen and Dynamic Island,
   // so leaving the app does not mean losing sight of whether Clipso is armed.
   //
-  // ActivityKit only allows a *start* from the foreground, which is exactly
-  // when arming happens; updates and the end continue to work backgrounded.
+  // ActivityKit only allows a *start* from the foreground; updates and the end
+  // work from the background. The auto-recovery below re-arms from the
+  // background (the phone is usually pocketed), so the activity is kept up
+  // while a recovery is under way rather than ended and started again: that
+  // second start would be refused and the banner lost for the rest of the
+  // session. It ends when capture stops for good: blur, unmount, or recovery
+  // giving up.
+  //
+  // `recoveryAttempts` is read during render on purpose. It changes only just
+  // before an automatic arm(), whose 'arming' re-renders, so in 'error' it
+  // says exactly what the recovery effect will do: retry, or give up.
+  const recovering =
+    isFocused &&
+    session != null &&
+    (status.state === 'arming' ||
+      (status.state === 'error' &&
+        recoveryAttempts.current < MAX_RECOVERY_ATTEMPTS));
   const capturing =
     status.state === 'armed' ||
     status.state === 'recording' ||
-    status.state === 'saving';
+    status.state === 'saving' ||
+    recovering;
 
   useEffect(() => {
     if (!capturing) {
@@ -149,12 +173,10 @@ export function ArmedScreen({ navigation }: Props) {
   ]);
 
   const goLibrary = () => {
-    // Blur tears capture down (see the focus effect below) and `useGlassesLease`
-    // closes the session, so this only has to navigate. Armed is reached two
-    // ways: pushed from Library, or replacing Connect on boot. In the second
-    // case it is the only screen on the stack, so goBack() has no target and
-    // React Navigation logs "The action 'GO_BACK' was not handled by any
-    // navigator". Closing belongs in the Library either way.
+    // Blur disarms capture (see the focus effects below) and `useGlassesLease`
+    // closes the session, so this only navigates. Connect and the Library's
+    // "Go live" both reset the stack to Armed, so there is normally nothing to
+    // go back to and the Library is pushed on top.
     if (navigation.canGoBack()) {
       navigation.goBack();
     } else {
@@ -168,48 +190,55 @@ export function ArmedScreen({ navigation }: Props) {
     }
     armedRef.current = true;
     session.controller.arm().catch(() => {
-      // Status listener already surfaces the error; clear the latch so
-      // refocusing can retry instead of sitting there permanently unarmed.
+      // The status listener already shows the error. Clearing the latch lets
+      // the recovery effect, Retry, refocus or a return to the foreground
+      // arm again.
       armedRef.current = false;
     });
   }, [session]);
 
-  // Capture follows FOCUS, not mount. React Navigation keeps this screen
-  // mounted underneath the Library and the clip player, so arming on mount left
-  // the glasses camera, the Bluetooth link, the H.264 writer, the mic and
-  // per-segment speech recognition all running the entire time the user was
-  // browsing or watching a clip. Nothing up there needs the wearer's feed.
+  // Capture follows FOCUS, not mount: React Navigation keeps this screen
+  // mounted under the Library and the clip player, and nothing up there needs
+  // the wearer's feed. Arm when the screen gains focus; `useGlassesLease`
+  // closes the glasses session once no screen holds it.
   //
-  // On blur: stop capturing. On return: arm again. `useGlassesLease` handles
-  // tearing the underlying glasses session down once no screen holds it.
+  // Deliberately not keyed on the capture state: re-arming after an error is
+  // the job of the bounded, delayed auto-recovery below. Re-running this on
+  // state changes would retry a failed arm at once, without limit (a failed
+  // arm clears `armedRef` before React renders its 'error').
   useEffect(() => {
-    if (!session) {
+    if (!session || !isFocused) {
       return;
     }
-    if (isFocused) {
-      arm();
+    arm();
+  }, [isFocused, session, arm]);
+
+  // Once blurred, disarm. Keyed on the state so that a manual extended
+  // recording or an in-flight save, which own the writer and are never
+  // interrupted, are disarmed as soon as they finish.
+  useEffect(() => {
+    if (!session || isFocused) {
       return;
     }
-    // Never interrupt a manual extended recording or an in-flight save — those
-    // own the writer and the user is deliberately capturing.
     if (status.state === 'recording' || status.state === 'saving') {
       return;
     }
     armedRef.current = false;
     session.controller.disarm().catch(() => {});
-  }, [isFocused, session, arm, status.state]);
+  }, [isFocused, session, status.state]);
 
-  // A stalled or dropped glasses link leaves capture in `error`, and until now
-  // the only way out was the wearer noticing the banner and tapping Retry —
-  // which is exactly what they cannot do, because the phone is in a pocket and
-  // the whole point is that Clipso keeps listening. Re-arm on its own, but a
-  // bounded number of times: if the glasses are folded, flat or out of range,
-  // renegotiating forever means a stop/start chime every few seconds and a
-  // session that never settles. After the last attempt the banner stands and
-  // Retry is the wearer's call.
+  // A stalled or dropped glasses link (or a failed arm) leaves capture in
+  // `error`. Re-arm automatically, since the phone is usually pocketed, but at
+  // most MAX_RECOVERY_ATTEMPTS times, RECOVERY_DELAY_MS apart: with the
+  // glasses folded, flat or out of range, retrying forever means a stop/start
+  // chime every few seconds. After that the banner and its Retry button stay.
+  //
+  // An attempt is counted when it is made, not when it is scheduled, so a
+  // timer cancelled by blur or by a foreground re-arm costs nothing. The Live
+  // Activity's `recovering` relies on that (see above).
   useEffect(() => {
     // A re-arm during an extended recording resumes it, landing in 'recording'
-    // rather than 'armed' — still a recovery that worked.
+    // rather than 'armed': still a recovery that worked.
     if (status.state === 'armed' || status.state === 'recording') {
       recoveryAttempts.current = 0;
       return;
@@ -222,8 +251,8 @@ export function ArmedScreen({ navigation }: Props) {
     ) {
       return;
     }
-    recoveryAttempts.current += 1;
     const timer = setTimeout(() => {
+      recoveryAttempts.current += 1;
       armedRef.current = false;
       arm();
     }, RECOVERY_DELAY_MS);
@@ -231,18 +260,17 @@ export function ArmedScreen({ navigation }: Props) {
   }, [status.state, isFocused, session, arm]);
 
   // Coming back from the background: iOS may have torn the native session
-  // down while we were away, so re-arm. Focus still gates it — if the user
+  // down while we were away, so re-arm. Focus still gates it: if the user
   // backgrounded the app from the Library, nothing here should wake capture.
   useEffect(() => {
     const sub = AppState.addEventListener('change', state => {
       if (state !== 'active' || !isFocused || !session) {
         return;
       }
-      if (
-        status.state === 'armed' ||
-        status.state === 'recording' ||
-        status.state === 'arming'
-      ) {
+      // Only a session that is down. Re-arming over a save in flight (a
+      // "Clipso" said with the phone pocketed, then the app opened) would
+      // reset the session's clip count and show "Starting…" over the save.
+      if (status.state !== 'idle' && status.state !== 'error') {
         return;
       }
       armedRef.current = false;
@@ -265,10 +293,8 @@ export function ArmedScreen({ navigation }: Props) {
   const recordingSecs = status.recordingSince
     ? Math.max(0, Math.round((now - status.recordingSince) / 1000))
     : 0;
-  // How long this session has been listening. Free-running: it is a clock, not
-  // a gauge, so it must NOT be capped at the look-back window the way
-  // `bufferedSecs` is. Showing the capped number here made capture look like it
-  // stopped after 30s when it was in fact still running.
+  // How long this session has been listening: a clock, not a gauge, so unlike
+  // `bufferedSecs` it is not capped at the look-back window.
   const armedSecs = status.armedSince
     ? Math.max(0, Math.round((now - status.armedSince) / 1000))
     : 0;
@@ -313,23 +339,18 @@ export function ArmedScreen({ navigation }: Props) {
           eye on the status/deck chrome rather than the footage. */}
       <View style={styles.stage}>
         <View style={[styles.viewfinder, recording && styles.viewfinderRec]}>
-          {session ? <GlassesPreview style={StyleSheet.absoluteFill} /> : null}
+          {/* Not gated on `session`, which is built asynchronously: mounting
+              with the screen lets this preview claim the feed within the tick
+              GlassesPreview waits after Connect's preview lets it go, so the
+              Connect → Armed reset does not switch emission off and on again
+              (which also resets the native preview decoder). */}
+          <GlassesPreview style={StyleSheet.absoluteFill} />
 
           <Animated.View
             pointerEvents="none"
             style={[
               styles.toast,
-              {
-                opacity: toast,
-                transform: [
-                  {
-                    translateY: toast.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [24, 0],
-                    }),
-                  },
-                ],
-              },
+              { opacity: toast, transform: [{ translateY: toastY }] },
             ]}>
             <Text style={styles.toastCheck}>✓</Text>
             <Text style={styles.toastText}>

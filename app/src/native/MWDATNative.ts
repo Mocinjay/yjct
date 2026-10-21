@@ -43,9 +43,10 @@ export interface MWDATPreviewFrameEvent {
 }
 
 /**
- * Once-a-second report of what the glasses link is actually delivering. The
- * stream's own state machine can sit in `.streaming` over a dead link, so
- * frame arrival is the only signal that says whether the feed is alive.
+ * Once-a-second report, sent while a preview is visible and the app is in the
+ * foreground, of what the glasses link is actually delivering. The stream's
+ * own state machine can sit in `.streaming` over a dead link, so frame arrival
+ * is the only signal that says whether the feed is alive.
  */
 export interface MWDATStreamHealthEvent {
   fps: number;

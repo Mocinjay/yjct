@@ -14,19 +14,16 @@ import { colors, radius, spacing, type } from './theme';
 
 /* ---------------------------------- Buttons --------------------------------- */
 
-type ButtonTone = 'accent' | 'blue' | 'ghost' | 'danger' | 'success';
+type ButtonTone = 'accent' | 'ghost' | 'danger';
 
 const TONE_BG: Record<ButtonTone, string> = {
   accent: colors.accent,
-  blue: colors.blue,
   ghost: colors.surfaceHigh,
   danger: colors.accentSoft,
-  success: colors.successSoft,
 };
 
 export function Button({
   label,
-  sublabel,
   onPress,
   tone = 'ghost',
   disabled,
@@ -34,7 +31,6 @@ export function Button({
   style,
 }: {
   label: string;
-  sublabel?: string;
   onPress: () => void;
   tone?: ButtonTone;
   disabled?: boolean;
@@ -56,17 +52,7 @@ export function Button({
       {busy ? (
         <ActivityIndicator color={colors.text} />
       ) : (
-        <>
-          <Text
-            style={[
-              btn.label,
-              tone === 'danger' && { color: colors.accent },
-              tone === 'success' && { color: colors.success },
-            ]}>
-            {label}
-          </Text>
-          {sublabel ? <Text style={btn.sublabel}>{sublabel}</Text> : null}
-        </>
+        <Text style={[btn.label, tone === 'danger' && btn.dangerLabel]}>{label}</Text>
       )}
     </Pressable>
   );
@@ -85,51 +71,7 @@ const btn = StyleSheet.create({
   pressed: { transform: [{ scale: 0.98 }], opacity: 0.92 },
   disabled: { opacity: 0.4 },
   label: { color: colors.text, fontSize: 16, fontWeight: '800' },
-  sublabel: { color: 'rgba(245,245,248,0.72)', fontSize: 12, marginTop: 2 },
-});
-
-/* ----------------------------------- Chips ---------------------------------- */
-
-export function Chip({
-  label,
-  selected,
-  onPress,
-  dim,
-}: {
-  label: string;
-  selected?: boolean;
-  onPress?: () => void;
-  dim?: boolean;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={!onPress}
-      style={({ pressed }) => [
-        chip.base,
-        selected && chip.selected,
-        pressed && btn.pressed,
-      ]}>
-      <Text style={[chip.text, selected && chip.textSelected, dim && chip.textDim]}>
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
-
-const chip = StyleSheet.create({
-  base: {
-    backgroundColor: colors.surfaceHigh,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.pill,
-    paddingHorizontal: spacing.m,
-    paddingVertical: spacing.s + 2,
-  },
-  selected: { backgroundColor: colors.accent, borderColor: colors.accent },
-  text: { color: colors.textDim, fontSize: 14, fontWeight: '600' },
-  textSelected: { color: colors.text },
-  textDim: { color: colors.textFaint },
+  dangerLabel: { color: colors.accent },
 });
 
 /* ----------------------------------- Cards ---------------------------------- */

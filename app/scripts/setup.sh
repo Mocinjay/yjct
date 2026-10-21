@@ -41,11 +41,15 @@ else
 fi
 
 # --- 2. JS dependencies -----------------------------------------------------
-if [ -d node_modules ]; then
-  ok "node_modules present (delete it and re-run for a clean install)"
-else
+# npm records what it installed in node_modules/.package-lock.json and writes
+# it after package-lock.json. A pull that changes package-lock.json leaves that
+# copy older, so reinstall exactly then; otherwise pod install below autolinks
+# native modules against stale packages.
+if [ ! -d node_modules ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then
   bold "Installing JS dependencies"
   npm ci
+else
+  ok "node_modules up to date with package-lock.json"
 fi
 
 # --- 3. signing -------------------------------------------------------------
@@ -61,10 +65,11 @@ if [ ! -f ios/Config/Signing.xcconfig ]; then
 
   It was just created from the example with placeholder values. Set:
 
-    DEVELOPMENT_TEAM           your 10-character Apple Developer Team ID
-                               (Xcode > Settings > Accounts > your team;
-                               the ID is in parentheses)
-    PRODUCT_BUNDLE_IDENTIFIER  must be unique to you, e.g. com.yourname.clipso
+    DEVELOPMENT_TEAM   your 10-character Apple Developer Team ID
+                       (Xcode > Settings > Accounts > your team;
+                       the ID is in parentheses)
+    CLIPSO_BUNDLE_ID   must be unique to you, e.g. com.<yourname>.clipso
+                       (the app and the widget extension both derive from it)
 
   Then run this script again.
 

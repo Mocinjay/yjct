@@ -1,7 +1,9 @@
 # Video quality
 
-Status: draft, 2026-08-04. Records what the clip pipeline does today, what was
-changed, what was measured, what was rejected and why, and what is left.
+Status: §1–§7 record the 2026-08-04 investigation: what was changed, what was
+measured, what was rejected and why, and what was left. §8 (2026-10-18) is the
+current capture pipeline and supersedes the parts of §1–§6 that describe
+segments as H.264 encoded on the phone.
 
 Everything numeric below is measured on hardware (iPhone 16 Pro Max,
 iOS 26.5.2), not estimated. Reproduction commands are at the bottom.
@@ -43,7 +45,7 @@ Two facts shape every decision about picture quality:
 | 3 | Ring buffer | `src/core/SegmentRingBuffer.ts` | Holds segments, evicts old ones. No transcode. |
 | 4 | Stitch | `modules/clip-stitcher/ios/ClipStitcher.m` | Concatenates the covering window. **Passthrough — no re-encode.** |
 | 5 | Caption burn | `modules/clip-stitcher/ios/CaptionEngine.m` | Composition + Core Animation caption overlay, then one `AVAssetExportSession`. **One encode generation.** |
-| 6 | Share | `src/ui/screens/LibraryScreen.tsx:362` | Hands the `.mp4` path to `Share.open`. We do nothing to it. |
+| 6 | Share | `shareClip` | Hands the `.mp4` path to `Share.open`. We do nothing to it. |
 
 Stage 2 is the fidelity ceiling we control. Stage 1 is the fidelity ceiling we
 do not.
@@ -72,16 +74,14 @@ bitrate key at all**, so AVFoundation picked a default. Now
 survives only as a fallback for mixed-format segments, which is a real case — the
 SDK's ABR ladder can change resolution mid-session.
 
-### 3.3 Stream resolution `.medium` → `.high` (UNCOMMITTED)
+### 3.3 Stream resolution `.medium` → `.high` (`a061fb7`)
 
-`MWDATBridge.swift:942`. `.medium` was a hard 504x896 ceiling. The SDK's
-`VideoLadderedScaler` only ever steps *down* from the requested rung, so asking
-for `.high` is strictly better even when the link cannot sustain it.
+`MWDATBridge.swift`, now `MWDATBridge.requestedResolution` (§8). `.medium` was a
+hard 504x896 ceiling. The SDK's `VideoLadderedScaler` only ever steps *down*
+from the requested rung, so asking for `.high` is strictly better even when the
+link cannot sustain it.
 
 Confirmed working: clips now arrive at 720x1280.
-
-> **Not yet committed.** That file also holds ~33 lines of unrelated `chime()`
-> work, so it needs a hunk-level commit.
 
 ### 3.4 Verification that all three landed
 
@@ -205,7 +205,7 @@ model turns out to be.
 
 Ranked by (visible gain) / (cost + risk).
 
-### 6.1 Render the caption pass at 1080x1920 — IN PROGRESS
+### 6.1 Render the caption pass at 1080x1920 — NOT STARTED
 
 Change `CaptionEngine.renderEdit` to set `videoComposition.renderSize` to a
 1080 short edge when the source is smaller, concat the scale onto the layer
@@ -229,14 +229,15 @@ honours a `renderSize` *larger* than the source. If it clamps, the fallback is a
 explicit preset, or the reader/writer path rejected in §5 — which would move this
 from "small change" to "significant rewrite".
 
-**Blocked:** `CaptionEngine.m` is currently open and being edited in Xcode
-(whisper.cpp transcription work). Applying edits against a moving file risks
-clobbering it.
-
 **Verification must include a frame grab, not just `ffprobe`.** Resolution alone
 does not prove the captions still render correctly at the new size.
 
-### 6.2 Get more real detail out of the glasses link — HIGHEST VALUE
+### 6.2 Get more real detail out of the glasses link — SUPERSEDED by §8
+
+The lever turned out to be the Wi-Fi entitlements (§8): without them the SDK
+could not join the glasses' Wi-Fi and every stream ran over Bluetooth. To
+confirm the gain, re-run §4.3's round-trip test on a Wi-Fi `.high` clip. The
+2026-08-04 analysis below is kept for context.
 
 This is the only remaining change that would add **actual information** rather
 than re-packaging what we have. Everything else in this document is cosmetics on
@@ -265,12 +266,6 @@ The footage is soft and probably noisy (small sensor, often low light). A modest
 unsharp mask genuinely helps perceived quality on soft material, and iOS 26 also
 ships `VTTemporalNoiseFilter`. Real but small, and it must not be applied *after*
 captions are burned or it will halo the text.
-
-### 6.5 Commit the `.high` hunk
-
-`MWDATBridge.swift:942` is confirmed working but uncommitted, in a file that also
-holds unrelated `chime()` work. Needs a hunk-level commit, attributed to the user
-only.
 
 ---
 

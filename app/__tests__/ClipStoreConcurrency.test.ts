@@ -95,6 +95,21 @@ describe('ClipStore concurrency', () => {
     expect(onDisk().map(c => c.id)).toEqual(['new']);
   });
 
+  it('counts a launch sweep still writing when the Library sweep returns', async () => {
+    const seed = new ClipStore();
+    await seed.add(clip('old', { expiresAt: 5 }));
+
+    const store = new ClipStore();
+    // App launch sweep, then the Library's focus sweep before the first one's
+    // index write has landed.
+    const launch = store.sweepExpired(100);
+    expect(await store.sweepExpired(100)).toEqual([]);
+
+    expect(store.takeUnreportedExpired()).toBe(1);
+    await launch;
+    expect(store.takeUnreportedExpired()).toBe(0);
+  });
+
   it('removing an unknown clip neither writes nor notifies', async () => {
     const store = new ClipStore();
     await store.add(clip('a'));

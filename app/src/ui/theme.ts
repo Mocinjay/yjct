@@ -14,12 +14,8 @@ export const colors = {
   textFaint: '#606069',
 
   accent: '#FF3B5C',
-  accentPressed: '#E02348',
   accentSoft: 'rgba(255,59,92,0.14)',
-  blue: '#3B82F6',
-  blueSoft: 'rgba(59,130,246,0.16)',
   success: '#30D158',
-  successSoft: 'rgba(48,209,88,0.14)',
   warning: '#FFD60A',
   gold: '#F5C518',
   goldSoft: 'rgba(245,197,24,0.14)',

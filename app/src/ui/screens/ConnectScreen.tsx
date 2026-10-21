@@ -16,13 +16,14 @@ import {
   mwdatEvents,
   mwdatIsSimulator,
   type MWDATDiagnostics,
+  type MWDATStateEvent,
 } from '../../native/MWDATNative';
-
-/** Simulator dev builds run against MockDeviceKit glasses automatically. */
-const AUTO_MOCK = __DEV__ && mwdatIsSimulator();
 import { GlassesPreview } from '../GlassesPreview';
 import type { RootStackParamList } from '../navigation';
 import { colors, radius, spacing } from '../theme';
+
+/** Simulator dev builds run against MockDeviceKit glasses automatically. */
+const AUTO_MOCK = __DEV__ && mwdatIsSimulator();
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Connect'>;
 
@@ -53,7 +54,7 @@ export function ConnectScreen({ navigation }: Props) {
     previewStarted.current = false;
     setPreviewing(false);
   }, [isFocused]);
-  /** Bumped when native tears the stream down so the auto-open effect re-runs. */
+  /** Bumped to make the auto-open effect try again (Retry, return to the foreground). */
   const [previewEpoch, setPreviewEpoch] = useState(0);
   const [mockReady, setMockReady] = useState(!AUTO_MOCK);
 
@@ -67,14 +68,37 @@ export function ConnectScreen({ navigation }: Props) {
       .finally(() => setMockReady(true));
   }, []);
 
+  // One getDiagnostics() at a time. It can take up to 3s (it checks the
+  // camera permission with Meta AI) while the poll fires every 2s and every
+  // SDK event asks too, so unchecked calls pile up and resolve out of order,
+  // letting an old snapshot overwrite a newer one. Requests made while one is
+  // running are answered by a single follow-up call.
+  const diagInFlight = useRef(false);
+  const diagQueued = useRef(false);
   const refresh = useCallback(() => {
     if (!mwdatAvailable()) {
       setError('Meta glasses support is iOS-only for now.');
       return;
     }
-    MWDATNative.getDiagnostics()
-      .then(setDiag)
-      .catch(e => setError(String(e?.message ?? e)));
+    if (diagInFlight.current) {
+      diagQueued.current = true;
+      return;
+    }
+    diagInFlight.current = true;
+    const run = (): void => {
+      MWDATNative.getDiagnostics()
+        .then(setDiag)
+        .catch(e => setError(String(e?.message ?? e)))
+        .finally(() => {
+          if (diagQueued.current) {
+            diagQueued.current = false;
+            run();
+          } else {
+            diagInFlight.current = false;
+          }
+        });
+    };
+    run();
   }, []);
 
   useEffect(() => {
@@ -92,12 +116,12 @@ export function ConnectScreen({ navigation }: Props) {
       ),
       emitter.addListener(
         'MWDATStreamState',
-        (e: { state: string; reason?: string }) => {
+        (e: MWDATStateEvent) => {
           refresh();
           // Background/terminate releases the glasses session. Clear the
           // latch; AppState 'active' below reopens the feed once foregrounded.
-          // Do not bump previewEpoch here — that would reopen while still
-          // backgrounded and recreate the start/stop chime loop.
+          // Do not bump previewEpoch here: that would reopen while still
+          // backgrounded and bring back the start/stop chime loop.
           if (
             previewStarted.current &&
             (e.state === 'stopped' || e.state === 'none')
@@ -122,6 +146,11 @@ export function ConnectScreen({ navigation }: Props) {
   const registered = diag?.registration === 'registered';
   const device = diag?.devices[0] ?? null;
   const streaming = diag?.streamState === 'streaming';
+  // Every getDiagnostics() returns new objects, so effects key on these
+  // primitives rather than `device`: a poll that changed nothing must not
+  // re-run them.
+  const hasDevice = device != null;
+  const linkState = device?.linkState ?? null;
 
   // Native tears the session down on background. When we come back, reopen.
   useEffect(() => {
@@ -132,23 +161,35 @@ export function ConnectScreen({ navigation }: Props) {
       if (previewStarted.current || previewing) {
         return;
       }
-      if ((!registered && !AUTO_MOCK) || !device) {
+      if ((!registered && !AUTO_MOCK) || !hasDevice) {
         return;
       }
       setError(null);
       setPreviewEpoch(n => n + 1);
     });
     return () => sub.remove();
-  }, [registered, device, previewing]);
+  }, [registered, hasDevice, previewing]);
 
   // As soon as we're registered with a device in sight, open the live view.
+  //
+  // A failed open is retried when the glasses' link state changes, on Retry,
+  // or on returning to the foreground; not on every poll. Never while
+  // backgrounded: native releases a preview-only session on background, and
+  // reopening it there brings back the start/stop chime loop. The check is
+  // `=== 'background'`, not `!== 'active'`: early in launch, or under a
+  // system sheet, currentState can read 'unknown' or 'inactive', and the open
+  // must go ahead then.
+  //
+  // `linkState` is a dependency only as a retry trigger; the body does not
+  // read it.
   useEffect(() => {
     if (
       (!registered && !AUTO_MOCK) ||
       !mockReady ||
-      !device ||
+      !hasDevice ||
       !isFocused ||
-      previewStarted.current
+      previewStarted.current ||
+      AppState.currentState === 'background'
     ) {
       return;
     }
@@ -167,10 +208,10 @@ export function ConnectScreen({ navigation }: Props) {
         setBusy(null);
       }
     })();
-  }, [registered, device, mockReady, previewEpoch, isFocused]);
+  }, [registered, hasDevice, linkState, mockReady, previewEpoch, isFocused]);
 
   // Once the glasses feed is live, go straight into the always-on live view.
-  // Buffering starts there automatically — no separate "start recording" step.
+  // Buffering starts there automatically; there is no "start recording" step.
   useEffect(() => {
     if (!streaming || (!registered && !AUTO_MOCK) || leftConnect.current) {
       return;
@@ -180,8 +221,8 @@ export function ConnectScreen({ navigation }: Props) {
         return;
       }
       leftConnect.current = true;
-      // Give the stream a beat to settle before Live attaches the writer —
-      // jumping too early was racing a teardown and shutting the glasses off.
+      // The delay lets the stream settle before Armed attaches the writer;
+      // attaching at once can race a teardown and shut the glasses off.
       navigation.reset({ index: 0, routes: [{ name: 'Armed' }] });
     }, AUTO_MOCK ? 1200 : 1600);
     return () => clearTimeout(t);

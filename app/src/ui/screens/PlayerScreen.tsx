@@ -1,6 +1,12 @@
 import { useIsFocused } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   Alert,
   Modal,
@@ -17,20 +23,18 @@ import { captionQueue } from '../../phase2/CaptionQueue';
 import { captionStyleLabel } from '../../phase2/captionStyles';
 import type { Clip } from '../../types';
 import { Button, ProBadge } from '../components';
+import { formatDuration, relativeDate } from '../format';
 import type { RootStackParamList } from '../navigation';
-import { formatDuration, relativeDate, shareClip } from './LibraryScreen';
+import { shareClip } from '../shareClip';
 import { colors, radius, spacing, type } from '../theme';
+import { useLiveClip } from '../useLiveClip';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Player'>;
 
 export function PlayerScreen({ route, navigation }: Props) {
   const { clip: openedClip } = route.params;
-  // The route param is a snapshot from the moment the card was tapped. The
-  // captioning job for this clip may still be running, so the live copy is
-  // read from the store instead — that is what makes the state below move
-  // while the screen is open.
-  const [clip, setClip] = useState(openedClip);
-  const [name, setName] = useState(openedClip.name);
+  // The live copy, so captions landing or a rename show while the screen is open.
+  const clip = useLiveClip(openedClip);
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(openedClip.name);
   const [isPro, setIsPro] = useState(false);
@@ -41,40 +45,26 @@ export function PlayerScreen({ route, navigation }: Props) {
   const videoRef = useRef<React.ComponentRef<typeof Video>>(null);
   const [userPaused, setUserPaused] = useState(false);
   const [atEnd, setAtEnd] = useState(false);
-  const [progress, setProgress] = useState({ current: 0, total: 0 });
+  // Progress events (4 a second) go straight to the scrub bar, so playback
+  // does not re-render this whole screen and the <Video> wrapper on each one.
+  const scrubRef = useRef<ScrubBarHandle>(null);
+  const durationRef = useRef(0);
 
-  // A fresh `{ uri }` object on every render makes react-native-video treat the
-  // source as changed and re-initialize the player. This screen re-renders on
-  // rename, the entitlement check and the captioning flag, so the player was
-  // being rebuilt repeatedly and the old AVPlayers were what pushed the app
-  // into "Terminated due to memory issue".
-  //
-  // Keying on the path means the one time it *does* rebuild is when captions
-  // land and the captioned cut replaces the raw one.
+  // Memoized on the path: a new source object makes react-native-video
+  // re-initialize the player, and repeated rebuilds pile up AVPlayers until
+  // iOS kills the app for memory. The path changes only when the captioned
+  // cut replaces the raw one.
   const playbackPath = deliverablePath(clip);
   const source = useMemo(() => ({ uri: `file://${playbackPath}` }), [playbackPath]);
 
-  // Leaving the screen (Publish, Paywall, or back to the Library) leaves this
-  // screen mounted underneath, so without this the video kept decoding in the
-  // background.
+  // native-stack keeps this screen mounted under Publish and Paywall; pause
+  // whenever it is not focused.
   const isFocused = useIsFocused();
 
   useEffect(() => {
     entitlementStore.isPro().then(setIsPro);
     return entitlementStore.subscribe(setIsPro);
   }, []);
-
-  useEffect(() => {
-    const sync = () =>
-      clipStore.list().then(all => {
-        const live = all.find(c => c.id === openedClip.id);
-        if (live) {
-          setClip(live);
-        }
-      });
-    sync();
-    return clipStore.subscribe(sync);
-  }, [openedClip.id]);
 
   const togglePlayback = () => {
     if (atEnd) {
@@ -107,17 +97,24 @@ export function PlayerScreen({ route, navigation }: Props) {
     await captionQueue.retry(clip.id);
   };
 
+  const startRename = () => {
+    // Start from the current name, not whatever a cancelled edit left behind.
+    setDraft(clip.name);
+    setRenaming(true);
+  };
+
+  // The store notifies once the rename is written, and useLiveClip picks the
+  // new name up from there.
   const saveRename = async () => {
     const trimmed = draft.trim();
     if (trimmed) {
       await clipStore.rename(clip.id, trimmed);
-      setName(trimmed);
     }
     setRenaming(false);
   };
 
   const confirmDelete = () => {
-    Alert.alert('Delete clip?', `“${name}” will be removed permanently.`, [
+    Alert.alert('Delete clip?', `“${clip.name}” will be removed permanently.`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
@@ -141,33 +138,28 @@ export function PlayerScreen({ route, navigation }: Props) {
           ref={videoRef}
           source={source}
           style={styles.video}
-          // `controls` MUST stay off. It makes react-native-video mount an
-          // AVPlayerViewController (`usePlayerViewController()`), and AVKit
-          // pre-generates the scrubber's filmstrip thumbnails for the item as
-          // CGImages. That is the memory leak: VM tag 54,
-          // VM_MEMORY_COREGRAPHICS_DATA, climbing 0 -> 1889MB in ~20s while
-          // every other region stayed flat, until iOS killed the app. With
-          // `controls` false, RNV uses a bare AVPlayerLayer
-          // (`usePlayerLayer()`) with no AVKit chrome and no image generation.
-          //
-          // It also explains the symptom that never fit: the UI froze while the
-          // JS thread was provably IDLE (the probe's 1s interval kept firing on
-          // schedule). It was the MAIN thread stuck in CoreGraphics.
-          //
-          // Our own transport is below. If a scrubber is wanted later it must be
-          // built from `onProgress` + `seek()`, never by turning `controls` back
-          // on.
+          // `controls` MUST stay off. With it, RNV mounts an
+          // AVPlayerViewController whose scrubber pre-renders filmstrip
+          // thumbnails as CoreGraphics images (VM tag 54) until iOS kills the
+          // app; the main thread is stuck in CoreGraphics, so the UI freezes
+          // first. Without it RNV draws into a bare AVPlayerLayer. Build any
+          // scrubber from `onProgress` + `seek()`, never by turning this on.
           controls={false}
           // Derived from focus and an explicit tap only. No player event feeds
           // this, so there is no cycle.
           paused={!isFocused || userPaused}
-          onLoad={(d: { duration: number }) =>
-            setProgress({ current: 0, total: d.duration })
-          }
+          onLoad={(d: { duration: number }) => {
+            durationRef.current = d.duration;
+            scrubRef.current?.setFraction(0);
+            // A new source (captions landing) starts over; drop a stale
+            // replay badge.
+            setAtEnd(false);
+          }}
           onEnd={() => setAtEnd(true)}
-          onProgress={(d: { currentTime: number; seekableDuration: number }) =>
-            setProgress({ current: d.currentTime, total: d.seekableDuration })
-          }
+          onProgress={(d: { currentTime: number; seekableDuration: number }) => {
+            const total = d.seekableDuration || durationRef.current;
+            scrubRef.current?.setFraction(total > 0 ? d.currentTime / total : 0);
+          }}
           resizeMode="contain"
           ignoreSilentSwitch="ignore"
           playInBackground={false}
@@ -191,25 +183,12 @@ export function PlayerScreen({ route, navigation }: Props) {
           ) : null}
         </Pressable>
 
-        <View style={styles.scrubTrack} pointerEvents="none">
-          <View
-            style={[
-              styles.scrubFill,
-              {
-                width: `${
-                  progress.total > 0
-                    ? Math.min(100, (progress.current / progress.total) * 100)
-                    : 0
-                }%`,
-              },
-            ]}
-          />
-        </View>
+        <ScrubBar ref={scrubRef} />
       </View>
 
       <View style={styles.meta}>
         <Text style={styles.name} numberOfLines={1}>
-          {name}
+          {clip.name}
         </Text>
         <Text style={styles.sub}>
           {formatDuration(clip.durationSec)} · {relativeDate(clip.capturedAt)} ·{' '}
@@ -230,12 +209,17 @@ export function PlayerScreen({ route, navigation }: Props) {
           />
         </View>
         <View style={styles.primaryRow}>
-          <Button label="Rename" onPress={() => setRenaming(true)} style={styles.grow} />
+          <Button label="Rename" onPress={startRename} style={styles.grow} />
           <Button label="Delete" tone="danger" onPress={confirmDelete} style={styles.grow} />
         </View>
       </View>
 
-      <Modal visible={renaming} transparent animationType="fade">
+      <Modal
+        visible={renaming}
+        transparent
+        animationType="fade"
+        // The Android back button closes it without saving.
+        onRequestClose={() => setRenaming(false)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Rename clip</Text>
@@ -254,6 +238,24 @@ export function PlayerScreen({ route, navigation }: Props) {
           </View>
         </View>
       </Modal>
+    </View>
+  );
+}
+
+type ScrubBarHandle = { setFraction: (fraction: number) => void };
+
+/** Thin progress line along the bottom of the video. Owns its own state. */
+function ScrubBar({ ref }: { ref: React.Ref<ScrubBarHandle> }) {
+  const [fraction, setFraction] = useState(0);
+  useImperativeHandle(ref, () => ({ setFraction }), []);
+  return (
+    <View style={styles.scrubTrack} pointerEvents="none">
+      <View
+        style={[
+          styles.scrubFill,
+          { width: `${Math.min(100, Math.max(0, fraction * 100))}%` },
+        ]}
+      />
     </View>
   );
 }

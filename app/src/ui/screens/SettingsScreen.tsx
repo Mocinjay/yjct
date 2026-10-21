@@ -32,7 +32,7 @@ const BUFFER_CHOICES = [30, 60, 90];
 export function SettingsScreen({ navigation }: Props) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [isPro, setIsPro] = useState(false);
-  const [connectors, setConnectors] = useState<ConnectorConfig>({});
+  const [connectors, setConnectors] = useState<ConnectorConfig | null>(null);
 
   useEffect(() => {
     settingsStore.get().then(setSettings);
@@ -48,7 +48,8 @@ export function SettingsScreen({ navigation }: Props) {
     };
   }, []);
 
-  if (!settings) {
+  // The connector fields seed from the stored config once, so wait for it too.
+  if (!settings || !connectors) {
     return <View style={styles.root} />;
   }
 
@@ -131,7 +132,7 @@ export function SettingsScreen({ navigation }: Props) {
           The original is never trimmed — the hook is an extra few seconds on
           the front, so the clip you captured is still there in full.
         </Text>
-        <TestRender />
+        {__DEV__ ? <TestRender /> : null}
       </Section>
 
       <Section title="Meta glasses">
@@ -190,94 +191,55 @@ export function SettingsScreen({ navigation }: Props) {
           user-facing OAuth replaces this before any store release.
         </Text>
 
-        <Text style={styles.fieldLabel}>Clip hosting — presign endpoint URL</Text>
-        <TextInput
-          style={styles.input}
-          value={connectors.hostingPresignUrl ?? ''}
-          autoCapitalize="none"
-          autoCorrect={false}
-          placeholder="https://…/presign (blank = mock hosting)"
-          placeholderTextColor={colors.textDim}
-          onChangeText={hostingPresignUrl =>
+        <ConnectorField
+          label="Clip hosting — presign endpoint URL"
+          initialValue={connectors.hostingPresignUrl}
+          placeholder="https://…/presign (required for Instagram, Facebook, TikTok)"
+          onChange={hostingPresignUrl =>
             connectorConfigStore.update({ hostingPresignUrl })
           }
         />
-
-        <Text style={styles.fieldLabel}>Captioning service URL — fallback only</Text>
-        <TextInput
-          style={styles.input}
-          value={connectors.captioningUrl ?? ''}
-          autoCapitalize="none"
-          autoCorrect={false}
-          placeholder="http://<mac-ip>:8787 (blank = mock captioner)"
-          placeholderTextColor={colors.textDim}
-          onChangeText={captioningUrl =>
-            connectorConfigStore.update({ captioningUrl })
-          }
+        <ConnectorField
+          label="Captioning service URL — fallback only"
+          initialValue={connectors.captioningUrl}
+          placeholder="http://<mac-ip>:8787 (blank = on-device only)"
+          onChange={captioningUrl => connectorConfigStore.update({ captioningUrl })}
         />
         <Text style={styles.hint}>
           Unused on this phone while on-device captioning works. It is the
           Android path, and the fallback if offline dictation is missing for
           your language.
         </Text>
-
-        <Text style={styles.fieldLabel}>Instagram — Graph access token</Text>
-        <TextInput
-          style={styles.input}
-          value={connectors.meta?.accessToken ?? ''}
-          autoCapitalize="none"
-          autoCorrect={false}
+        <ConnectorField
+          label="Instagram — Graph access token"
+          initialValue={connectors.meta?.accessToken}
           placeholder="needs instagram_content_publish"
-          placeholderTextColor={colors.textDim}
-          onChangeText={accessToken =>
-            connectorConfigStore.update({ meta: { accessToken } })
-          }
+          onChange={accessToken => connectorConfigStore.update({ meta: { accessToken } })}
         />
-        <Text style={styles.fieldLabel}>Instagram — IG user id</Text>
-        <TextInput
-          style={styles.input}
-          value={connectors.meta?.igUserId ?? ''}
-          autoCapitalize="none"
-          autoCorrect={false}
+        <ConnectorField
+          label="Instagram — IG user id"
+          initialValue={connectors.meta?.igUserId}
           placeholder="Business/Creator account id"
-          placeholderTextColor={colors.textDim}
-          onChangeText={igUserId =>
-            connectorConfigStore.update({ meta: { igUserId } })
-          }
+          onChange={igUserId => connectorConfigStore.update({ meta: { igUserId } })}
         />
-
-        <Text style={styles.fieldLabel}>Facebook — Page id</Text>
-        <TextInput
-          style={styles.input}
-          value={connectors.meta?.pageId ?? ''}
-          autoCapitalize="none"
-          autoCorrect={false}
-          onChangeText={pageId => connectorConfigStore.update({ meta: { pageId } })}
+        <ConnectorField
+          label="Facebook — Page id"
+          initialValue={connectors.meta?.pageId}
+          onChange={pageId => connectorConfigStore.update({ meta: { pageId } })}
         />
-        <Text style={styles.fieldLabel}>Facebook — Page access token</Text>
-        <TextInput
-          style={styles.input}
-          value={connectors.meta?.pageAccessToken ?? ''}
-          autoCapitalize="none"
-          autoCorrect={false}
+        <ConnectorField
+          label="Facebook — Page access token"
+          initialValue={connectors.meta?.pageAccessToken}
           placeholder="needs pages_manage_posts"
-          placeholderTextColor={colors.textDim}
-          onChangeText={pageAccessToken =>
+          onChange={pageAccessToken =>
             connectorConfigStore.update({ meta: { pageAccessToken } })
           }
         />
-
-        <Text style={styles.fieldLabel}>TikTok — Content Posting access token</Text>
-        <TextInput
-          style={styles.input}
-          value={connectors.tiktok?.accessToken ?? ''}
-          autoCapitalize="none"
-          autoCorrect={false}
+        <ConnectorField
+          label="TikTok — Content Posting access token"
+          initialValue={connectors.tiktok?.accessToken}
           placeholder="sandbox token until audit clears"
-          placeholderTextColor={colors.textDim}
-          onChangeText={accessToken =>
-            connectorConfigStore.update({ tiktok: { accessToken } })
-          }
+          onChange={accessToken => connectorConfigStore.update({ tiktok: { accessToken } })}
         />
         <View style={styles.row}>
           <Choice
@@ -313,6 +275,9 @@ export function SettingsScreen({ navigation }: Props) {
             onPress={() => navigation.navigate('Paywall')}
           />
         </View>
+        {/* Counterpart of the Paywall's "Dev unlock", which is the only way to
+            get Pro until billing lands (release builds included), so testers
+            can get back to the free tier. TODO(billing): remove both. */}
         {isPro ? (
           <Pressable
             onPress={() => entitlementStore.clear()}
@@ -376,7 +341,7 @@ function GlassesConnection() {
       {error ? <Text style={styles.warning}>{error}</Text> : null}
       {!registered ? (
         <Pressable
-          style={[styles.choice, busy && { opacity: 0.5 }]}
+          style={[styles.choice, busy && styles.choiceBusy]}
           disabled={busy}
           onPress={connect}>
           <Text style={styles.choiceText}>
@@ -389,7 +354,7 @@ function GlassesConnection() {
 }
 
 /**
- * DEV — runs the whole pipeline against the bundled sample clip.
+ * DEV builds only — runs the whole pipeline against the bundled sample clip.
  *
  * The app only records from glasses, so without hardware paired there is no
  * other way to see transcription, scoring and the render actually work on a
@@ -440,9 +405,11 @@ function TestRender() {
 /**
  * One pickable caption look, with a sample of it.
  *
- * The sample is an approximation drawn in RN — the real thing is burned in by
- * ffmpeg server-side, and matching it exactly here is not worth a second
- * rendering path. It is close enough to choose between, which is its job.
+ * The sample is an approximation drawn in RN. The real captions are burned
+ * into the video by the captioner (CaptionEngine on iOS, ffmpeg in
+ * server/captioning on the HTTP fallback), and matching them exactly here is
+ * not worth a second rendering path. It is close enough to choose between,
+ * which is its job.
  */
 function CaptionStyleOption({
   preset,
@@ -498,6 +465,45 @@ function CaptionSample({ preview }: { preview: CaptionPreview }) {
         </Text>
       ))}
     </View>
+  );
+}
+
+/**
+ * One credential field. It holds its own text and writes each change through
+ * to the store. It is deliberately not controlled by the store's value: that
+ * value only comes back after an AsyncStorage write, and a TextInput whose
+ * `value` lags the keyboard snaps back between keystrokes and drops
+ * characters. Settings is the only writer of these fields, so seeding once
+ * from the stored config is enough.
+ */
+function ConnectorField({
+  label,
+  initialValue,
+  placeholder,
+  onChange,
+}: {
+  label: string;
+  initialValue: string | undefined;
+  placeholder?: string;
+  onChange: (text: string) => void;
+}) {
+  const [text, setText] = useState(initialValue ?? '');
+  return (
+    <>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <TextInput
+        style={styles.input}
+        value={text}
+        autoCapitalize="none"
+        autoCorrect={false}
+        placeholder={placeholder}
+        placeholderTextColor={colors.textDim}
+        onChangeText={next => {
+          setText(next);
+          onChange(next);
+        }}
+      />
+    </>
   );
 }
 
