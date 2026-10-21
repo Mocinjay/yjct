@@ -11,7 +11,7 @@
 //   Your 10-character Apple Developer Team ID.
 //   Xcode > Settings > Accounts > pick your team; the ID is in parentheses.
 //
-// PRODUCT_BUNDLE_IDENTIFIER
+// CLIPSO_BUNDLE_ID
 //   Must be unique to YOU — reverse-DNS on a domain or name you control.
 //   Never reuse a teammate's. Bundle ids are globally unique to one Apple
 //   team, and the Meta Wearables app registration is keyed to the bundle id

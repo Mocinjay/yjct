@@ -131,7 +131,8 @@ A `720x1280 hevc Main 1,800,803 bps` file named `.captioned.classic.mov` was the
 original evidence that the pipeline was crushing clips. **There is no `.mov` and
 no HEVC anywhere in the app container.** Every file we write is `.mp4` / H.264.
 
-`shareClip` hands the raw `.mp4` to `Share.open`. That HEVC `.mov` was produced
+`shareClip` hands the clip's `.mp4` (the captioned cut once there is one) to
+`Share.open`. That HEVC `.mov` was produced
 *downstream* — the iOS share sheet, Photos, or AirDrop transcoding on the way
 out. It is a delivery-channel artifact, not a pipeline artifact.
 
