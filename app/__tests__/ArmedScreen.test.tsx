@@ -60,7 +60,7 @@ jest.mock('../src/services/capture', () => ({
 }));
 
 import React from 'react';
-import { AppState } from 'react-native';
+import { AppState, Text } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { ArmedScreen } from '../src/ui/screens/ArmedScreen';
 
@@ -217,6 +217,28 @@ describe('ArmedScreen', () => {
     await act(async () => onAppState('active'));
     await settle();
     expect(mockArm).toHaveBeenCalledTimes(2);
+  });
+
+  it('offers Retry only while capture is down', async () => {
+    mockArm.mockImplementation(okArm);
+    renderer = await mount();
+    const r = renderer;
+    const retryShown = () =>
+      r.root.findAll(
+        node => node.type === Text && node.props.children === 'Retry',
+      ).length > 0;
+
+    // A failed save leaves capture live; re-arming would not retry the save.
+    await act(async () => {
+      mockEmit({ ...mockStatus, state: 'armed', lastError: 'stitch failed' });
+    });
+    expect(r.root.findByProps({ children: 'stitch failed' })).toBeTruthy();
+    expect(retryShown()).toBe(false);
+
+    await act(async () => {
+      mockEmit({ ...mockStatus, state: 'error', lastError: 'stalled' });
+    });
+    expect(retryShown()).toBe(true);
   });
 
   it('disarms on blur only once a recording ends, and re-arms on refocus', async () => {

@@ -365,14 +365,19 @@ export function ArmedScreen({ navigation }: Props) {
       {status.lastError ? (
         <View style={styles.errorBanner}>
           <Text style={styles.errorText}>{status.lastError}</Text>
-          <Pressable
-            onPress={() => {
-              armedRef.current = false;
-              arm();
-            }}
-            hitSlop={8}>
-            <Text style={styles.retryText}>Retry</Text>
-          </Pressable>
+          {/* Retry re-arms, so only while capture is down. A failed save
+              leaves capture live with its error showing; re-arming then would
+              restart the feed and do nothing for the save. */}
+          {status.state === 'error' || status.state === 'idle' ? (
+            <Pressable
+              onPress={() => {
+                armedRef.current = false;
+                arm();
+              }}
+              hitSlop={8}>
+              <Text style={styles.retryText}>Retry</Text>
+            </Pressable>
+          ) : null}
         </View>
       ) : null}
 
