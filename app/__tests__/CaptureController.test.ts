@@ -461,6 +461,42 @@ describe('CaptureController', () => {
     await controller.disarm();
   });
 
+  it('a re-arm after a stream error keeps counting the session\'s clips', async () => {
+    const source = new FakeSource();
+    const wake = new FakeWakeWord();
+    const controller = new CaptureController(source, wake, 10, false);
+    const counts: Array<number | undefined> = [];
+    controller.subscribe(s => counts.push(s.sessionClipCount));
+    const lastCount = () => counts[counts.length - 1];
+
+    await controller.arm();
+    source.emit();
+    await controller.captureNow();
+    expect(lastCount()).toBe(1);
+
+    source.fail('The glasses feed stalled');
+    const realStart = source.start.bind(source);
+    source.start = async () => {
+      throw new Error('No glasses found');
+    };
+    const seenFrom = counts.length;
+    await expect(controller.arm()).rejects.toThrow('No glasses found');
+    source.start = realStart;
+    await controller.arm();
+    // Through 'arming', the failed attempt and the one that worked.
+    expect(counts.slice(seenFrom).every(c => c === 1)).toBe(true);
+
+    source.emit();
+    await controller.captureNow();
+    expect(lastCount()).toBe(2);
+
+    // Disarming ends the session; the next arm starts a new count.
+    await controller.disarm();
+    await controller.arm();
+    expect(lastCount() ?? 0).toBe(0);
+    await controller.disarm();
+  });
+
   it('a re-arm after a feed drop carries on an interrupted extended recording', async () => {
     const source = new FakeSource();
     const wake = new FakeWakeWord();

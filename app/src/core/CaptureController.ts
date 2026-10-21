@@ -46,7 +46,8 @@ export interface CaptureStatus {
   /**
    * How many clips have been saved since this armed session started, so the
    * wearer can hear "Clipso" land and see *which* one it was — "Save #3" —
-   * without opening the library. Resets on every `arm()`.
+   * without opening the library. Reset by an `arm()` that starts a session;
+   * a re-arm from 'error' (stall recovery, Retry) continues the session.
    */
   sessionClipCount?: number;
 }
@@ -114,7 +115,12 @@ export class CaptureController {
 
   async arm(): Promise<void> {
     const generation = ++this.armGeneration;
-    this.sessionClipCount = 0;
+    // A re-arm from 'error' continues the session the wearer is in: the Live
+    // Activity stays up through a recovery, so its clip count must not drop
+    // back to zero mid-banner.
+    if (this.status.state !== 'error' && this.status.state !== 'arming') {
+      this.sessionClipCount = 0;
+    }
     // A feed drop mid extended recording leaves the window pinned. The re-arm
     // carries on with that recording, so the stop word or button still saves
     // it from where it began, rather than arming over a stale pin that the
@@ -192,11 +198,7 @@ export class CaptureController {
       // a long stitch finishes would drop the wearer's next clip.
       this.saveClip(interrupted)
         .then(clip =>
-          this.setStatus({
-            ...this.status,
-            lastClip: clip,
-            sessionClipCount: this.sessionClipCount,
-          }),
+          this.setStatus({ ...this.status, lastClip: clip }),
         )
         .catch(err => this.setStatus({ ...this.status, lastError: errorMessage(err) }));
     }
@@ -259,7 +261,6 @@ export class CaptureController {
         recordingSince:
           this.status.state === 'recording' ? this.status.recordingSince : undefined,
         lastClip: clip,
-        sessionClipCount: this.sessionClipCount,
       });
     } catch (err) {
       this.setStatus({ ...this.status, lastError: errorMessage(err) });
@@ -304,7 +305,6 @@ export class CaptureController {
         // look-back, so the counter does not necessarily fall back to zero.
         bufferedSeconds: this.buffer.totalBufferedSeconds,
         lastClip: clip,
-        sessionClipCount: this.sessionClipCount,
       });
       return clip;
     } catch (err) {
@@ -357,7 +357,6 @@ export class CaptureController {
         ...this.stateAfterSave(),
         bufferedSeconds: 0,
         lastClip: clip,
-        sessionClipCount: this.sessionClipCount,
       });
       return clip;
     } catch (err) {
@@ -510,7 +509,9 @@ export class CaptureController {
     return this.windowSeconds;
   }
 
-  private setStatus(status: Omit<CaptureStatus, 'bufferedAsOf'>): void {
+  private setStatus(
+    status: Omit<CaptureStatus, 'bufferedAsOf' | 'armedSince' | 'sessionClipCount'>,
+  ): void {
     // Re-stamp only when the measurement itself changed. Stamping on every
     // transition (armed → saving → armed) would keep resetting the origin the
     // UI extrapolates from, and the counter would never leave its last
@@ -519,13 +520,14 @@ export class CaptureController {
       status.bufferedSeconds !== this.status.bufferedSeconds
         ? Date.now()
         : this.status.bufferedAsOf;
-    // Stamped from the field rather than carried by callers: every state
-    // transition rebuilds the status object, and one that forgot to copy it
-    // would silently reset the session clock.
+    // Stamped from the fields rather than carried by callers: every state
+    // transition rebuilds the status object, and one that forgot to copy them
+    // would silently reset the session clock or the clip count.
     this.status = {
       ...status,
       bufferedAsOf: measured,
       armedSince: this.armedSince ?? undefined,
+      sessionClipCount: this.sessionClipCount,
     };
     this.listeners.forEach(l => l(this.status));
   }
