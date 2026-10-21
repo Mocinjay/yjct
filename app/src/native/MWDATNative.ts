@@ -1,4 +1,5 @@
 import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
+import type { StreamTimelineEntry } from '../markers/streamConcurrency';
 
 /**
  * Native bridge to the Meta Wearables Device Access Toolkit (iOS: Swift
@@ -80,6 +81,8 @@ interface MWDATBridgeModule {
   chime(): Promise<boolean>;
   /** Stop the segment writer only — keeps the glasses camera stream alive. */
   stopRecording(): Promise<void>;
+  /** What the stream did second by second; see markers/streamConcurrency.ts. */
+  getStreamTimeline(): Promise<{ entries: StreamTimelineEntry[] }>;
 }
 
 const native: MWDATBridgeModule | undefined = NativeModules.MWDATBridge;
@@ -118,6 +121,7 @@ export const MWDATNative = {
   cut: () => requireNative().cut(),
   chime: () => requireNative().chime(),
   stopRecording: () => requireNative().stopRecording(),
+  getStreamTimeline: () => requireNative().getStreamTimeline(),
 };
 
 export function mwdatEvents(): NativeEventEmitter {

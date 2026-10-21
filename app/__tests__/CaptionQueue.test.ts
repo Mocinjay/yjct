@@ -348,6 +348,40 @@ describe('restyling', () => {
     expect(mockFiles.has('/docs/clips/a.mp4')).toBe(false);
   });
 
+  it('captions the full-resolution cut when it replaces the clip mid-render', async () => {
+    seed([makeClip('a', { quality: 'proxy' })]);
+    mockFiles.set('/docs/clips/m.mp4', 'master');
+    const realCaption = mockCaptioner.caption.bind(mockCaptioner);
+    let upgraded = false;
+    const spy = jest
+      .spyOn(mockCaptioner, 'caption')
+      .mockImplementation(async (path, options) => {
+        if (!upgraded) {
+          // The glasses' own recording lands while the 720p clip renders.
+          upgraded = true;
+          await clipStore.replaceWithMaster('a', {
+            filePath: '/docs/clips/m.mp4',
+            thumbnailPath: '/docs/clips/m.jpg',
+            durationSec: 30,
+          });
+        }
+        return realCaption(path, options);
+      });
+    try {
+      await captionQueue.enqueue('a');
+      await drain();
+    } finally {
+      spy.mockRestore();
+    }
+
+    const clip = await clipById('a');
+    expect(clip.quality).toBe('master');
+    expect(clip.captionState).toBe('ready');
+    expect(clip.captionedFilePath).toBe('/docs/clips/m.captioned.classic.mp4');
+    // The 720p burn is not left behind.
+    expect(mockFiles.has('/docs/clips/a.captioned.classic.mp4')).toBe(false);
+  });
+
   it('never deletes a source the clip also records as its captioned cut', async () => {
     // A dev test render is stored this way: its source is already burned in.
     seed([

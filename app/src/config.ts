@@ -40,6 +40,14 @@ export const WAKE_PHRASE = 'Clipso';
  */
 export const WAKE_TRIM_PADDING_SECONDS = 0.3;
 
+/**
+ * How far either end of a full-resolution cut may fall short of the 720p clip
+ * it would replace and still replace it. Absorbs keyframe placement and clock
+ * skew between the phone and the glasses; a cut shorter than that is kept as
+ * a separate clip so no footage the wearer already has is lost.
+ */
+export const MASTER_COVERAGE_TOLERANCE_SECONDS = 1.5;
+
 export const DEFAULT_SETTINGS: Settings = {
   bufferSeconds: 30,
   wakeWord: {
@@ -56,4 +64,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // the exact moment being clipped, and a still capture can interrupt the
   // video. Wearers who want the audible confirmation can turn it on.
   glassesChime: false,
+  // Live by default: it always produces a clip, and upgrades it to full
+  // resolution whenever the glasses recorded the same moment themselves.
+  captureMode: 'live',
+  fullResolution: true,
 };

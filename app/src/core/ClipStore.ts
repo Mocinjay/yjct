@@ -180,6 +180,47 @@ export class ClipStore {
     return count;
   }
 
+  /**
+   * Replaces a 720p clip with the full-resolution cut of the same moment, in
+   * place. The clip keeps its id, name, capture time, keep/expiry state and
+   * publish history, so the library shows one clip that got better rather
+   * than two of the same moment. Caption state resets: captions burned into
+   * 720p pixels cannot move to the new file, so the caller re-queues them.
+   * The 720p files are deleted. Returns false, changing nothing, when the
+   * clip is gone (deleted, or expired before the recording synced).
+   */
+  async replaceWithMaster(
+    id: string,
+    master: Pick<Clip, 'filePath' | 'thumbnailPath' | 'durationSec'>,
+  ): Promise<boolean> {
+    let replaced: Clip | undefined;
+    await this.mutate(clips => {
+      replaced = clips.find(c => c.id === id);
+      if (!replaced) {
+        return clips;
+      }
+      const upgraded: Clip = {
+        ...replaced,
+        filePath: master.filePath,
+        thumbnailPath: master.thumbnailPath,
+        durationSec: master.durationSec,
+        sourceKind: 'glasses-library',
+        quality: 'master',
+        captionState: 'none',
+        captionedFilePath: null,
+        captionStyle: undefined,
+        captionProvider: undefined,
+        captionError: null,
+      };
+      return clips.map(c => (c === replaced ? upgraded : c));
+    });
+    if (!replaced) {
+      return false;
+    }
+    await deleteClipFiles(replaced);
+    return true;
+  }
+
   /** Deletes a clip and its files. An unknown id is a no-op. */
   async remove(id: string): Promise<void> {
     let removed: Clip | undefined;
@@ -281,6 +322,18 @@ export function hasBurnedCaptions(clip: Clip): boolean {
 /** True while the clip is waiting on, or inside, the captioning pipeline. */
 export function isCaptioning(clip: Clip): boolean {
   return clip.captionState === 'queued' || clip.captionState === 'processing';
+}
+
+/** A fresh clip id, ordered by when the moment happened. */
+export function newClipId(capturedAt: number): string {
+  return `clip_${capturedAt}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** "Clip 2026-10-21 14.03.22", in local time. */
+export function defaultClipName(capturedAt: number): string {
+  const d = new Date(capturedAt);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `Clip ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}.${pad(d.getMinutes())}.${pad(d.getSeconds())}`;
 }
 
 /** Milliseconds until wipe, or null if the clip is kept forever. */

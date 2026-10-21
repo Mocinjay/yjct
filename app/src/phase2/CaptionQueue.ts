@@ -198,11 +198,19 @@ export class CaptionQueue {
           if (next === undefined) {
             break;
           }
+          let again = false;
           try {
-            await this.run(next);
+            again = await this.run(next);
           } finally {
             this.claimed.delete(next);
-            this.settle(next);
+            // A clip run again keeps its captionNow() waiters for that run;
+            // push() settles them if it declines the clip.
+            if (!again) {
+              this.settle(next);
+            }
+          }
+          if (again) {
+            await this.push(next, { force: true });
           }
         }
       } finally {
@@ -220,11 +228,15 @@ export class CaptionQueue {
     }
   }
 
-  private async run(clipId: string): Promise<void> {
+  /**
+   * Captions one clip. Returns true when the clip's file was replaced while
+   * this rendered (its full-resolution cut arrived), so it has to run again.
+   */
+  private async run(clipId: string): Promise<boolean> {
     const clip = (await clipStore.list()).find(c => c.id === clipId);
     if (!clip) {
       // Deleted or swept while it sat in the queue.
-      return;
+      return false;
     }
     const style = (await settingsStore.get()).captionStyle;
     try {
@@ -233,12 +245,19 @@ export class CaptionQueue {
       const { captionedFilePath } = await captioner.caption(clip.filePath, {
         style,
       });
-      if (!(await clipStore.list()).some(c => c.id === clipId)) {
+      const live = (await clipStore.list()).find(c => c.id === clipId);
+      if (!live) {
         // Deleted or swept while this was encoding. setCaptionState would
         // ignore the write anyway; the burn-in would just be left on disk
         // with nothing referencing it.
         await RNFS.unlink(captionedFilePath).catch(() => {});
-        return;
+        return false;
+      }
+      if (live.filePath !== clip.filePath) {
+        // Upgraded to its full-resolution cut meanwhile: this burn is of the
+        // 720p file the clip no longer plays.
+        await RNFS.unlink(captionedFilePath).catch(() => {});
+        return true;
       }
       await discardPrevious(clip, captionedFilePath);
       await clipStore.setCaptionState(clipId, {
@@ -256,6 +275,7 @@ export class CaptionQueue {
         })
         .catch(() => {});
     }
+    return false;
   }
 }
 

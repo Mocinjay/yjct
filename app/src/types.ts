@@ -46,14 +46,34 @@ export interface Clip {
   captionProvider?: string;
   /** Why the last attempt failed — surfaced, never swallowed. */
   captionError?: string | null;
+  /**
+   * 'proxy': cut from the 720x1280 live stream; replaced in place by the
+   * glasses' own full-resolution recording if one arrives that covers it.
+   * 'master': cut from the glasses' own recording (1520x2032 HDR).
+   * Absent on clips from before the full-resolution import.
+   */
+  quality?: ClipQuality;
 }
 
+export type ClipQuality = 'proxy' | 'master';
+
 /**
- * What recorded a clip. Glasses captures are 'mwdat'. 'mock' is recorded by
- * the dev test render (phase2/testRender.ts) and remains on phone-camera clips
- * from earlier builds.
+ * How capture works. 'live' streams from the glasses into a rolling buffer
+ * and saves a 720p clip the moment "Clipso" is heard, upgraded to full
+ * resolution when the glasses recorded the same moment themselves. 'glasses'
+ * streams nothing: the wearer records on the glasses, the phone listens, and
+ * full-resolution clips arrive once Meta AI syncs the recording.
  */
-export type DeviceKind = 'mock' | 'mwdat';
+export type CaptureMode = 'live' | 'glasses';
+
+/**
+ * What recorded a clip. Clips from the live stream are 'mwdat'. Clips cut
+ * from a recording the glasses made themselves, imported from the photo
+ * library after Meta AI synced it, are 'glasses-library'. 'mock' is recorded
+ * by the dev test render (phase2/testRender.ts) and remains on phone-camera
+ * clips from earlier builds.
+ */
+export type DeviceKind = 'mock' | 'mwdat' | 'glasses-library';
 
 export interface Segment {
   /** Absolute file path of the recorded segment. */
@@ -81,6 +101,13 @@ export interface Settings {
    * moment being clipped.
    */
   glassesChime: boolean;
+  /** See `CaptureMode`. */
+  captureMode: CaptureMode;
+  /**
+   * Import the glasses' own full-resolution recordings from the photo library
+   * and cut the marked moments from them. Needs full Photos access.
+   */
+  fullResolution: boolean;
 }
 
 export interface WakeWordConfig {

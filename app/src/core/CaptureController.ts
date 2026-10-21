@@ -8,7 +8,7 @@ import type { DeviceVideoSource } from '../device/DeviceVideoSource';
 import { stitchSegments } from '../native/ClipStitcher';
 import type { Clip, Segment } from '../types';
 import type { WakeDetection, WakeWordProvider } from '../wakeword/WakeWordProvider';
-import { clipStore } from './ClipStore';
+import { clipStore, defaultClipName, newClipId } from './ClipStore';
 import { entitlementStore } from './EntitlementStore';
 import { SegmentRingBuffer } from './SegmentRingBuffer';
 
@@ -424,7 +424,7 @@ export class CaptureController {
 
   private async stitch(segments: Segment[], trimEndSec = 0): Promise<Clip> {
     const capturedAt = Date.now();
-    const id = `clip_${capturedAt}_${Math.random().toString(36).slice(2, 8)}`;
+    const id = newClipId(capturedAt);
     const dir = await clipStore.ensureDir();
     const outputPath = `${dir}/${id}.mp4`;
     const result = await stitchSegments(
@@ -535,10 +535,4 @@ export class CaptureController {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-function defaultClipName(capturedAt: number): string {
-  const d = new Date(capturedAt);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `Clip ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}.${pad(d.getMinutes())}.${pad(d.getSeconds())}`;
 }

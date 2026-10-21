@@ -122,3 +122,67 @@ describe('ClipStore concurrency', () => {
     expect(onDisk().map(c => c.id)).toEqual(['a']);
   });
 });
+
+describe('replaceWithMaster', () => {
+  beforeEach(() => mockFiles.clear());
+
+  it('upgrades a 720p clip in place and deletes its files', async () => {
+    const store = new ClipStore();
+    await store.add(
+      clip('a', {
+        name: 'Beach',
+        savedAt: 5,
+        expiresAt: null,
+        publishedTo: ['youtube'],
+        quality: 'proxy',
+        captionState: 'ready',
+        captionedFilePath: '/docs/clips/a.captioned.classic.mp4',
+        captionProvider: 'on-device',
+      }),
+    );
+    for (const path of ['/docs/clips/a.mp4', '/docs/clips/a.jpg', '/docs/clips/a.captioned.classic.mp4']) {
+      mockFiles.set(path, 'proxy');
+    }
+
+    const replaced = await store.replaceWithMaster('a', {
+      filePath: '/docs/clips/m.mp4',
+      thumbnailPath: '/docs/clips/m.jpg',
+      durationSec: 30,
+    });
+
+    expect(replaced).toBe(true);
+    const [upgraded] = onDisk();
+    expect(upgraded).toMatchObject({
+      id: 'a',
+      name: 'Beach',
+      savedAt: 5,
+      expiresAt: null,
+      publishedTo: ['youtube'],
+      filePath: '/docs/clips/m.mp4',
+      thumbnailPath: '/docs/clips/m.jpg',
+      durationSec: 30,
+      sourceKind: 'glasses-library',
+      quality: 'master',
+      // Captions burned into 720p pixels do not carry over.
+      captionState: 'none',
+      captionedFilePath: null,
+    });
+    expect(mockFiles.has('/docs/clips/a.mp4')).toBe(false);
+    expect(mockFiles.has('/docs/clips/a.jpg')).toBe(false);
+    expect(mockFiles.has('/docs/clips/a.captioned.classic.mp4')).toBe(false);
+  });
+
+  it('changes nothing when the 720p clip is gone', async () => {
+    const store = new ClipStore();
+    await store.add(clip('b'));
+
+    expect(
+      await store.replaceWithMaster('a', {
+        filePath: '/docs/clips/m.mp4',
+        thumbnailPath: '/docs/clips/m.jpg',
+        durationSec: 30,
+      }),
+    ).toBe(false);
+    expect(onDisk().map(c => c.id)).toEqual(['b']);
+  });
+});
